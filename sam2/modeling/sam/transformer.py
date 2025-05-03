@@ -310,6 +310,7 @@ class RoPEAttention(Attention):
 
         return out
 
+
 class EfficientRoPEAttention1(Attention):
     """Attention with rotary position encoding."""
 

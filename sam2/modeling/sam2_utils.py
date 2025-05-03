@@ -322,6 +322,7 @@ def get_next_point(gt_masks, pred_masks, method):
     else:
         raise ValueError(f"unknown sampling method {method}")
 
+
 class LayerScale(nn.Module):
     def __init__(
         self,

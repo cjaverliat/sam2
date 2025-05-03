@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from sam2.modeling.sam2_utils import LayerNorm2d
 
+
 class ImageEncoder(nn.Module):
     def __init__(
         self,
@@ -133,7 +134,6 @@ class FpnNeck(nn.Module):
             pos[i] = self.position_encoding(x_out).to(x_out.dtype)
 
         return out, pos
-
 
 
 class ViTDetNeck(nn.Module):
