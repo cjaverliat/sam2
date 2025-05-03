@@ -97,7 +97,7 @@ class SAM2Generic(SAM2Base):
         img_embeddings: list[torch.Tensor],
         masks_logits: torch.Tensor,
         object_score_logits: torch.Tensor,
-        is_prompt_encoding: bool = False,
+        is_prompt: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the image and its prediction into a memory.
@@ -122,7 +122,7 @@ class SAM2Generic(SAM2Base):
         masks_logits = self._transforms.downscale_masks_logits(masks_logits)
 
         # Scale the raw mask logits with a temperature before applying sigmoid
-        binarize = self.binarize_mask_from_pts_for_mem_enc and is_prompt_encoding
+        binarize = self.binarize_mask_from_pts_for_mem_enc and is_prompt
         if binarize and not self.training:
             mask_for_mem = (masks_logits > self.mask_threshold).float()
         else:
@@ -239,8 +239,8 @@ class SAM2Generic(SAM2Base):
         conditional_memory_pos_embeddings: list[torch.Tensor] = [],
         non_conditional_memory_embeddings: list[torch.Tensor] = [],
         non_conditional_memory_pos_embeddings: list[torch.Tensor] = [],
-        obj_ptrs: torch.Tensor | None = None,
-        obj_ptrs_frame_idx: list[int] | None = None,
+        obj_ptrs_seq: torch.Tensor | None = None,
+        obj_ptrs_frame_indices: list[int] | None = None,
         reverse_time: bool = False,
     ) -> list[torch.Tensor]:
         """
@@ -248,14 +248,29 @@ class SAM2Generic(SAM2Base):
 
         Note: the non conditional memories are ordered by order of importance, i.e. the first non conditional memory is the most important one.
         For example, if you use temporal memory, the first non conditional memory is the one that is closest to the current frame, and the last one is the one that is farthest.
+
+        Args:
+            frame_idx (int): The index of the current frame.
+            img_embeddings (list[torch.Tensor]): The image embeddings.
+            img_pos_embeddings (list[torch.Tensor]): The image position embeddings.
+            conditional_memory_embeddings (list[torch.Tensor]): The conditional memory embeddings.
+            conditional_memory_pos_embeddings (list[torch.Tensor]): The conditional memory position embeddings.
+            non_conditional_memory_embeddings (list[torch.Tensor]): The non conditional memory embeddings.
+            non_conditional_memory_pos_embeddings (list[torch.Tensor]): The non conditional memory position embeddings.
+            obj_ptrs_seq (torch.Tensor | None): The object pointers sequence. Shape: (ptr_seq_len, B, C).
+            obj_ptrs_frame_idx (list[int] | None): The object pointers frame index. Length: ptr_seq_len.
+            reverse_time (bool): Whether to reverse the time.
+
+        Returns:
+            list[torch.Tensor]: The conditioned image embeddings.
         """
         # TODO: all batch don't have the same number of memories
 
-        if obj_ptrs is not None:
-            if obj_ptrs.ndim == 2:
+        if obj_ptrs_seq is not None:
+            if obj_ptrs_seq.ndim == 2:
                 # (B, C) -> (ptr_seq_len, B, C)
-                obj_ptrs = obj_ptrs.unsqueeze(0)
-            assert len(obj_ptrs) == len(obj_ptrs_frame_idx)
+                obj_ptrs_seq = obj_ptrs_seq.unsqueeze(0)
+            assert len(obj_ptrs_seq) == len(obj_ptrs_frame_indices)
 
         assert len(non_conditional_memory_embeddings) == len(
             non_conditional_memory_pos_embeddings
@@ -279,7 +294,7 @@ class SAM2Generic(SAM2Base):
 
         n_conditional_memories = len(conditional_memory_embeddings)
         n_non_conditional_memories = len(non_conditional_memory_embeddings)
-        n_obj_ptrs = len(obj_ptrs)
+        n_obj_ptrs = len(obj_ptrs_seq)
 
         if (
             n_conditional_memories == 0
@@ -340,7 +355,7 @@ class SAM2Generic(SAM2Base):
 
                 obj_ptrs_enc, obj_pos_enc = (
                     self._prepare_obj_ptrs_for_memory_conditioning(
-                        frame_idx, obj_ptrs, obj_ptrs_frame_idx, reverse_time
+                        frame_idx, obj_ptrs_seq, obj_ptrs_frame_indices, reverse_time
                     )
                 )
 
