@@ -266,12 +266,8 @@ class SAM2Generic(SAM2Base):
         Returns:
             list[torch.Tensor]: The conditioned image embeddings.
         """
-        # TODO: all batch don't have the same number of memories
-
         if obj_ptrs_seq is not None:
-            if obj_ptrs_seq.ndim == 2:
-                # (B, C) -> (ptr_seq_len, B, C)
-                obj_ptrs_seq = obj_ptrs_seq.unsqueeze(0)
+            assert obj_ptrs_seq.ndim == 3, f"Expected obj_ptrs_seq to be of shape (ptr_seq_len, B, C), got {obj_ptrs_seq.shape}"
             assert len(obj_ptrs_seq) == len(obj_ptrs_frame_indices)
 
         assert len(non_conditional_memory_embeddings) == len(
