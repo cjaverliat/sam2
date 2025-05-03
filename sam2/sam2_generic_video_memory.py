@@ -1,6 +1,7 @@
-import torch
-from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+import torch
 
 
 @dataclass
@@ -20,12 +21,14 @@ class ObjectMemory:
     def best_mask_logits(self) -> torch.Tensor:
         # Select the best mask based on IoU scores
         best_mask_idx = torch.argmax(self.ious, dim=1, keepdim=True)
-        batch_indices = torch.arange(self.masks_logits.shape[0], device=self.masks_logits.device)
-        
+        batch_indices = torch.arange(
+            self.masks_logits.shape[0], device=self.masks_logits.device
+        )
+
         # Extract the best mask for each item in the batch
         best_masks_logits = self.masks_logits[batch_indices, best_mask_idx]
         return best_masks_logits
-    
+
     @property
     def best_iou(self) -> torch.Tensor:
         best_mask_idx = torch.argmax(self.ious, dim=1, keepdim=True)
@@ -164,7 +167,9 @@ class DefaultMemoryMemorizationStrategy(MemoryMemorizationStrategy):
         memory_bank.add(memory)
         return True
 
-    def prune_memories_from_memory_bank(self, memory_bank: ObjectMemoryBank) -> list[ObjectMemory]:
+    def prune_memories_from_memory_bank(
+        self, memory_bank: ObjectMemoryBank
+    ) -> list[ObjectMemory]:
         pruned_memories: list[ObjectMemory] = []
 
         # Prune memories that are too old

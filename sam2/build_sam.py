@@ -12,7 +12,7 @@ from hydra import compose
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictor
+import sam2
 from sam2.sam2_generic_video_memory import (
     DefaultMemoryMemorizationStrategy,
     DefaultMemorySelectionStrategy,
@@ -20,7 +20,7 @@ from sam2.sam2_generic_video_memory import (
     MemorySelectionStrategy,
 )
 
-import sam2
+from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictor
 
 # Check if the user is running Python from the parent directory of the sam2 repo
 # (i.e. the directory where this repo is cloned into) -- this is not supported since

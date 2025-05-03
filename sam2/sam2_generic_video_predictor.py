@@ -1,13 +1,14 @@
-import torch
 from dataclasses import dataclass
+
 import numpy as np
+import torch
 
 from sam2.modeling.sam2_generic import SAM2Generic
 from sam2.sam2_generic_video_memory import (
+    MemoryMemorizationStrategy,
+    MemorySelectionStrategy,
     ObjectMemory,
     ObjectMemoryBank,
-    MemorySelectionStrategy,
-    MemoryMemorizationStrategy,
 )
 
 
@@ -161,8 +162,10 @@ class SAM2GenericVideoPredictor(SAM2Generic):
 
             # Select the best mask based on IoU scores
             best_mask_idx = torch.argmax(ious, dim=1, keepdim=True)
-            batch_indices = torch.arange(masks_logits.shape[0], device=masks_logits.device)
-            
+            batch_indices = torch.arange(
+                masks_logits.shape[0], device=masks_logits.device
+            )
+
             # Extract the best mask for each item in the batch
             best_masks_logits = masks_logits[batch_indices, best_mask_idx]
 
