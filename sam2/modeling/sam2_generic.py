@@ -38,7 +38,7 @@ class SAM2Generic(SAM2Base):
 
         self.empty_prompt_embeddings = self.encode_prompts()
 
-    def _prepare_images(self, img: torch.Tensor | list[torch.Tensor]):
+    def _prepare_images(self, img: torch.Tensor | list[torch.Tensor], scale: bool = True):
 
         # If we have a list of images (potentially of different sizes), we apply the transforms to each image
         # and then concatenate them along the batch dimension.
@@ -51,6 +51,8 @@ class SAM2Generic(SAM2Base):
             ], f"Expected image to be of shape (B, C, H, W) or (C, H, W), got {img.shape}"
             if img.ndim == 3:
                 img = img.unsqueeze(0)
+            if img.dtype == torch.uint8 and scale:
+                img = img.float() / 255.0
             img_list[i] = self._transforms.transforms(img)
 
         return torch.cat(img_list, dim=0)
