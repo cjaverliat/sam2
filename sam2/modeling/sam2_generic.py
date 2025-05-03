@@ -512,6 +512,8 @@ class SAM2Generic(SAM2Base):
 
         if prompt_embeddings is None:
             sparse_prompt_embeddings, dense_prompt_embeddings = self.empty_prompt_embeddings
+            sparse_prompt_embeddings = sparse_prompt_embeddings.to(self.device)
+            dense_prompt_embeddings = dense_prompt_embeddings.to(self.device)
         else:
             sparse_prompt_embeddings, dense_prompt_embeddings = prompt_embeddings
 
