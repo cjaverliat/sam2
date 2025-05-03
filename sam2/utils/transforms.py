@@ -63,6 +63,36 @@ class SAM2Transforms(nn.Module):
         coords = coords * self.resolution  # unnormalize coords
         return coords
 
+    def downscale_masks_logits(self, masks_logits: torch.Tensor) -> torch.Tensor:
+
+        # If the masks_logits are already at the resolution, no-op
+        if masks_logits.shape[-2:] == (self.resolution, self.resolution):
+            return masks_logits
+
+        masks_logits: torch.Tensor = torch.nn.functional.interpolate(
+            masks_logits.float(),
+            size=(self.resolution, self.resolution),
+            align_corners=False,
+            mode="bilinear",
+            antialias=True,
+        )
+        return masks_logits
+    
+    def upscale_masks_logits(self, masks_logits: torch.Tensor, orig_hw: tuple[int, int]) -> torch.Tensor:
+
+        # If the masks_logits are already at the resolution, no-op
+        if masks_logits.shape[-2:] == orig_hw:
+            return masks_logits
+
+        masks_logits: torch.Tensor = torch.nn.functional.interpolate(
+            masks_logits.float(),
+            size=orig_hw,
+            align_corners=False,
+            mode="bilinear",
+            antialias=True,
+        )
+        return masks_logits
+
     def transform_boxes(
         self, boxes: torch.Tensor, normalize=False, orig_hw=None
     ) -> torch.Tensor:
