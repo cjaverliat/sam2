@@ -9,7 +9,11 @@ from typing import Optional
 import torch
 from torch import nn, Tensor
 
-from sam2.modeling.sam.transformer import RoPEAttention, EfficientRoPEAttention1, EfficientRoPEAttention2
+from sam2.modeling.sam.transformer import (
+    EfficientRoPEAttention1,
+    EfficientRoPEAttention2,
+    RoPEAttention,
+)
 
 from sam2.modeling.sam2_utils import get_activation_fn, get_clones
 

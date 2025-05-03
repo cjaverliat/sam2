@@ -14,11 +14,7 @@ from sam2.modeling.backbones.utils import (
     window_unpartition,
 )
 
-from sam2.modeling.sam2_utils import (
-    DropPath,
-    LayerScale,
-    MLP,
-)
+from sam2.modeling.sam2_utils import DropPath, LayerScale, MLP
 
 
 class Attention(nn.Module):
