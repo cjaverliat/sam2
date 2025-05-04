@@ -54,6 +54,10 @@ class SAM2Result:
             obj_ptrs=torch.cat([r.obj_ptrs for r in results], dim=0),
             obj_score_logits=torch.cat([r.obj_score_logits for r in results], dim=0),
         )
+    
+    @property
+    def device(self) -> torch.device:
+        return self.masks_logits.device
 
     @property
     def best_mask_logits(self) -> torch.Tensor:
