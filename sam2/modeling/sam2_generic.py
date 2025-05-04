@@ -3,6 +3,8 @@ from sam2.modeling.sam2_base import SAM2Base
 from sam2.utils.transforms import SAM2Transforms
 
 from sam2.modeling.sam2_utils import get_1d_sine_pe
+from sam2.modeling.sam2_result import SAM2Result
+from sam2.modeling.memory import ObjectMemory
 
 
 class SAM2Generic(SAM2Base):
@@ -38,7 +40,9 @@ class SAM2Generic(SAM2Base):
 
         self.empty_prompt_embeddings = self.encode_prompts()
 
-    def _prepare_images(self, img: torch.Tensor | list[torch.Tensor], scale: bool = True):
+    def _prepare_images(
+        self, img: torch.Tensor | list[torch.Tensor], scale: bool = True
+    ):
 
         # If we have a list of images (potentially of different sizes), we apply the transforms to each image
         # and then concatenate them along the batch dimension.
@@ -98,8 +102,8 @@ class SAM2Generic(SAM2Base):
         self,
         img_embeddings: list[torch.Tensor],
         masks_logits: torch.Tensor,
-        object_score_logits: torch.Tensor,
-        is_prompt: bool = False,
+        obj_score_logits: torch.Tensor,
+        is_prompt: torch.BoolTensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the image and its prediction into a memory.
@@ -108,28 +112,38 @@ class SAM2Generic(SAM2Base):
             img_embeddings (list[torch.Tensor]): The image embeddings.
             masks_high_res_logits (torch.Tensor): The high-resolution mask logits.
             object_score_logits (torch.Tensor): The object score logits.
-            is_prompt_encoding (bool): Whether the masks are from a user prompt or from a SAM prediction.
+            is_prompt (torch.BoolTensor): Whether the masks are from a user prompt or from a SAM prediction.
 
         Returns:
             memory_embeddings (torch.Tensor): The encoded memory embeddings.
             memory_pos_embeddings (torch.Tensor): The encoded memory position embeddings.
         """
+
+        assert [t.ndim == 4 for t in img_embeddings], f"Expected all levels of img_embeddings to be of shape (B, C, H, W), got {[t.shape for t in img_embeddings]}"
+        B = img_embeddings[0].shape[0]
+        assert masks_logits.ndim == 4 and masks_logits.shape[0] == B, f"Expected masks_logits to be of shape (B, H, W, C), got {masks_logits.shape}"
+        assert obj_score_logits.shape == (B, 1), f"Expected obj_score_logits to be of shape ({B}, 1), got {obj_score_logits.shape}"
+        assert is_prompt.shape == (B,), f"Expected is_prompt to be of shape ({B},), got {is_prompt.shape}"
+
         low_res_img_embeddings = img_embeddings[-1]
 
         if self.non_overlap_masks_for_mem_enc and not self.training:
-            masks_logits = self._apply_non_overlapping_constraints(
-                masks_logits
-            )
+            masks_logits = self._apply_non_overlapping_constraints(masks_logits)
 
         masks_logits = self._transforms.downscale_masks_logits(masks_logits)
 
         # Scale the raw mask logits with a temperature before applying sigmoid
-        binarize = self.binarize_mask_from_pts_for_mem_enc and is_prompt
-        if binarize and not self.training:
-            mask_for_mem = (masks_logits > self.mask_threshold).float()
-        else:
-            # Apply sigmoid on the raw mask logits to turn them into range (0, 1)
-            mask_for_mem = torch.sigmoid(masks_logits)
+        binarize = (
+            self.binarize_mask_from_pts_for_mem_enc & is_prompt & (not self.training)
+        )
+
+        mask_for_mem = torch.where(
+            binarize,
+            (masks_logits > self.mask_threshold).float(),
+            torch.sigmoid(
+                masks_logits
+            ),  # Apply sigmoid on the raw mask logits to turn them into range (0, 1)
+        )
 
         # Apply scale and bias terms to the sigmoid probabilities
         if self.sigmoid_scale_for_mem_enc != 1.0:
@@ -148,7 +162,7 @@ class SAM2Generic(SAM2Base):
         # Add a no-object embedding to the spatial memory to indicate that the frame
         # is predicted to be occluded (i.e. no object is appearing in the frame)
         if self.no_obj_embed_spatial is not None:
-            is_obj_appearing = (object_score_logits > 0).float()
+            is_obj_appearing = (obj_score_logits > 0).float()
             memory_embeddings += (
                 1 - is_obj_appearing[..., None, None]
             ) * self.no_obj_embed_spatial[..., None, None].expand(
@@ -237,12 +251,9 @@ class SAM2Generic(SAM2Base):
         frame_idx: int,
         img_embeddings: list[torch.Tensor],
         img_pos_embeddings: list[torch.Tensor],
-        conditional_memory_embeddings: list[torch.Tensor] = [],
-        conditional_memory_pos_embeddings: list[torch.Tensor] = [],
-        non_conditional_memory_embeddings: list[torch.Tensor] = [],
-        non_conditional_memory_pos_embeddings: list[torch.Tensor] = [],
-        obj_ptrs_seq: torch.Tensor | None = None,
-        obj_ptrs_frame_indices: list[int] | None = None,
+        conditional_memories: list[ObjectMemory],
+        non_conditional_memories: list[ObjectMemory],
+        ptr_memories: list[ObjectMemory],
         reverse_time: bool = False,
     ) -> list[torch.Tensor]:
         """
@@ -255,34 +266,41 @@ class SAM2Generic(SAM2Base):
             frame_idx (int): The index of the current frame.
             img_embeddings (list[torch.Tensor]): The image embeddings.
             img_pos_embeddings (list[torch.Tensor]): The image position embeddings.
-            conditional_memory_embeddings (list[torch.Tensor]): The conditional memory embeddings.
-            conditional_memory_pos_embeddings (list[torch.Tensor]): The conditional memory position embeddings.
-            non_conditional_memory_embeddings (list[torch.Tensor]): The non conditional memory embeddings.
-            non_conditional_memory_pos_embeddings (list[torch.Tensor]): The non conditional memory position embeddings.
-            obj_ptrs_seq (torch.Tensor | None): The object pointers sequence. Shape: (ptr_seq_len, B, C).
-            obj_ptrs_frame_idx (list[int] | None): The object pointers frame index. Length: ptr_seq_len.
+            conditional_memories (list[ObjectMemory]): The conditional memories.
+            non_conditional_memories (list[ObjectMemory]): The non conditional memories.
+            ptr_memories (list[ObjectMemory]): The pointer memories.
             reverse_time (bool): Whether to reverse the time.
 
         Returns:
             list[torch.Tensor]: The conditioned image embeddings.
         """
-        if obj_ptrs_seq is not None:
-            assert obj_ptrs_seq.ndim == 3, f"Expected obj_ptrs_seq to be of shape (ptr_seq_len, B, C), got {obj_ptrs_seq.shape}"
-            assert len(obj_ptrs_seq) == len(obj_ptrs_frame_indices)
 
-        assert len(non_conditional_memory_embeddings) == len(
-            non_conditional_memory_pos_embeddings
-        )
-        assert len(conditional_memory_embeddings) == len(
-            conditional_memory_pos_embeddings
-        )
+        # Stack the pointer memories along a new sequence dimension (ptr_seq_len, B, C)
+        if len(ptr_memories) > 0:
+            obj_ptrs_seq = torch.stack([m.ptr for m in ptr_memories], dim=0)
+        else:
+            B = img_embeddings[0].shape[0]
+            obj_ptrs_seq = torch.zeros(
+                (
+                    0,
+                    B,
+                    self.mem_dim,
+                ),
+                device=self.device,
+            )
+        obj_ptrs_frame_indices = [m.frame_idx for m in ptr_memories]
+
         assert (
             self.max_cond_frames_in_attn == -1
-            or len(conditional_memory_embeddings) <= self.max_cond_frames_in_attn
-        ), f"Expected at most {self.max_cond_frames_in_attn} conditional memories, got {len(conditional_memory_embeddings)}"
+            or len(conditional_memories) <= self.max_cond_frames_in_attn
+        ), f"Expected at most {self.max_cond_frames_in_attn} conditional memories, got {len(conditional_memories)}"
         assert (
-            len(non_conditional_memory_embeddings) <= self.num_maskmem - 1
-        ), f"Expected at most {self.num_maskmem - 1} non-conditional memories, got {len(non_conditional_memory_embeddings)}"
+            len(non_conditional_memories) <= self.num_maskmem - 1
+        ), f"Expected at most {self.num_maskmem - 1} non-conditional memories, got {len(non_conditional_memories)}"
+        assert (
+            self.max_obj_ptrs_in_encoder == -1
+            or len(ptr_memories) <= self.max_obj_ptrs_in_encoder
+        ), f"Expected at most {self.max_obj_ptrs_in_encoder} object pointer memories, got {len(ptr_memories)}"
 
         low_res_img_embeddings = img_embeddings[-1]
         low_res_img_pos_embeddings = img_pos_embeddings[-1]
@@ -290,14 +308,14 @@ class SAM2Generic(SAM2Base):
 
         B, C, H, W = low_res_img_embeddings.shape
 
-        n_conditional_memories = len(conditional_memory_embeddings)
-        n_non_conditional_memories = len(non_conditional_memory_embeddings)
-        n_obj_ptrs = len(obj_ptrs_seq)
+        n_conditional_memories = len(conditional_memories)
+        n_non_conditional_memories = len(non_conditional_memories)
+        n_ptrs_memories = len(obj_ptrs_seq)
 
         if (
             n_conditional_memories == 0
             and n_non_conditional_memories == 0
-            and n_obj_ptrs == 0
+            and n_ptrs_memories == 0
         ):
             # We don't have any memories, we add the no-mem embedding
             if self.directly_add_no_mem_embed:
@@ -322,29 +340,23 @@ class SAM2Generic(SAM2Base):
             memories_pos_embed = []
 
             # Add conditional memories (prompt from the user)
-            for cond_mem, cond_mem_pos in zip(
-                conditional_memory_embeddings,
-                conditional_memory_pos_embeddings,
-            ):
+            for cond_mem in conditional_memories:
                 memory_embeddings, memory_tpos_embeddings = (
                     self._prepare_memory_for_memory_conditioning(
-                        0, cond_mem, cond_mem_pos
+                        0, cond_mem.memory_embeddings, cond_mem.memory_pos_embeddings
                     )
                 )
                 memories.append(memory_embeddings)
                 memories_pos_embed.append(memory_tpos_embeddings)
 
             # Add non-conditional memories (memory from previous frames, or other depending on the memory strategy)
-            for i, (non_cond_mem, non_cond_mem_pos) in enumerate(
-                zip(
-                    non_conditional_memory_embeddings,
-                    non_conditional_memory_pos_embeddings,
-                )
-            ):
+            for i, non_cond_mem in enumerate(non_conditional_memories):
                 t_pos = i + 1
                 memory_embeddings, memory_tpos_embeddings = (
                     self._prepare_memory_for_memory_conditioning(
-                        t_pos, non_cond_mem, non_cond_mem_pos
+                        t_pos,
+                        non_cond_mem.memory_embeddings,
+                        non_cond_mem.memory_pos_embeddings,
                     )
                 )
                 memories.append(memory_embeddings)
@@ -411,7 +423,9 @@ class SAM2Generic(SAM2Base):
         """
 
         if points_coords is not None or boxes is not None:
-            assert orig_hw is not None, "Expected orig_hw to be provided if points_coords or boxes are provided"
+            assert (
+                orig_hw is not None
+            ), "Expected orig_hw to be provided if points_coords or boxes are provided"
 
         points = None
 
@@ -489,7 +503,7 @@ class SAM2Generic(SAM2Base):
         img_embeddings: list[torch.Tensor],
         prompt_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         multimask_output: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> SAM2Result:
 
         low_res_img_embeddings = img_embeddings[-1]
         high_res_img_embeddings = img_embeddings[:-1]
@@ -509,7 +523,9 @@ class SAM2Generic(SAM2Base):
             assert high_res_img_embeddings[1].shape == (B, C // 4, 2 * H, 2 * W)
 
         if prompt_embeddings is None:
-            sparse_prompt_embeddings, dense_prompt_embeddings = self.empty_prompt_embeddings
+            sparse_prompt_embeddings, dense_prompt_embeddings = (
+                self.empty_prompt_embeddings
+            )
             sparse_prompt_embeddings = sparse_prompt_embeddings.to(self.device)
             dense_prompt_embeddings = dense_prompt_embeddings.to(self.device)
         else:
@@ -518,10 +534,10 @@ class SAM2Generic(SAM2Base):
         prompt_positional_encoding = self.sam_prompt_encoder.get_dense_pe()
 
         (
-            low_res_masks_logits,
+            masks_logits,
             ious,
             sam_output_tokens,
-            object_score_logits,
+            obj_scores_logits,
         ) = self.sam_mask_decoder.forward(
             image_embeddings=low_res_img_embeddings,
             image_pe=prompt_positional_encoding,
@@ -534,7 +550,7 @@ class SAM2Generic(SAM2Base):
 
         # Upscale the masks to the image_size
         masks_logits = self._transforms.postprocess_masks(
-            low_res_masks_logits, (self.image_size, self.image_size)
+            masks_logits, (self.image_size, self.image_size)
         )
         masks_logits = torch.clamp(masks_logits, -32.0, 32.0)
 
@@ -551,17 +567,17 @@ class SAM2Generic(SAM2Base):
         # TODO: review this part. I'm not sure if this is correct.
         # Allow *soft* no obj ptr, unlike masks
         if self.soft_no_obj_ptr:
-            obj_visibility = torch.sigmoid(object_score_logits)
+            obj_visibility = torch.sigmoid(obj_scores_logits)
         else:
-            obj_visibility = (object_score_logits > 0).float()
+            obj_visibility = (obj_scores_logits > 0).float()
 
         if self.fixed_no_obj_ptr:
             obj_ptr = obj_visibility * obj_ptr
         obj_ptr = obj_ptr + (1 - obj_visibility) * self.no_obj_ptr
 
-        return (
-            masks_logits,
-            ious,
-            obj_ptr,
-            object_score_logits,
+        return SAM2Result(
+            masks_logits=masks_logits,
+            ious=ious,
+            obj_ptrs=obj_ptr,
+            obj_scores_logits=obj_scores_logits,
         )

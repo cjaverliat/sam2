@@ -15,12 +15,7 @@ from omegaconf import OmegaConf
 import sam2
 
 from sam2.modeling.sam2_generic import SAM2Generic
-from sam2.sam2_generic_video_memory import (
-    DefaultMemoryMemorizationStrategy,
-    DefaultMemorySelectionStrategy,
-    MemoryMemorizationStrategy,
-    MemorySelectionStrategy,
-)
+from sam2.modeling.sam2_memory import SAM2ObjectMemoryBank
 from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictor
 
 # Check if the user is running Python from the parent directory of the sam2 repo
@@ -148,9 +143,7 @@ def build_sam2_generic_video_predictor(
     device="cuda",
     mode="eval",
     hydra_overrides_extra=[],
-    apply_postprocessing=True,
-    memory_selection_strategy: MemorySelectionStrategy = DefaultMemorySelectionStrategy(),
-    memory_memorization_strategy: MemoryMemorizationStrategy = DefaultMemoryMemorizationStrategy(),
+    apply_postprocessing=True
 ) -> SAM2GenericVideoPredictor:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
@@ -175,8 +168,7 @@ def build_sam2_generic_video_predictor(
     model = instantiate(
         cfg.model,
         _recursive_=True,
-        memory_selection_strategy=memory_selection_strategy,
-        memory_memorization_strategy=memory_memorization_strategy,
+        memory_bank=SAM2ObjectMemoryBank(),
     )
     _load_checkpoint(model, ckpt_path)
     model = model.to(device)
