@@ -62,6 +62,14 @@ class ObjectMemoryBank(ABC):
     def __init__(self):
         self.known_obj_ids = set()
 
+    @abstractmethod
+    def count_stored_conditional_memories(self, obj_id: int) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_stored_non_conditional_memories(self, obj_id: int) -> int:
+        raise NotImplementedError
+
     def clear_known_obj_ids(self):
         self.known_obj_ids = set()
 

@@ -12,6 +12,7 @@ from sam2.modeling.sam2_prompt import SAM2Prompt
 
 import bisect
 
+
 class SAM2ObjectMemoryBank(ObjectMemoryBank):
     """
     Default implementation for the memory bank, as per SAM2 original paper.
@@ -31,6 +32,12 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         self.non_conditional_memories: dict[int, list[ObjectMemory]] = {}
         self.memory_temporal_stride = memory_temporal_stride
         self.storage_device = storage_device
+
+    def count_stored_conditional_memories(self, obj_id: int) -> int:
+        return len(self.conditional_memories.get(obj_id, []))
+
+    def count_stored_non_conditional_memories(self, obj_id: int) -> int:
+        return len(self.non_conditional_memories.get(obj_id, []))
 
     def try_add_memories(
         self,
@@ -105,7 +112,6 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                     cond_obj_memories[pos] = memory
                 else:
                     cond_obj_memories.insert(pos, memory)
-
             else:
                 non_cond_obj_memories = self.non_conditional_memories.setdefault(
                     obj_id, []
