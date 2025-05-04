@@ -12,35 +12,6 @@ from sam2.modeling.sam2_prompt import SAM2Prompt
 
 import bisect
 
-
-class SAM2ObjectMemory(ObjectMemory):
-
-    def __init__(
-        self,
-        obj_id: int,
-        frame_idx: int,
-        memory_embeddings: torch.Tensor,
-        memory_pos_embeddings: torch.Tensor,
-        ptr: torch.Tensor,
-        is_conditional: bool = False,
-    ):
-        self.obj_id = obj_id
-        self.frame_idx = frame_idx
-        self.memory_embeddings = memory_embeddings
-        self.memory_pos_embeddings = memory_pos_embeddings
-        self.ptr = ptr
-        self.is_conditional = is_conditional
-
-    def to(self, device: torch.device) -> SAM2ObjectMemory:
-        return SAM2ObjectMemory(
-            obj_id=self.obj_id,
-            frame_idx=self.frame_idx,
-            memory_embeddings=self.memory_embeddings.to(device),
-            memory_pos_embeddings=self.memory_pos_embeddings.to(device),
-            ptr=self.ptr.to(device),
-        )
-
-
 class SAM2ObjectMemoryBank(ObjectMemoryBank):
     """
     Default implementation for the memory bank, as per SAM2 original paper.
@@ -56,8 +27,8 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         super(SAM2ObjectMemoryBank, self).__init__()
         # Create the storage for the memories
         # The key is the object ID, the value is a list of memories sorted by frame index.
-        self.conditional_memories: dict[int, list[SAM2ObjectMemory]] = {}
-        self.non_conditional_memories: dict[int, list[SAM2ObjectMemory]] = {}
+        self.conditional_memories: dict[int, list[ObjectMemory]] = {}
+        self.non_conditional_memories: dict[int, list[ObjectMemory]] = {}
         self.memory_temporal_stride = memory_temporal_stride
         self.storage_device = storage_device
 
@@ -69,7 +40,7 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         memory_pos_embeddings: list[torch.Tensor],
         results: list[SAM2Result],
         prompts: list[SAM2Prompt | None],
-    ) -> list[tuple[bool, SAM2ObjectMemory]]:
+    ) -> list[tuple[bool, ObjectMemory]]:
         assert len(set(obj_ids)) == len(
             obj_ids
         ), f"obj_ids must be unique, got {obj_ids}"
@@ -91,7 +62,7 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
 
             is_conditional = prompt is not None
 
-            memory = SAM2ObjectMemory(
+            memory = ObjectMemory(
                 obj_id=obj_id,
                 frame_idx=frame_idx,
                 memory_embeddings=memory_embedding,
@@ -138,7 +109,7 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
 
     def prune_memories(
         self, obj_ids: list[int], current_frame_idx: int
-    ) -> dict[int, list[SAM2ObjectMemory]]:
+    ) -> dict[int, list[ObjectMemory]]:
         # The original SAM2 implementation has no forgetting strategy, so we don't remove any memories.
         return {}
 
@@ -175,19 +146,23 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
 
             # 2. Select the non-conditional memories
             # If an unselected conditioning frame is among the last frames, we still attend to it as if it's a non-conditioning frame.
-            
+
             selected_obj_non_conditional_memories = obj_non_conditional_memories
-            selected_obj_non_conditional_memories.extend(unselected_obj_conditional_memories)
+            selected_obj_non_conditional_memories.extend(
+                unselected_obj_conditional_memories
+            )
             selected_obj_non_conditional_memories = sorted(
                 selected_obj_non_conditional_memories, key=lambda x: x.frame_idx
             )
 
-            selected_obj_non_conditional_memories = _select_N_last_non_conditional_memories(
-                non_conditional_memories=selected_obj_non_conditional_memories,
-                N=max_non_conditional_memories,
-                current_frame_idx=current_frame_idx,
-                reverse_tracking=reverse_tracking,
-                temporal_stride=self.memory_temporal_stride,
+            selected_obj_non_conditional_memories = (
+                _select_N_last_non_conditional_memories(
+                    non_conditional_memories=selected_obj_non_conditional_memories,
+                    N=max_non_conditional_memories,
+                    current_frame_idx=current_frame_idx,
+                    reverse_tracking=reverse_tracking,
+                    temporal_stride=self.memory_temporal_stride,
+                )
             )
 
             # 3. Select the object pointer memories

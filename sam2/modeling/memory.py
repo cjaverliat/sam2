@@ -5,16 +5,24 @@ from abc import ABC, abstractmethod
 from sam2.modeling.sam2_prompt import SAM2Prompt
 from sam2.modeling.sam2_result import SAM2Result
 
-class ObjectMemory(ABC):
+class ObjectMemory:
 
     def __init__(
         self,
         obj_id: int,
-        frame_idx: int
+        frame_idx: int,
+        memory_embeddings: torch.Tensor,
+        memory_pos_embeddings: torch.Tensor,
+        ptr: torch.Tensor,
+        is_conditional: bool = False,
     ):
         self.obj_id = obj_id
         self.frame_idx = frame_idx
-
+        self.memory_embeddings = memory_embeddings
+        self.memory_pos_embeddings = memory_pos_embeddings
+        self.ptr = ptr
+        self.is_conditional = is_conditional
+    
     @abstractmethod
     def to(self, device: torch.device) -> ObjectMemory:
         raise NotImplementedError
