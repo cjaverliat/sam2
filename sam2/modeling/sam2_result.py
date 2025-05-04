@@ -9,7 +9,7 @@ class SAM2Result:
         masks_logits: torch.Tensor,
         ious: torch.Tensor,
         obj_ptrs: torch.Tensor,
-        obj_score_logits: torch.Tensor,
+        obj_scores_logits: torch.Tensor,
     ):
         assert (
             masks_logits.ndim == 4
@@ -19,8 +19,8 @@ class SAM2Result:
             obj_ptrs.ndim == 2
         ), f"Expected obj_ptrs to be of shape (B, N), got {obj_ptrs.shape}"
         assert (
-            obj_score_logits.ndim == 2
-        ), f"Expected obj_score_logits to be of shape (B, N), got {obj_score_logits.shape}"
+            obj_scores_logits.ndim == 2
+        ), f"Expected obj_score_logits to be of shape (B, N), got {obj_scores_logits.shape}"
 
         self.batch_size = masks_logits.shape[0]
 
@@ -31,30 +31,39 @@ class SAM2Result:
             obj_ptrs.shape[0] == self.batch_size
         ), f"Expected obj_ptrs to have batch size {self.batch_size}, got {obj_ptrs.shape[0]}"
         assert (
-            obj_score_logits.shape[0] == self.batch_size
-        ), f"Expected obj_score_logits to have batch size {self.batch_size}, got {obj_score_logits.shape[0]}"
+            obj_scores_logits.shape[0] == self.batch_size
+        ), f"Expected obj_score_logits to have batch size {self.batch_size}, got {obj_scores_logits.shape[0]}"
 
         self.masks_logits = masks_logits
         self.ious = ious
         self.obj_ptrs = obj_ptrs
-        self.obj_score_logits = obj_score_logits
+        self.obj_score_logits = obj_scores_logits
 
     def to(self, device: torch.device) -> SAM2Result:
         return SAM2Result(
             masks_logits=self.masks_logits.to(device),
             ious=self.ious.to(device),
             obj_ptrs=self.obj_ptrs.to(device),
-            obj_score_logits=self.obj_score_logits.to(device),
+            obj_scores_logits=self.obj_score_logits.to(device),
         )
 
-    def cat(self, results: list[SAM2Result]) -> SAM2Result:
+    @staticmethod
+    def cat(results: list[SAM2Result]) -> SAM2Result:
         return SAM2Result(
             masks_logits=torch.cat([r.masks_logits for r in results], dim=0),
             ious=torch.cat([r.ious for r in results], dim=0),
             obj_ptrs=torch.cat([r.obj_ptrs for r in results], dim=0),
-            obj_score_logits=torch.cat([r.obj_score_logits for r in results], dim=0),
+            obj_scores_logits=torch.cat([r.obj_score_logits for r in results], dim=0),
         )
-    
+
+    def __getitem__(self, idx: int) -> SAM2Result:
+        return SAM2Result(
+            masks_logits=self.masks_logits[idx].unsqueeze(0),
+            ious=self.ious[idx].unsqueeze(0),
+            obj_ptrs=self.obj_ptrs[idx].unsqueeze(0),
+            obj_scores_logits=self.obj_score_logits[idx].unsqueeze(0),
+        )
+
     @property
     def device(self) -> torch.device:
         return self.masks_logits.device
