@@ -25,7 +25,13 @@ class ObjectMemory:
     
     @abstractmethod
     def to(self, device: torch.device) -> ObjectMemory:
-        raise NotImplementedError
+        return ObjectMemory(
+            obj_id=self.obj_id,
+            frame_idx=self.frame_idx,
+            memory_embeddings=self.memory_embeddings.to(device),
+            memory_pos_embeddings=self.memory_pos_embeddings.to(device),
+            ptr=self.ptr.to(device),
+        )
 
 class ObjectMemorySelection:
 
