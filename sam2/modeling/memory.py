@@ -43,7 +43,7 @@ class ObjectMemorySelection:
     ):
         self.conditional_memories = conditional_memories
         self.non_conditional_memories = non_conditional_memories
-        self.object_memories = ptr_memories
+        self.ptr_memories = ptr_memories
 
     def to(self, device: torch.device) -> ObjectMemorySelection:
         return ObjectMemorySelection(
@@ -53,7 +53,7 @@ class ObjectMemorySelection:
             non_conditional_memories=[
                 memory.to(device) for memory in self.non_conditional_memories
             ],
-            ptr_memories=[memory.to(device) for memory in self.object_memories],
+            ptr_memories=[memory.to(device) for memory in self.ptr_memories],
         )
 
 
