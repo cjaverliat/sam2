@@ -42,16 +42,16 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
     def try_add_memories(
         self,
         frame_idx: int,
-        obj_ids: list[int],
+        objs_id: list[int],
         memory_embeddings: torch.Tensor,
         memory_pos_embeddings: torch.Tensor,
         results: SAM2Result,
         prompts: list[SAM2Prompt],
     ) -> list[tuple[bool, ObjectMemory]]:
-        n_objs = len(obj_ids)
-        assert len(set(obj_ids)) == len(
-            obj_ids
-        ), f"obj_ids must be unique, got {obj_ids}"
+        n_objs = len(objs_id)
+        assert len(set(objs_id)) == len(
+            objs_id
+        ), f"objs_id must be unique, got {objs_id}"
 
         assert (
             memory_embeddings.ndim == 4
@@ -70,18 +70,18 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         ), f"Expected {n_objs} results, got {results.batch_size}"
 
         prompts_dict = {p.obj_id: p for p in prompts}
-        prompts = [prompts_dict.get(obj_id, None) for obj_id in obj_ids]
+        prompts = [prompts_dict.get(obj_id, None) for obj_id in objs_id]
 
         ret = []
 
-        for i, obj_id in enumerate(obj_ids):
+        for i, obj_id in enumerate(objs_id):
             memory_embedding = memory_embeddings[[i]]
             memory_pos_embedding = memory_pos_embeddings[[i]]
             result = results[i]
             prompt = prompts[i]
             is_conditional = prompt is not None
 
-            self.known_obj_ids.add(obj_id)
+            self.known_objs_id.add(obj_id)
 
             memory = ObjectMemory(
                 obj_id=obj_id,
@@ -135,14 +135,14 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         return ret
 
     def prune_memories(
-        self, obj_ids: list[int], current_frame_idx: int
+        self, objs_id: list[int], current_frame_idx: int
     ) -> dict[int, list[ObjectMemory]]:
         # The original SAM2 implementation has no forgetting strategy, so we don't remove any memories.
         return {}
 
     def select_memories(
         self,
-        obj_ids: list[int],
+        objs_id: list[int],
         current_frame_idx: int,
         max_conditional_memories: int,
         max_non_conditional_memories: int,
@@ -151,13 +151,13 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         reverse_tracking: bool = False,
     ) -> dict[int, ObjectMemorySelection]:
 
-        assert len(set(obj_ids)) == len(
-            obj_ids
-        ), f"obj_ids must be unique, got {obj_ids}"
+        assert len(set(objs_id)) == len(
+            objs_id
+        ), f"objs_id must be unique, got {objs_id}"
 
         ret = {}
 
-        for obj_id in obj_ids:
+        for obj_id in objs_id:
 
             # 1. Select the conditional memories
             obj_conditional_memories = self.conditional_memories.get(obj_id, [])

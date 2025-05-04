@@ -60,7 +60,7 @@ class ObjectMemorySelection:
 class ObjectMemoryBank(ABC):
 
     def __init__(self):
-        self.known_obj_ids = set()
+        self.known_objs_id = set()
 
     @abstractmethod
     def count_stored_conditional_memories(self, obj_id: int) -> int:
@@ -70,14 +70,14 @@ class ObjectMemoryBank(ABC):
     def count_stored_non_conditional_memories(self, obj_id: int) -> int:
         raise NotImplementedError
 
-    def clear_known_obj_ids(self):
-        self.known_obj_ids = set()
+    def clear_known_objs_id(self):
+        self.known_objs_id = set()
 
     @abstractmethod
     def try_add_memories(
         self,
         frame_idx: int,
-        obj_ids: list[int],
+        objs_id: list[int],
         memory_embeddings: torch.Tensor,
         memory_pos_embeddings: torch.Tensor,
         results: SAM2Result,
@@ -88,7 +88,7 @@ class ObjectMemoryBank(ABC):
 
         Args:
             frame_idx: The frame index.
-            obj_ids: The object IDs of shape (B,).
+            objs_id: The object IDs of shape (B,).
             memory_embeddings: The memory embeddings of shape (B, N, H, W).
             memory_pos_embeddings: The memory positional embeddings of shape (B, N, H, W).
             results: The SAM2Result for all the objects. Expected to have batch size B.
@@ -100,12 +100,12 @@ class ObjectMemoryBank(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def prune_memories(self, obj_ids: list[int], current_frame_idx: int) -> dict[int, list[ObjectMemory]]:
+    def prune_memories(self, objs_id: list[int], current_frame_idx: int) -> dict[int, list[ObjectMemory]]:
         """
         Remove memories that are no longer needed for a list of objects and return the list of pruned memories.
 
         Args:
-            obj_ids: The object IDs.
+            objs_id: The object IDs.
             current_frame_idx: The current frame index.
 
         Returns:
@@ -116,7 +116,7 @@ class ObjectMemoryBank(ABC):
     @abstractmethod
     def select_memories(
         self,
-        obj_ids: list[int],
+        objs_id: list[int],
         current_frame_idx: int,
         max_conditional_memories: int,
         max_non_conditional_memories: int,
@@ -128,11 +128,11 @@ class ObjectMemoryBank(ABC):
         Select the memories for each object for conditioning the frame at current_frame_idx.
 
         Args:
-            obj_ids: The object IDs to select memories for.
+            objs_id: The object IDs to select memories for.
+            current_frame_idx: The current frame index.
             max_conditional_memories: The maximum number of conditional memories to select.
             max_non_conditional_memories: The maximum number of non-conditional memories to select.
             max_object_memories: The maximum number of object memories (obj_ptrs) to select.
-            current_frame_idx: The current frame index.
             reverse_tracking: Whether the tracking direction is reversed.
 
         Returns:

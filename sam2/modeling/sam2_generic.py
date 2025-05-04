@@ -100,7 +100,7 @@ class SAM2Generic(SAM2Base):
     @torch.inference_mode()
     def encode_memory(
         self,
-        img_embeddings: list[torch.Tensor],
+        low_res_img_embeddings: torch.Tensor,
         masks_logits: torch.Tensor,
         obj_score_logits: torch.Tensor,
         is_prompt: torch.BoolTensor,
@@ -109,7 +109,7 @@ class SAM2Generic(SAM2Base):
         Encode the image and its prediction into a memory.
 
         Args:
-            img_embeddings (list[torch.Tensor]): The image embeddings.
+            low_res_img_embeddings (torch.Tensor): The low-resolution image embeddings.
             masks_high_res_logits (torch.Tensor): The high-resolution mask logits.
             object_score_logits (torch.Tensor): The object score logits.
             is_prompt (torch.BoolTensor): Whether the masks are from a user prompt or from a SAM prediction.
@@ -119,10 +119,10 @@ class SAM2Generic(SAM2Base):
             memory_pos_embeddings (torch.Tensor): The encoded memory position embeddings.
         """
 
-        assert [
-            t.ndim == 4 for t in img_embeddings
-        ], f"Expected all levels of img_embeddings to be of shape (B, C, H, W), got {[t.shape for t in img_embeddings]}"
-        B = img_embeddings[0].shape[0]
+        assert (
+            low_res_img_embeddings.ndim == 4
+        ), f"Expected low_res_img_embeddings to be of shape (B, C, H, W), got {low_res_img_embeddings.shape}"
+        B = low_res_img_embeddings.shape[0]
         assert (
             masks_logits.ndim == 4 and masks_logits.shape[0] == B
         ), f"Expected masks_logits to be of shape (B, C, H, W), got {masks_logits.shape}"
@@ -133,8 +133,6 @@ class SAM2Generic(SAM2Base):
         assert is_prompt.shape == (
             B,
         ), f"Expected is_prompt to be of shape ({B},), got {is_prompt.shape}"
-
-        low_res_img_embeddings = img_embeddings[-1]
 
         if self.non_overlap_masks_for_mem_enc and not self.training:
             masks_logits = self._apply_non_overlapping_constraints(masks_logits)
@@ -180,91 +178,273 @@ class SAM2Generic(SAM2Base):
 
         return memory_embeddings, memory_pos_embeddings
 
-    @torch.inference_mode()
-    def _prepare_obj_ptrs_for_memory_conditioning(
+    def _get_no_mem_pos_enc(self, batch_size: int) -> torch.Tensor:
+        no_mem_pos_enc = self.no_mem_pos_enc
+
+        if self.mem_dim < self.hidden_dim:
+            # Split a pointer into (self.hidden_dim // self.mem_dim) tokens for self.mem_dim < self.hidden_dim
+            no_mem_pos_enc = no_mem_pos_enc.reshape(
+                -1,
+                1,
+                self.hidden_dim // self.mem_dim,
+                self.mem_dim,
+            )
+            no_mem_pos_enc = no_mem_pos_enc.expand(-1, batch_size, -1, -1)
+            no_mem_pos_enc = no_mem_pos_enc.permute(0, 2, 1, 3).flatten(0, 1)
+        else:
+            no_mem_pos_enc = no_mem_pos_enc.expand(-1, batch_size, -1)
+
+        return no_mem_pos_enc
+
+    def _get_no_mem_embed(self, batch_size: int) -> torch.Tensor:
+        no_mem_embed = self.no_mem_embed
+
+        if self.mem_dim < self.hidden_dim:
+            # Split a pointer into (self.hidden_dim // self.mem_dim) tokens for self.mem_dim < self.hidden_dim
+            no_mem_embed = no_mem_embed.reshape(
+                -1,
+                1,
+                self.hidden_dim // self.mem_dim,
+                self.mem_dim,
+            )
+            no_mem_embed = no_mem_embed.expand(-1, batch_size, -1, -1)
+            no_mem_embed = no_mem_embed.permute(0, 2, 1, 3).flatten(0, 1)
+        else:
+            no_mem_embed = no_mem_embed.expand(-1, batch_size, -1)
+        return no_mem_embed
+
+    def _prepare_obj_ptrs_memories(
         self,
         current_frame_idx: int,
-        obj_ptrs: torch.Tensor,
-        obj_ptrs_frame_idx: list[int],
-        reverse_time: bool = False,
+        obj_ptrs_memories_mask: torch.BoolTensor,
+        obj_ptrs_memories: torch.Tensor,
+        obj_ptrs_memories_frame_idx: torch.Tensor,
+        reverse_tracking: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Encode the object pointers into a memory.
+        Encode the object pointers into a memory, adding a temporal positional embedding based
+        on how far each object pointer is from the current frame (sine embedding normalized by the max pointer num).
         """
-        assert (
-            obj_ptrs.ndim == 3
-        ), f"Expected obj_ptrs to be of shape (ptr_seq_len, B, C), got {obj_ptrs.shape}"
+        B, n_obj_ptrs_mem, C = obj_ptrs_memories.shape
 
-        B = obj_ptrs.shape[1]
+        # (B, n_obj_ptrs_mem, C) -> (n_obj_ptrs_mem, B, C)
+        obj_ptrs_memories = obj_ptrs_memories.permute(1, 0, 2)
 
-        tpos_sign_mul = -1 if reverse_time else 1
+        tpos_sign_mul = -1 if reverse_tracking else 1
 
-        obj_ptrs_frame_idx = torch.tensor(obj_ptrs_frame_idx, device=obj_ptrs.device)
-
-        obj_tpos_rel = (
-            (current_frame_idx - obj_ptrs_frame_idx) * tpos_sign_mul
+        obj_trel = (
+            (current_frame_idx - obj_ptrs_memories_frame_idx) * tpos_sign_mul
             if self.use_signed_tpos_enc_to_obj_ptrs
-            else torch.abs(current_frame_idx - obj_ptrs_frame_idx)
+            else torch.abs(current_frame_idx - obj_ptrs_memories_frame_idx)
         )
 
         if self.add_tpos_enc_to_obj_ptrs:
             t_diff_max = self.max_obj_ptrs_in_encoder - 1
-            tpos_dim = (
-                self.hidden_dim if self.proj_tpos_enc_in_obj_ptrs else self.mem_dim
-            )
+            tpos_dim = C if self.proj_tpos_enc_in_obj_ptrs else self.mem_dim
 
-            obj_tpos_rel = get_1d_sine_pe(obj_tpos_rel / t_diff_max, dim=tpos_dim)
-            obj_tpos_rel = self.obj_ptr_tpos_proj.forward(obj_tpos_rel)
-            obj_tpos_rel = obj_tpos_rel.unsqueeze(1).expand(-1, B, self.mem_dim)
+            obj_trel = get_1d_sine_pe(obj_trel / t_diff_max, dim=tpos_dim)
+            obj_trel = self.obj_ptr_tpos_proj.forward(obj_trel)
+            # (B, n_obj_ptrs_mem, C) -> (n_obj_ptrs_mem, B, C)
+            obj_trel = obj_trel.permute(1, 0, 2)
         else:
-            obj_tpos_rel = obj_ptrs.new_zeros(len(obj_tpos_rel), B, self.mem_dim)
+            obj_trel = obj_ptrs_memories.new_zeros(n_obj_ptrs_mem, B, self.mem_dim)
 
         if self.mem_dim < self.hidden_dim:
             # Split a pointer into (self.hidden_dim // self.mem_dim) tokens for self.mem_dim < self.hidden_dim
-            obj_ptrs = obj_ptrs.reshape(
+            obj_ptrs_memories = obj_ptrs_memories.reshape(
                 -1,
                 B,
                 self.hidden_dim // self.mem_dim,
                 self.mem_dim,
             )
-            obj_ptrs = obj_ptrs.permute(0, 2, 1, 3).flatten(0, 1)
-            obj_tpos_rel = obj_tpos_rel.repeat_interleave(
+            obj_ptrs_memories = obj_ptrs_memories.permute(0, 2, 1, 3).flatten(0, 1)
+            obj_trel = obj_trel.repeat_interleave(
                 self.hidden_dim // self.mem_dim, dim=0
             )
 
-        return obj_ptrs, obj_tpos_rel
+        no_mem_embed = self._get_no_mem_embed(B)
+        no_mem_pos_enc = self._get_no_mem_pos_enc(B)
 
-    @torch.inference_mode()
-    def _prepare_memory_for_memory_conditioning(
+        obj_ptrs_memories_mask = (
+            obj_ptrs_memories_mask.permute(1, 0)
+            .repeat(no_mem_embed.shape[0], 1)
+            .unsqueeze(-1)
+            .expand(-1, -1, self.mem_dim)
+        )
+
+        obj_ptrs_memories = torch.where(
+            obj_ptrs_memories_mask,
+            obj_ptrs_memories,
+            no_mem_embed.repeat(n_obj_ptrs_mem, 1, 1),
+        )
+
+        obj_trel = torch.where(
+            obj_ptrs_memories_mask,
+            obj_trel,
+            no_mem_pos_enc.repeat(n_obj_ptrs_mem, 1, 1),
+        )
+
+        return obj_ptrs_memories, obj_trel
+
+    def _prepare_conditional_memories(
         self,
-        t_pos: int,
-        memory_embeddings: torch.Tensor,
-        memory_pos_embeddings: torch.Tensor,
+        conditional_memories_mask: torch.BoolTensor,
+        conditional_memories_embeddings: torch.Tensor,
+        conditional_memories_pos_embeddings: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        memory_embeddings = memory_embeddings.flatten(2).permute(
-            2, 0, 1
-        )  # (B, C, H, W) -> (H*W, B, C)
-        memory_pos_embeddings = memory_pos_embeddings.flatten(2).permute(
-            2, 0, 1
-        )  # (B, C, H, W) -> (H*W, B, C)
+
+        B, n_cond_mem, C, H, W = conditional_memories_embeddings.shape
+
+        # The temporal positional encoding is always the last one for conditional memories (reserved)
+        conditional_memory_pos_embeddings_with_tpos = (
+            conditional_memories_pos_embeddings
+            + self.maskmem_tpos_enc[self.num_maskmem - 1][None, None, :, :, :]
+        )
+
+        # (B, n_cond_mem, C, H, W) -> (n_cond_mem, H, W, B, C) -> (n_cond_mem*H*W, B, C)
+        conditional_memories_embeddings = conditional_memories_embeddings.permute(
+            1, 3, 4, 0, 2
+        ).reshape(n_cond_mem * H * W, B, C)
+        # (B, n_cond_mem, C, H, W) -> (n_cond_mem, H, W, B, C) -> (n_cond_mem*H*W, B, C)
+        conditional_memory_pos_embeddings_with_tpos = (
+            conditional_memory_pos_embeddings_with_tpos.permute(1, 3, 4, 0, 2).reshape(
+                n_cond_mem * H * W, B, C
+            )
+        )
+
+        no_mem_embed = self._get_no_mem_embed(B)
+        no_mem_pos_enc = self._get_no_mem_pos_enc(B)
+
+        conditional_memories_mask = (
+            conditional_memories_mask.permute(1, 0)
+            .repeat(H * W, 1)
+            .unsqueeze(-1)
+            .expand(-1, -1, self.mem_dim)
+        )
+
+        conditional_memories_embeddings = torch.where(
+            conditional_memories_mask,
+            conditional_memories_embeddings,
+            no_mem_embed.repeat((n_cond_mem * H * W) // no_mem_embed.shape[0], 1, 1),
+        )
+
+        conditional_memory_pos_embeddings_with_tpos = torch.where(
+            conditional_memories_mask,
+            conditional_memory_pos_embeddings_with_tpos,
+            no_mem_pos_enc.repeat(
+                (n_cond_mem * H * W) // no_mem_pos_enc.shape[0], 1, 1
+            ),
+        )
+
+        return (
+            conditional_memories_embeddings,
+            conditional_memory_pos_embeddings_with_tpos,
+        )
+
+    def _prepare_non_conditional_memories(
+        self,
+        current_frame_idx: int,
+        non_conditional_memories_mask: torch.BoolTensor,
+        non_conditional_memories_embeddings: torch.Tensor,
+        non_conditional_memories_pos_embeddings: torch.Tensor,
+        non_conditional_memories_frame_idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Prepare the non-conditional memories for the memory conditioning by adding the temporal positional encoding.
+
+        Args:
+            current_frame_idx (int): The index of the current frame.
+            non_conditional_memories_embeddings (torch.Tensor): The embeddings of the non-conditional memories.
+            non_conditional_memories_pos_embeddings (torch.Tensor): The position embeddings of the non-conditional memories.
+            non_conditional_memories_frame_idx (torch.Tensor): The frame indices of the non-conditional memories.
+
+        Returns:
+            memory_embeddings (torch.Tensor): The embeddings of the non-conditional memories.
+            memory_pos_embeddings (torch.Tensor): The position embeddings of the non-conditional memories with temporal positional encoding.
+        """
+        B, n_non_cond_mem, C, H, W = non_conditional_memories_embeddings.shape
+
+        # Sort by distance to current frame along the n_non_cond_mem dimension (closest frames first)
+        frame_distances = torch.abs(
+            non_conditional_memories_frame_idx - current_frame_idx
+        )
+        sorted_indices = torch.argsort(frame_distances, dim=1)
+        batch_indices = torch.arange(
+            B, device=non_conditional_memories_embeddings.device
+        ).unsqueeze(1)
+        memory_embeddings = non_conditional_memories_embeddings[
+            batch_indices, sorted_indices
+        ]
+        memory_pos_embeddings = non_conditional_memories_pos_embeddings[
+            batch_indices, sorted_indices
+        ]
+
+        # Relative position to current frame, starting from 1 (closest frame) to self.num_maskmem - 2 (farthest frame).
+        # The t_rel = self.num_maskmem - 1 is reserved for conditional memories.
+        t_rel = torch.arange(
+            0, self.num_maskmem - 1, 1, device=memory_embeddings.device
+        )
 
         # Add temporal positional encoding
-        memory_tpos_embeddings = (
-            memory_pos_embeddings + self.maskmem_tpos_enc[self.num_maskmem - t_pos - 1]
+        memory_tpos_embeddings = memory_pos_embeddings + self.maskmem_tpos_enc[
+            t_rel
+        ].unsqueeze(0)
+
+        # (B, n_non_cond_mem, C, H, W) -> (n_non_cond_mem, H, W, B, C) -> (n_non_cond_mem*H*W, B, C)
+        memory_embeddings = memory_embeddings.permute(1, 3, 4, 0, 2).reshape(
+            n_non_cond_mem * H * W, B, C
         )
+        # (B, n_non_cond_mem, C, H, W) -> (n_non_cond_mem, H, W, B, C) -> (n_non_cond_mem*H*W, B, C)
+        memory_tpos_embeddings = memory_tpos_embeddings.permute(1, 3, 4, 0, 2).reshape(
+            n_non_cond_mem * H * W, B, C
+        )
+
+        no_mem_embed = self._get_no_mem_embed(B)
+        no_mem_pos_enc = self._get_no_mem_pos_enc(B)
+
+        non_conditional_memories_mask = (
+            non_conditional_memories_mask.permute(1, 0)
+            .repeat(H * W, 1)
+            .unsqueeze(-1)
+            .expand(-1, -1, self.mem_dim)
+        )
+
+        memory_embeddings = torch.where(
+            non_conditional_memories_mask,
+            memory_embeddings,
+            no_mem_embed.repeat(
+                (n_non_cond_mem * H * W) // no_mem_embed.shape[0], 1, 1
+            ),
+        )
+
+        memory_tpos_embeddings = torch.where(
+            non_conditional_memories_mask,
+            memory_tpos_embeddings,
+            no_mem_pos_enc.repeat(
+                (n_non_cond_mem * H * W) // no_mem_pos_enc.shape[0], 1, 1
+            ),
+        )
+
         return memory_embeddings, memory_tpos_embeddings
 
     @torch.inference_mode()
     def condition_image_embeddings_on_memories(
         self,
         frame_idx: int,
-        img_embeddings: list[torch.Tensor],
-        img_pos_embeddings: list[torch.Tensor],
-        conditional_memories: list[ObjectMemory],
-        non_conditional_memories: list[ObjectMemory],
-        ptr_memories: list[ObjectMemory],
-        reverse_time: bool = False,
-    ) -> list[torch.Tensor]:
+        low_res_img_embeddings: torch.Tensor,
+        low_res_img_pos_embeddings: torch.Tensor,
+        conditional_memories_mask: torch.BoolTensor,
+        conditional_memories_embeddings: torch.Tensor,
+        conditional_memories_pos_embeddings: torch.Tensor,
+        non_conditional_memories_mask: torch.BoolTensor,
+        non_conditional_memories_embeddings: torch.Tensor,
+        non_conditional_memories_pos_embeddings: torch.Tensor,
+        non_conditional_memories_frame_idx: torch.Tensor,
+        obj_ptrs_memories_mask: torch.BoolTensor,
+        obj_ptrs_memories: torch.Tensor,
+        obj_ptrs_memories_frame_idx: torch.Tensor,
+        reverse_tracking: bool = False,
+    ) -> torch.Tensor:
         """
         Condition the image embeddings on the memory embeddings.
 
@@ -275,115 +455,171 @@ class SAM2Generic(SAM2Base):
             frame_idx (int): The index of the current frame.
             img_embeddings (list[torch.Tensor]): The image embeddings.
             img_pos_embeddings (list[torch.Tensor]): The image position embeddings.
-            conditional_memories (list[ObjectMemory]): The conditional memories.
-            non_conditional_memories (list[ObjectMemory]): The non conditional memories.
-            ptr_memories (list[ObjectMemory]): The pointer memories.
-            reverse_time (bool): Whether to reverse the time.
+            conditional_memories_pad_mask (torch.BoolTensor): Mask indicating which conditional memories are just padding.
+            conditional_memories_embeddings (torch.Tensor): The conditional memories embeddings.
+            conditional_memories_pos_embeddings (torch.Tensor): The conditional memories position embeddings.
+            non_conditional_memories_pad_mask (torch.BoolTensor): Mask indicating which non conditional memories are just padding.
+            non_conditional_memories_embeddings (torch.Tensor): The non conditional memories embeddings.
+            non_conditional_memories_pos_embeddings (torch.Tensor): The non conditional memories position embeddings.
+            non_conditional_memories_frame_idx (torch.Tensor): The non conditional memories frame index.
+            obj_ptrs_memories_mask (torch.BoolTensor): Mask indicating which object pointer memories are just padding.
+            obj_ptrs_memories (torch.Tensor): The object pointer memories embeddings.
+            obj_ptrs_memories_frame_idx (torch.Tensor): The object pointer memories frame index.
+            reverse_tracking (bool): Whether to reverse the tracking.
 
         Returns:
-            list[torch.Tensor]: The conditioned image embeddings.
+            torch.Tensor: The conditioned low-res image embeddings.
         """
 
-        # Stack the pointer memories along a new sequence dimension (ptr_seq_len, B, C)
-        if len(ptr_memories) > 0:
-            obj_ptrs_seq = torch.stack([m.ptr for m in ptr_memories], dim=0)
-        else:
-            B = img_embeddings[0].shape[0]
-            obj_ptrs_seq = torch.zeros(
-                (
-                    0,
-                    B,
-                    self.mem_dim,
-                ),
-                device=self.device,
-            )
-        obj_ptrs_frame_indices = [m.frame_idx for m in ptr_memories]
+        M = self.mem_dim
 
-        assert (
-            self.max_cond_frames_in_attn == -1
-            or len(conditional_memories) <= self.max_cond_frames_in_attn
-        ), f"Expected at most {self.max_cond_frames_in_attn} conditional memories, got {len(conditional_memories)}"
-        assert (
-            len(non_conditional_memories) <= self.num_maskmem - 1
-        ), f"Expected at most {self.num_maskmem - 1} non-conditional memories, got {len(non_conditional_memories)}"
-        assert (
-            self.max_obj_ptrs_in_encoder == -1
-            or len(ptr_memories) <= self.max_obj_ptrs_in_encoder
-        ), f"Expected at most {self.max_obj_ptrs_in_encoder} object pointer memories, got {len(ptr_memories)}"
-
-        low_res_img_embeddings = img_embeddings[-1]
-        low_res_img_pos_embeddings = img_pos_embeddings[-1]
-        high_res_img_embeddings = img_embeddings[:-1]
+        assert low_res_img_embeddings.ndim == 4 and low_res_img_embeddings.shape[
+            -2:
+        ] == (
+            self.mem_dim,
+            self.mem_dim,
+        ), f"Expected low_res_img_embeddings to be of shape (B, C, {M}, {M}), got {low_res_img_embeddings.shape}"
 
         B, C, H, W = low_res_img_embeddings.shape
 
-        n_conditional_memories = len(conditional_memories)
-        n_non_conditional_memories = len(non_conditional_memories)
-        n_ptrs_memories = len(obj_ptrs_seq)
+        assert low_res_img_pos_embeddings.shape == (
+            B,
+            C,
+            self.mem_dim,
+            self.mem_dim,
+        ), f"Expected low_res_img_pos_embeddings to be of shape {(B, C, M, M)}, got {low_res_img_pos_embeddings.shape}"
+        assert conditional_memories_embeddings.shape[
+            0
+        ] == B and conditional_memories_embeddings.shape[-3:] == (
+            self.mem_dim,
+            self.mem_dim,
+            self.mem_dim,
+        ), f"Expected conditional_memories_embeddings to be of shape ({B}, n_cond_mem, {M}, {M}, {M}), got {conditional_memories_embeddings.shape}"
 
-        if (
-            n_conditional_memories == 0
-            and n_non_conditional_memories == 0
-            and n_ptrs_memories == 0
-        ):
+        n_cond_mem = conditional_memories_embeddings.shape[-4]
+
+        assert conditional_memories_mask.shape == (
+            B,
+            n_cond_mem,
+        ), f"Expected conditional_memories_mask to be of shape (B, n_cond_mem), got {conditional_memories_mask.shape}"
+
+        assert conditional_memories_pos_embeddings.shape == (
+            B,
+            n_cond_mem,
+            self.mem_dim,
+            self.mem_dim,
+            self.mem_dim,
+        ), f"Expected conditional_memories_pos_embeddings to be of shape {(B, n_cond_mem, M, M, M)}, got {conditional_memories_pos_embeddings.shape}"
+        assert non_conditional_memories_embeddings.shape[
+            0
+        ] == B and non_conditional_memories_embeddings.shape[-3:] == (
+            self.mem_dim,
+            self.mem_dim,
+            self.mem_dim,
+        ), f"Expected non_conditional_memories_embeddings to be of shape ({B}, n_non_cond_mem, {M}, {M}, {M}), got {non_conditional_memories_embeddings.shape}"
+
+        n_non_cond_mem = non_conditional_memories_embeddings.shape[-4]
+
+        assert non_conditional_memories_mask.shape == (
+            B,
+            n_non_cond_mem,
+        ), f"Expected non_conditional_memories_mask to be of shape (B, n_non_cond_mem), got {non_conditional_memories_mask.shape}"
+
+        assert non_conditional_memories_pos_embeddings.shape == (
+            B,
+            n_non_cond_mem,
+            self.mem_dim,
+            self.mem_dim,
+            self.mem_dim,
+        ), f"Expected non_conditional_memories_pos_embeddings to be of shape {(B, n_non_cond_mem, M, M, M)}, got {non_conditional_memories_pos_embeddings.shape}"
+        assert (
+            non_conditional_memories_frame_idx.shape[0] == B
+        ), f"Expected non_conditional_memories_frame_idx to be of shape (B, n_non_cond_mem), got {non_conditional_memories_frame_idx.shape}"
+        assert (
+            obj_ptrs_memories.shape[0] == B
+            and obj_ptrs_memories.shape[-1] == self.hidden_dim
+        ), f"Expected obj_ptrs_memories to be of shape ({B}, n_obj_ptrs_mem, {self.hidden_dim}), got {obj_ptrs_memories.shape}"
+
+        n_obj_ptrs_mem = obj_ptrs_memories.shape[-2]
+
+        assert obj_ptrs_memories_mask.shape == (
+            B,
+            n_obj_ptrs_mem,
+        ), f"Expected obj_ptrs_memories_mask to be of shape (B, n_obj_ptrs_mem), got {obj_ptrs_memories_mask.shape}"
+
+        assert obj_ptrs_memories_frame_idx.shape == (
+            B,
+            n_obj_ptrs_mem,
+        ), f"Expected obj_ptrs_memories_frame_idx to be of shape {(B, n_obj_ptrs_mem)}, got {obj_ptrs_memories_frame_idx.shape}"
+
+        if n_cond_mem == 0 and n_non_cond_mem == 0 and n_obj_ptrs_mem == 0:
             # We don't have any memories, we add the no-mem embedding
             if self.directly_add_no_mem_embed:
                 # Directly add the no-mem embedding (instead of using the transformer encoder)
-                low_res_img_embeddings = low_res_img_embeddings.flatten(2).permute(
-                    2, 0, 1
-                )  # (B, C, H, W) -> (H*W, B, C)
-                low_res_img_embeddings = low_res_img_embeddings + self.no_mem_embed
-                low_res_img_embeddings = low_res_img_embeddings.permute(1, 2, 0).view(
-                    B, C, H, W
+
+                # (1, 1, 256) -> (B, 256, 1, 1)
+                no_mem_embed = (
+                    self.no_mem_embed.permute(0, 2, 1)
+                    .view(1, C, 1, 1)
+                    .expand(B, -1, -1, -1)
                 )
-                return low_res_img_embeddings
+
+                low_res_img_embeddings_with_mem = low_res_img_embeddings + no_mem_embed
+                return low_res_img_embeddings_with_mem
 
             # Use a dummy token on the first frame (to avoid empty memory input to tranformer encoder)
-            memories = [self.no_mem_embed.expand(1, B, self.mem_dim)]
-            memories_pos_embed = [self.no_mem_pos_enc.expand(1, B, self.mem_dim)]
+            memories = self.no_mem_embed.expand(1, B, self.mem_dim)
+            memories_pos_embed = self.no_mem_pos_enc.expand(1, B, self.mem_dim)
             num_obj_ptr_tokens = 0
 
         else:
 
-            memories = []
-            memories_pos_embed = []
-
             # Add conditional memories (prompt from the user)
-            for cond_mem in conditional_memories:
-                memory_embeddings, memory_tpos_embeddings = (
-                    self._prepare_memory_for_memory_conditioning(
-                        0, cond_mem.memory_embeddings, cond_mem.memory_pos_embeddings
-                    )
+            conditional_memories_embeddings, conditional_memories_pos_embeddings = (
+                self._prepare_conditional_memories(
+                    conditional_memories_mask=conditional_memories_mask,
+                    conditional_memories_embeddings=conditional_memories_embeddings,
+                    conditional_memories_pos_embeddings=conditional_memories_pos_embeddings,
                 )
-                memories.append(memory_embeddings)
-                memories_pos_embed.append(memory_tpos_embeddings)
+            )
 
-            # Add non-conditional memories (memory from previous frames, or other depending on the memory strategy)
-            for i, non_cond_mem in enumerate(non_conditional_memories):
-                t_pos = i + 1
-                memory_embeddings, memory_tpos_embeddings = (
-                    self._prepare_memory_for_memory_conditioning(
-                        t_pos,
-                        non_cond_mem.memory_embeddings,
-                        non_cond_mem.memory_pos_embeddings,
-                    )
-                )
-                memories.append(memory_embeddings)
-                memories_pos_embed.append(memory_tpos_embeddings)
+            # Add non-conditional memories
+            (
+                non_conditional_memories_embeddings,
+                non_conditional_memories_pos_embeddings,
+            ) = self._prepare_non_conditional_memories(
+                current_frame_idx=frame_idx,
+                non_conditional_memories_mask=non_conditional_memories_mask,
+                non_conditional_memories_embeddings=non_conditional_memories_embeddings,
+                non_conditional_memories_pos_embeddings=non_conditional_memories_pos_embeddings,
+                non_conditional_memories_frame_idx=non_conditional_memories_frame_idx,
+            )
+
+            memories = torch.cat(
+                [conditional_memories_embeddings, non_conditional_memories_embeddings],
+                dim=0,
+            )
+            memories_pos_embed = torch.cat(
+                [
+                    conditional_memories_pos_embeddings,
+                    non_conditional_memories_pos_embeddings,
+                ],
+                dim=0,
+            )
+
             if self.use_obj_ptrs_in_encoder:
 
-                obj_ptrs_enc, obj_pos_enc = (
-                    self._prepare_obj_ptrs_for_memory_conditioning(
-                        frame_idx, obj_ptrs_seq, obj_ptrs_frame_indices, reverse_time
-                    )
+                obj_ptrs_enc, obj_pos_enc = self._prepare_obj_ptrs_memories(
+                    current_frame_idx=frame_idx,
+                    obj_ptrs_memories_mask=obj_ptrs_memories_mask,
+                    obj_ptrs_memories=obj_ptrs_memories,
+                    obj_ptrs_memories_frame_idx=obj_ptrs_memories_frame_idx,
+                    reverse_tracking=reverse_tracking,
                 )
-
-                memories.append(obj_ptrs_enc)
-                memories_pos_embed.append(obj_pos_enc)
                 num_obj_ptr_tokens = obj_ptrs_enc.shape[0]
 
-        memory = torch.cat(memories, dim=0)
-        memory_pos_embed = torch.cat(memories_pos_embed, dim=0)
+                memories = torch.cat([memories, obj_ptrs_enc], dim=0)
+                memories_pos_embed = torch.cat([memories_pos_embed, obj_pos_enc], dim=0)
 
         low_res_img_embeddings = low_res_img_embeddings.flatten(2).permute(
             2, 0, 1
@@ -392,11 +628,11 @@ class SAM2Generic(SAM2Base):
             2, 0, 1
         )  # (B, C, H, W) -> (H*W, B, C)
 
-        low_res_img_embeddings_with_mem = self.memory_attention(
+        low_res_img_embeddings_with_mem: torch.Tensor = self.memory_attention(
             curr=low_res_img_embeddings,
             curr_pos=low_res_img_pos_embeddings,
-            memory=memory,
-            memory_pos=memory_pos_embed,
+            memory=memories,
+            memory_pos=memories_pos_embed,
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
         # reshape the output (HW)BC => BCHW
@@ -404,7 +640,7 @@ class SAM2Generic(SAM2Base):
             1, 2, 0
         ).view(B, C, H, W)
 
-        return high_res_img_embeddings + [low_res_img_embeddings_with_mem]
+        return low_res_img_embeddings_with_mem
 
     @torch.inference_mode()
     def encode_prompts(
@@ -455,14 +691,6 @@ class SAM2Generic(SAM2Base):
                 points_coords, normalize=True, orig_hw=orig_hw
             )
             points = (points_coords, points_labels)
-
-        # TODO: Doesn't seems to be necessary
-        # else:
-        #     # If no points are provided, pad with an empty point (with label -1)
-        #     points_coords = torch.zeros(batch_size, 1, 2, device=self.device)
-        #     points_labels = -torch.ones(
-        #         batch_size, 1, dtype=torch.int32, device=self.device
-        #     )
 
         masks_low_res_logits = None
 
@@ -537,6 +765,8 @@ class SAM2Generic(SAM2Base):
             )
             sparse_prompt_embeddings = sparse_prompt_embeddings.to(self.device)
             dense_prompt_embeddings = dense_prompt_embeddings.to(self.device)
+            sparse_prompt_embeddings = sparse_prompt_embeddings.expand(B, -1, -1)
+            dense_prompt_embeddings = dense_prompt_embeddings.expand(B, -1, -1, -1)
         else:
             sparse_prompt_embeddings, dense_prompt_embeddings = prompt_embeddings
 
