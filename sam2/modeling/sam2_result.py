@@ -73,5 +73,5 @@ class SAM2Result:
         best_mask_idx = torch.argmax(self.ious, dim=1, keepdim=True)
         batch_indices = torch.arange(
             self.masks_logits.shape[0], device=self.masks_logits.device
-        )
+        ).unsqueeze(1)
         return self.masks_logits[batch_indices, best_mask_idx]
