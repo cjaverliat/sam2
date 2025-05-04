@@ -119,11 +119,20 @@ class SAM2Generic(SAM2Base):
             memory_pos_embeddings (torch.Tensor): The encoded memory position embeddings.
         """
 
-        assert [t.ndim == 4 for t in img_embeddings], f"Expected all levels of img_embeddings to be of shape (B, C, H, W), got {[t.shape for t in img_embeddings]}"
+        assert [
+            t.ndim == 4 for t in img_embeddings
+        ], f"Expected all levels of img_embeddings to be of shape (B, C, H, W), got {[t.shape for t in img_embeddings]}"
         B = img_embeddings[0].shape[0]
-        assert masks_logits.ndim == 4 and masks_logits.shape[0] == B, f"Expected masks_logits to be of shape (B, H, W, C), got {masks_logits.shape}"
-        assert obj_score_logits.shape == (B, 1), f"Expected obj_score_logits to be of shape ({B}, 1), got {obj_score_logits.shape}"
-        assert is_prompt.shape == (B,), f"Expected is_prompt to be of shape ({B},), got {is_prompt.shape}"
+        assert (
+            masks_logits.ndim == 4 and masks_logits.shape[0] == B
+        ), f"Expected masks_logits to be of shape (B, C, H, W), got {masks_logits.shape}"
+        assert obj_score_logits.shape == (
+            B,
+            1,
+        ), f"Expected obj_score_logits to be of shape ({B}, 1), got {obj_score_logits.shape}"
+        assert is_prompt.shape == (
+            B,
+        ), f"Expected is_prompt to be of shape ({B},), got {is_prompt.shape}"
 
         low_res_img_embeddings = img_embeddings[-1]
 
@@ -138,7 +147,7 @@ class SAM2Generic(SAM2Base):
         )
 
         mask_for_mem = torch.where(
-            binarize,
+            binarize.reshape((-1, 1, 1, 1)),
             (masks_logits > self.mask_threshold).float(),
             torch.sigmoid(
                 masks_logits
