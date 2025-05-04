@@ -36,38 +36,52 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         self,
         frame_idx: int,
         obj_ids: list[int],
-        memory_embeddings: list[torch.Tensor],
-        memory_pos_embeddings: list[torch.Tensor],
-        results: list[SAM2Result],
-        prompts: list[SAM2Prompt | None],
+        memory_embeddings: torch.Tensor,
+        memory_pos_embeddings: torch.Tensor,
+        results: SAM2Result,
+        prompts: list[SAM2Prompt],
     ) -> list[tuple[bool, ObjectMemory]]:
+        n_objs = len(obj_ids)
         assert len(set(obj_ids)) == len(
             obj_ids
         ), f"obj_ids must be unique, got {obj_ids}"
+
         assert (
-            len(obj_ids)
-            == len(memory_embeddings)
-            == len(memory_pos_embeddings)
-            == len(results)
-            == len(prompts)
-        )
+            memory_embeddings.ndim == 4
+        ), f"Expected memory_embeddings to be of shape (B, N, H, W), got {memory_embeddings.shape}"
+        assert (
+            memory_pos_embeddings.ndim == 4
+        ), f"Expected memory_pos_embeddings to be of shape (B, N, H, W), got {memory_pos_embeddings.shape}"
+        assert (
+            memory_embeddings.shape[0] == n_objs
+        ), f"Expected memory_embeddings to have batch size {n_objs}, got {memory_embeddings.shape[0]}"
+        assert (
+            memory_pos_embeddings.shape[0] == n_objs
+        ), f"Expected memory_pos_embeddings to have batch size {n_objs}, got {memory_pos_embeddings.shape[0]}"
+        assert (
+            results.batch_size == n_objs
+        ), f"Expected {n_objs} results, got {results.batch_size}"
+
+        prompts_dict = {p.obj_id: p for p in prompts}
+        prompts = [prompts_dict.get(obj_id, None) for obj_id in obj_ids]
 
         ret = []
 
-        # The original SAM2 implementation has no condition on accepting/refusing memories, so we add them all.
-        for obj_id, memory_embedding, memory_pos_embedding, result, prompt in zip(
-            obj_ids, memory_embeddings, memory_pos_embeddings, results, prompts
-        ):
-            self.known_obj_ids.add(obj_id)
-
+        for i, obj_id in enumerate(obj_ids):
+            memory_embedding = memory_embeddings[[i]]
+            memory_pos_embedding = memory_pos_embeddings[[i]]
+            result = results[i]
+            prompt = prompts[i]
             is_conditional = prompt is not None
+
+            self.known_obj_ids.add(obj_id)
 
             memory = ObjectMemory(
                 obj_id=obj_id,
                 frame_idx=frame_idx,
                 memory_embeddings=memory_embedding,
                 memory_pos_embeddings=memory_pos_embedding,
-                obj_ptrs=result.obj_ptrs,
+                ptr=result.obj_ptrs,
                 is_conditional=is_conditional,
             )
 
@@ -83,7 +97,11 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                     [m.frame_idx for m in cond_obj_memories],
                     frame_idx,
                 )
-                if cond_obj_memories[pos].frame_idx == frame_idx:
+
+                if (
+                    pos < len(cond_obj_memories)
+                    and cond_obj_memories[pos].frame_idx == frame_idx
+                ):
                     cond_obj_memories[pos] = memory
                 else:
                     cond_obj_memories.insert(pos, memory)
@@ -98,7 +116,10 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                     [m.frame_idx for m in non_cond_obj_memories],
                     frame_idx,
                 )
-                if non_cond_obj_memories[pos].frame_idx == frame_idx:
+                if (
+                    pos < len(non_cond_obj_memories)
+                    and non_cond_obj_memories[pos].frame_idx == frame_idx
+                ):
                     non_cond_obj_memories[pos] = memory
                 else:
                     non_cond_obj_memories.insert(pos, memory)
@@ -122,13 +143,13 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         max_ptr_memories: int,
         only_include_pointers_in_past: bool = False,
         reverse_tracking: bool = False,
-    ) -> list[ObjectMemorySelection]:
+    ) -> dict[int, ObjectMemorySelection]:
 
         assert len(set(obj_ids)) == len(
             obj_ids
         ), f"obj_ids must be unique, got {obj_ids}"
 
-        ret = []
+        ret = {}
 
         for obj_id in obj_ids:
 
@@ -170,9 +191,9 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             # First add those object pointers from selected conditioning frames
             # (optionally, only include object pointers in the past during evaluation)
             selected_obj_ptrs_memories = [
-                selected_obj_conditional_memories[i]
-                for i in range(len(selected_obj_conditional_memories))
-                if selected_obj_conditional_memories[i].frame_idx >= current_frame_idx
+                selected_obj_conditional_memory
+                for selected_obj_conditional_memory in selected_obj_conditional_memories
+                if selected_obj_conditional_memory.frame_idx < current_frame_idx
                 or not only_include_pointers_in_past
             ]
 
@@ -187,13 +208,10 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                 )
             )
 
-            ret.append(
-                ObjectMemorySelection(
-                    obj_id=obj_id,
-                    conditional_memories=selected_obj_conditional_memories,
-                    non_conditional_memories=selected_obj_non_conditional_memories,
-                    ptr_memories=selected_obj_ptrs_memories,
-                )
+            ret[obj_id] = ObjectMemorySelection(
+                conditional_memories=selected_obj_conditional_memories,
+                non_conditional_memories=selected_obj_non_conditional_memories,
+                ptr_memories=selected_obj_ptrs_memories,
             )
 
         return ret

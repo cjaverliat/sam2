@@ -70,21 +70,21 @@ class ObjectMemoryBank(ABC):
         self,
         frame_idx: int,
         obj_ids: list[int],
-        memory_embeddings: list[torch.Tensor],
-        memory_pos_embeddings: list[torch.Tensor],
-        results: list[SAM2Result],
-        prompts: list[SAM2Prompt | None],
+        memory_embeddings: torch.Tensor,
+        memory_pos_embeddings: torch.Tensor,
+        results: SAM2Result,
+        prompts: list[SAM2Prompt],
     ) -> list[tuple[bool, ObjectMemory]]:
         """
         Try to add memories to the memory bank.
 
         Args:
             frame_idx: The frame index.
-            obj_ids: The object IDs.
-            memory_embeddings: The memory embeddings.
-            memory_pos_embeddings: The memory positional embeddings.
-            results: The results from SAM.
-            prompts: The prompts.
+            obj_ids: The object IDs of shape (B,).
+            memory_embeddings: The memory embeddings of shape (B, N, H, W).
+            memory_pos_embeddings: The memory positional embeddings of shape (B, N, H, W).
+            results: The SAM2Result for all the objects. Expected to have batch size B.
+            prompts: The list of prompts. Can be of any length between 0 and B.
 
         Returns:
             A list of tuples containing a boolean indicating whether the memory was added and the memory itself.
