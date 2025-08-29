@@ -145,6 +145,10 @@ class SAM2GenericVideoPredictor(SAM2Generic):
 
             results.append(result)
 
+        # Edge case if we forward a frame without any prompts or memories.
+        if len(results) == 0:
+            return {}
+
         batched_results = SAM2Result.cat(results)
 
         is_prompt = torch.tensor(
