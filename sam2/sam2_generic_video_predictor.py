@@ -20,10 +20,15 @@ class SAM2GenericVideoPredictorState:
             raise ValueError("Video height and width cannot be None")
 
     @staticmethod
-    def create(video_hw: tuple[int, int], memory_bank: ObjectMemoryBank | None = None) -> "SAM2GenericVideoPredictorState":
+    def create(
+        video_hw: tuple[int, int], memory_bank: ObjectMemoryBank | None = None
+    ) -> "SAM2GenericVideoPredictorState":
         if memory_bank is None:
             memory_bank = SAM2ObjectMemoryBank()
-        return SAM2GenericVideoPredictorState(video_hw=video_hw, memory_bank=memory_bank)
+        return SAM2GenericVideoPredictorState(
+            video_hw=video_hw, memory_bank=memory_bank
+        )
+
 
 class SAM2GenericVideoPredictor(SAM2Generic):
     """
@@ -80,12 +85,31 @@ class SAM2GenericVideoPredictor(SAM2Generic):
             has_prompt = prompt is not None
 
             if has_prompt:
+                prompt = prompt.to(self.device)
+
+                point_coords = (
+                    prompt.points_coords.unsqueeze(0)
+                    if prompt.points_coords is not None
+                    else None
+                )
+                point_labels = (
+                    prompt.points_labels.unsqueeze(0)
+                    if prompt.points_labels is not None
+                    else None
+                )
+                boxes = prompt.boxes.unsqueeze(0) if prompt.boxes is not None else None
+                masks_logits = (
+                    prompt.masks_logits.unsqueeze(0)
+                    if prompt.masks_logits is not None
+                    else None
+                )
+
                 prompt_embeddings = self.encode_prompts(
                     orig_hw=state.video_hw,
-                    points_coords=prompt.points_coords,
-                    points_labels=prompt.points_labels,
-                    boxes=prompt.boxes,
-                    masks_logits=prompt.masks_logits,
+                    points_coords=point_coords,
+                    points_labels=point_labels,
+                    boxes=boxes,
+                    masks_logits=masks_logits,
                 )
 
                 result = self.generate_masks(
