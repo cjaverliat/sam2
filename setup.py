@@ -8,7 +8,7 @@ import os
 from setuptools import find_packages, setup
 
 # Package metadata
-NAME = "SAM-2"
+NAME = "sam2"
 VERSION = "1.0"
 DESCRIPTION = "SAM 2: Segment Anything in Images and Videos"
 URL = "https://github.com/facebookresearch/sam2"
@@ -70,6 +70,13 @@ BUILD_CUDA = os.getenv("SAM2_BUILD_CUDA", "1") == "1"
 # By default, we allow SAM 2 installation to proceed even with build errors.
 # You may force stopping on errors with `export SAM2_BUILD_ALLOW_ERRORS=0`.
 BUILD_ALLOW_ERRORS = os.getenv("SAM2_BUILD_ALLOW_ERRORS", "1") == "1"
+
+CUDA_HOME = os.getenv("CUDA_HOME", None)
+if CUDA_HOME is None and BUILD_CUDA and not BUILD_ALLOW_ERRORS:
+    raise RuntimeError(
+        "BUILD_CUDA is set to 1, but CUDA_HOME is not set. "
+        "Please set CUDA_HOME to the path of your CUDA installation."
+    )
 
 # Catch and skip errors during extension building and print a warning message
 # (note that this message only shows up under verbose build mode
