@@ -15,7 +15,6 @@ from omegaconf import OmegaConf
 import sam2
 
 from sam2.modeling.sam2_generic import SAM2Generic
-from sam2.modeling.sam2_memory import SAM2ObjectMemoryBank
 from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictor
 
 # Check if the user is running Python from the parent directory of the sam2 repo
@@ -167,8 +166,7 @@ def build_sam2_generic_video_predictor(
     OmegaConf.resolve(cfg)
     model = instantiate(
         cfg.model,
-        _recursive_=True,
-        memory_bank=SAM2ObjectMemoryBank(),
+        _recursive_=True
     )
     _load_checkpoint(model, ckpt_path)
     model = model.to(device)

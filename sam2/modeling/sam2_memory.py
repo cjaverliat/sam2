@@ -33,10 +33,10 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         self.memory_temporal_stride = memory_temporal_stride
         self.storage_device = storage_device
 
-    def count_stored_conditional_memories(self, obj_id: int) -> int:
+    def count_conditional_memories(self, obj_id: int) -> int:
         return len(self.conditional_memories.get(obj_id, []))
 
-    def count_stored_non_conditional_memories(self, obj_id: int) -> int:
+    def count_non_conditional_memories(self, obj_id: int) -> int:
         return len(self.non_conditional_memories.get(obj_id, []))
 
     def try_add_memories(
