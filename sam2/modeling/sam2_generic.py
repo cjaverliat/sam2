@@ -441,7 +441,7 @@ class SAM2Generic(SAM2Base):
         if points_coords is not None:
             assert (
                 points_labels is not None
-            ), f"Expected points_labels to be provided if points_coords is provided, got None"
+            ), "Expected points_labels to be provided if points_coords is provided, got None"
             assert (
                 points_coords.ndim == 3
                 and points_coords.shape[0] == batch_size
@@ -456,7 +456,7 @@ class SAM2Generic(SAM2Base):
             )
             points = (points_coords, points_labels)
 
-        # TODO: Doesn't seems to be necessary
+        # TODO: Add back if encoding prompts in batch
         # else:
         #     # If no points are provided, pad with an empty point (with label -1)
         #     points_coords = torch.zeros(batch_size, 1, 2, device=self.device)
@@ -482,20 +482,22 @@ class SAM2Generic(SAM2Base):
             assert (
                 boxes.ndim == 3 and boxes.shape[0] == batch_size and boxes.shape[2] == 4
             ), f"Expected boxes to be of shape (B, N, 4), got {boxes.shape}"
+            n_boxes = boxes.shape[1]
             # Encode the boxes as points with labels 2 and 3
-            box_points_coords = boxes.reshape(batch_size, 2, 2)
-            box_points_coords = self._transforms.transform_boxes(
+            box_points_coords = boxes.reshape(batch_size, n_boxes * 2, 2)
+            box_points_coords = self._transforms.transform_coords(
                 box_points_coords, normalize=True, orig_hw=orig_hw
             )
             box_points_labels = torch.tensor(
                 [2, 3], dtype=torch.int32, device=boxes.device
-            )
-            box_points_labels = box_points_labels.reshape(batch_size, 2)
+            ).repeat(batch_size, n_boxes)
 
             # Concatenate the box points with the existing points
             if points is not None:
-                points[0] = torch.cat([points[0], box_points_coords], dim=1)
-                points[1] = torch.cat([points[1], box_points_labels], dim=1)
+                points = (
+                    torch.cat([points[0], box_points_coords], dim=1),
+                    torch.cat([points[1], box_points_labels], dim=1),
+                )
             else:
                 points = (box_points_coords, box_points_labels)
 

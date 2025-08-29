@@ -321,10 +321,10 @@ class SAM2ImagePredictor:
             if len(unnorm_coords.shape) == 2:
                 unnorm_coords, labels = unnorm_coords[None, ...], labels[None, ...]
         if box is not None:
-            box = torch.as_tensor(box, dtype=torch.float, device=self.device)
-            unnorm_box = self._transforms.transform_boxes(
+            box = torch.as_tensor(box, dtype=torch.float, device=self.device).reshape(-1, 2, 2)
+            unnorm_box = self._transforms.transform_coords(
                 box, normalize=normalize_coords, orig_hw=self._orig_hw[img_idx]
-            )  # Bx2x2
+            ).reshape(-1, 4)
         if mask_logits is not None:
             mask_input = torch.as_tensor(
                 mask_logits, dtype=torch.float, device=self.device
