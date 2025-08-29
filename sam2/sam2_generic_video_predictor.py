@@ -42,10 +42,6 @@ class SAM2GenericVideoPredictor(SAM2Generic):
         multimask_output: bool = True,
         reverse_tracking: bool = False,
     ) -> dict[int, SAM2Result]:
-        # First frame, initialize video_hw
-        if state.video_hw is None:
-            state.video_hw = frame.shape[-2:]
-
         assert frame.shape in [
             (1, *state.video_hw),
             (3, *state.video_hw),
