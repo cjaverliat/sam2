@@ -63,11 +63,19 @@ class ObjectMemoryBank(ABC):
         self.known_obj_ids = set()
 
     @abstractmethod
-    def count_conditional_memories(self, obj_id: int) -> int:
+    def count_object_conditional_memories(self, obj_id: int) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    def count_non_conditional_memories(self, obj_id: int) -> int:
+    def count_object_non_conditional_memories(self, obj_id: int) -> int:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def count_conditional_memories(self) -> int:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def count_non_conditional_memories(self) -> int:
         raise NotImplementedError
 
     def clear_known_obj_ids(self):
@@ -141,18 +149,55 @@ class ObjectMemoryBank(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def clear_object_non_conditional_memories_in_frame_range(
-        self, obj_id: int, frame_idx_start: int, frame_idx_end: int
+    def clear_all_conditional_memories(
+        self
     ) -> list[ObjectMemory]:
         """
-        Clear the non-conditional memories for an object in a given frame range (inclusive).
+        Clear the conditional memories for all objects.
+        """
+        raise NotImplementedError
 
-        Args:
-            obj_id: The object ID.
-            frame_idx_start: The start frame index (inclusive).
-            frame_idx_end: The end frame index (inclusive).
+    @abstractmethod
+    def clear_all_non_conditional_memories(
+        self
+    ) -> list[ObjectMemory]:
+        """
+        Clear the conditional memories for all objects.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def clear_conditional_memories_in_frame(
+        self, frame_idx: int
+    ) -> list[ObjectMemory]:
+        """
+        Clear the conditional memories for all objects in a given frame.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def clear_non_conditional_memories_in_frame(
+        self, frame_idx: int
+    ) -> list[ObjectMemory]:
+        """
+        Clear the conditional memory for all objects in a given frame.
+        """
+        raise NotImplementedError
 
-        Returns:
-            A list of removed memories.
+    @abstractmethod
+    def clear_object_conditional_memories_in_frame(
+        self, obj_id: int, frame_idx: int
+    ) -> list[ObjectMemory]:
+        """
+        Clear the conditional memories for an object in a given frame.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def clear_object_non_conditional_memories_in_frame(
+        self, obj_id: int, frame_idx: int
+    ) -> list[ObjectMemory]:
+        """
+        Clear the non-conditional memories for an object in a given frame.
         """
         raise NotImplementedError
