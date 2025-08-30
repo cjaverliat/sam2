@@ -522,6 +522,14 @@ class SAM2Generic(SAM2Base):
         if len(high_res_img_embeddings) == 0:
             high_res_img_embeddings = None
 
+        if low_res_img_embeddings.ndim == 3:
+            low_res_img_embeddings = low_res_img_embeddings.unsqueeze(0)
+
+        if high_res_img_embeddings is not None and high_res_img_embeddings[0].ndim == 2:
+            high_res_img_embeddings = [
+                h.unsqueeze(0) for h in high_res_img_embeddings
+            ]
+
         B, C, H, W = low_res_img_embeddings.shape
 
         assert C == self.sam_prompt_embed_dim

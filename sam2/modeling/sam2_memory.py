@@ -33,10 +33,16 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         self.memory_temporal_stride = memory_temporal_stride
         self.storage_device = storage_device
 
-    def count_conditional_memories(self, obj_id: int) -> int:
+    def count_conditional_memories(self) -> int:
+        return sum(len(memories) for memories in self.conditional_memories.values())
+
+    def count_non_conditional_memories(self) -> int:
+        return sum(len(memories) for memories in self.non_conditional_memories.values())
+
+    def count_object_conditional_memories(self, obj_id: int) -> int:
         return len(self.conditional_memories.get(obj_id, []))
 
-    def count_non_conditional_memories(self, obj_id: int) -> int:
+    def count_object_non_conditional_memories(self, obj_id: int) -> int:
         return len(self.non_conditional_memories.get(obj_id, []))
 
     def try_add_memories(
@@ -222,21 +228,57 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
 
         return ret
 
-    def clear_object_non_conditional_memories_in_frame_range(
-        self, obj_id: int, frame_idx_start: int, frame_idx_end: int
-    ) -> list[ObjectMemory]:
-        # Remove all the non-conditional memories for an object in a given frame range.
+    def clear_all_conditional_memories(self) -> list[ObjectMemory]:
+        removed_memories = []
+        for obj_id in self.conditional_memories:
+            removed_memories.extend(self.conditional_memories[obj_id])
+            self.conditional_memories[obj_id] = []
+        return removed_memories
+
+    def clear_all_non_conditional_memories(self) -> list[ObjectMemory]:
+        removed_memories = []
+        for obj_id in self.non_conditional_memories:
+            removed_memories.extend(self.non_conditional_memories[obj_id])
+            self.non_conditional_memories[obj_id] = []
+        return removed_memories
+
+    def clear_conditional_memories_in_frame(self, frame_idx: int) -> list[ObjectMemory]:
+        removed_memories = []
+        for obj_id in self.conditional_memories:
+            kept_memories = [
+                m for m in self.conditional_memories[obj_id] if m.frame_idx != frame_idx
+            ]
+            removed_memories.extend(
+                [
+                    m
+                    for m in self.conditional_memories[obj_id]
+                    if m.frame_idx == frame_idx
+                ]
+            )
+            self.conditional_memories[obj_id] = kept_memories
+        return removed_memories
+
+    def clear_non_conditional_memories_in_frame(self, frame_idx: int) -> list[ObjectMemory]:
+        removed_memories = []
+        for obj_id in self.non_conditional_memories:
+            kept_memories = [m for m in self.non_conditional_memories[obj_id] if m.frame_idx != frame_idx]
+            removed_memories.extend([m for m in self.non_conditional_memories[obj_id] if m.frame_idx == frame_idx])
+            self.non_conditional_memories[obj_id] = kept_memories
+        return removed_memories
+
+    def clear_object_conditional_memories_in_frame(self, obj_id: int, frame_idx: int) -> list[ObjectMemory]:
+        if obj_id not in self.conditional_memories:
+            return []
+        kept_memories = [m for m in self.conditional_memories[obj_id] if m.frame_idx != frame_idx]
+        removed_memories = [m for m in self.conditional_memories[obj_id] if m.frame_idx == frame_idx]
+        self.conditional_memories[obj_id] = kept_memories
+        return removed_memories
+    
+    def clear_object_non_conditional_memories_in_frame(self, obj_id: int, frame_idx: int) -> list[ObjectMemory]:
         if obj_id not in self.non_conditional_memories:
             return []
-
-        frame_indices = [m.frame_idx for m in self.non_conditional_memories[obj_id]]
-        start_pos = bisect.bisect_left(frame_indices, frame_idx_start)
-        end_pos = bisect.bisect_right(frame_indices, frame_idx_end)
-
-        kept_memories = self.non_conditional_memories[obj_id][:start_pos]
-        kept_memories += self.non_conditional_memories[obj_id][end_pos:]
-        removed_memories = self.non_conditional_memories[obj_id][start_pos:end_pos]
-
+        kept_memories = [m for m in self.non_conditional_memories[obj_id] if m.frame_idx != frame_idx]
+        removed_memories = [m for m in self.non_conditional_memories[obj_id] if m.frame_idx == frame_idx]
         self.non_conditional_memories[obj_id] = kept_memories
         return removed_memories
 

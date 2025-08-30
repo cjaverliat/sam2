@@ -46,15 +46,38 @@ class SAM2GenericVideoPredictor(SAM2Generic):
         prompts: list[SAM2Prompt] = [],
         multimask_output: bool = True,
         reverse_tracking: bool = False,
+        create_memory: bool = True,
     ) -> dict[int, SAM2Result]:
         assert frame.shape in [
             (1, *state.video_hw),
             (3, *state.video_hw),
-        ], (
-            f"Expected frame to be of shape (C, H, W) or (1, C, H, W) with H and W equal to {state.video_hw}, got {frame.shape}"
-        )
+        ], f"Expected frame to be of shape (C, H, W) or (1, C, H, W) with H and W equal to {state.video_hw}, got {frame.shape}"
 
         img_embeddings, img_pos_embeddings = self.encode_image(frame)
+
+        return self.forward_embeddings(
+            state=state,
+            frame_idx=frame_idx,
+            img_embeddings=img_embeddings,
+            img_pos_embeddings=img_pos_embeddings,
+            prompts=prompts,
+            multimask_output=multimask_output,
+            reverse_tracking=reverse_tracking,
+            create_memory=create_memory,
+        )
+
+    @torch.inference_mode()
+    def forward_embeddings(
+        self,
+        state: SAM2GenericVideoPredictorState,
+        frame_idx: int,
+        img_embeddings: list[torch.Tensor],
+        img_pos_embeddings: list[torch.Tensor],
+        prompts: list[SAM2Prompt] = [],
+        multimask_output: bool = True,
+        reverse_tracking: bool = False,
+        create_memory: bool = True,
+    ) -> dict[int, SAM2Result]:
 
         assert prompts is None or np.unique([p.obj_id for p in prompts]).size == len(
             prompts
@@ -120,13 +143,20 @@ class SAM2GenericVideoPredictor(SAM2Generic):
                 )
 
             else:
-                assert obj_id in objects_selected_memories, (
-                    f"Expected memory bank to have a memory for object {obj_id} but it does not."
-                )
+                assert (
+                    obj_id in objects_selected_memories
+                ), f"Expected memory bank to have a memory for object {obj_id} but it does not."
 
                 object_selected_memories = objects_selected_memories[obj_id]
                 # Transfer the memories to the correct device
                 object_selected_memories = object_selected_memories.to(self.device)
+
+                # Edge case if we forward a frame without any memories.
+                if (
+                    len(object_selected_memories.conditional_memories) == 0
+                    and len(object_selected_memories.non_conditional_memories) == 0
+                ):
+                    continue
 
                 conditioned_img_embeddings = self.condition_image_embeddings_on_memories(
                     frame_idx=frame_idx,
@@ -151,31 +181,32 @@ class SAM2GenericVideoPredictor(SAM2Generic):
 
         batched_results = SAM2Result.cat(results)
 
-        is_prompt = torch.tensor(
-            [obj_id in prompts_dicts for obj_id in all_obj_ids],
-            dtype=torch.bool,
-            device=batched_results.device,
-        )
+        if create_memory:
+            is_prompt = torch.tensor(
+                [obj_id in prompts_dicts for obj_id in all_obj_ids],
+                dtype=torch.bool,
+                device=batched_results.device,
+            )
 
-        memory_embeddings, memory_pos_embeddings = self.encode_memory(
-            img_embeddings=[m.expand((n_objs, -1, -1, -1)) for m in img_embeddings],
-            masks_logits=batched_results.best_mask_logits,
-            obj_score_logits=batched_results.obj_score_logits,
-            is_prompt=is_prompt,
-        )
+            memory_embeddings, memory_pos_embeddings = self.encode_memory(
+                img_embeddings=[m.expand((n_objs, -1, -1, -1)) for m in img_embeddings],
+                masks_logits=batched_results.best_mask_logits,
+                obj_score_logits=batched_results.obj_score_logits,
+                is_prompt=is_prompt,
+            )
 
-        state.memory_bank.try_add_memories(
-            frame_idx=frame_idx,
-            obj_ids=all_obj_ids,
-            memory_embeddings=memory_embeddings,
-            memory_pos_embeddings=memory_pos_embeddings,
-            results=batched_results,
-            prompts=prompts,
-        )
+            state.memory_bank.try_add_memories(
+                frame_idx=frame_idx,
+                obj_ids=all_obj_ids,
+                memory_embeddings=memory_embeddings,
+                memory_pos_embeddings=memory_pos_embeddings,
+                results=batched_results,
+                prompts=prompts,
+            )
 
-        state.memory_bank.prune_memories(
-            obj_ids=all_obj_ids,
-            current_frame_idx=frame_idx,
-        )
+            state.memory_bank.prune_memories(
+                obj_ids=all_obj_ids,
+                current_frame_idx=frame_idx,
+            )
 
         return {obj_id: result for obj_id, result in zip(all_obj_ids, batched_results)}
