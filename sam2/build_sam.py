@@ -121,7 +121,7 @@ def build_sam2_generic(
             # the sigmoid mask logits on interacted frames with clicks in the memory encoder so that the encoded masks are exactly as what users see from clicking
             "++model.binarize_mask_from_pts_for_mem_enc=true",
             # fill small holes in the low-res masks up to `fill_hole_area` (before resizing them to the original video resolution)
-            "++model.max_hole_area=8",
+            "++model.fill_hole_area=8",
         ]
     hydra_overrides.extend(hydra_overrides_extra)
 
@@ -144,17 +144,17 @@ def build_sam2_generic_video_predictor(
     hydra_overrides_extra=[],
     apply_postprocessing=True,
     vos_optimized=False,
-    **kwargs
+    **kwargs,
 ) -> SAM2GenericVideoPredictor:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
     ]
-
+    
     if vos_optimized:
-        hydra_overrides.extend([
+        hydra_overrides = [
             "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
-        ])
+        ]
 
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
@@ -166,7 +166,7 @@ def build_sam2_generic_video_predictor(
             # the sigmoid mask logits on interacted frames with clicks in the memory encoder so that the encoded masks are exactly as what users see from clicking
             "++model.binarize_mask_from_pts_for_mem_enc=true",
             # fill small holes in the low-res masks up to `fill_hole_area` (before resizing them to the original video resolution)
-            "++model.max_hole_area=8",
+            "++model.fill_hole_area=8",
         ]
     hydra_overrides.extend(hydra_overrides_extra)
 
