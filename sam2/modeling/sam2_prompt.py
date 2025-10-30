@@ -66,3 +66,13 @@ class SAM2Prompt:
             masks_logits=masks_logits,
             is_normalized=self.is_normalized,
         )
+
+    def clone(self) -> SAM2Prompt:
+        return SAM2Prompt(
+            obj_id=self.obj_id,
+            points_coords=self.points_coords.clone() if self.points_coords is not None else None,
+            points_labels=self.points_labels.clone() if self.points_labels is not None else None,
+            boxes=self.boxes.clone() if self.boxes is not None else None,
+            masks_logits=self.masks_logits.clone() if self.masks_logits is not None else None,
+            is_normalized=self.is_normalized,
+        )

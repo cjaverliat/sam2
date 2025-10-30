@@ -142,11 +142,20 @@ def build_sam2_generic_video_predictor(
     device="cuda",
     mode="eval",
     hydra_overrides_extra=[],
-    apply_postprocessing=True
+    apply_postprocessing=True,
+    vos_optimized=False,
+    **kwargs
 ) -> SAM2GenericVideoPredictor:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
     ]
+
+    if vos_optimized:
+        hydra_overrides.extend([
+            "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictorVOS",
+            "++model.compile_image_encoder=True",  # Let sam2_base handle this
+        ])
+
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
         hydra_overrides_extra += [

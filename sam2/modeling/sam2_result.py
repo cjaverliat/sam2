@@ -47,6 +47,14 @@ class SAM2Result:
             obj_scores_logits=self.obj_score_logits.to(device),
         )
 
+    def clone(self) -> SAM2Result:
+        return SAM2Result(
+            masks_logits=self.masks_logits.clone(),
+            ious=self.ious.clone(),
+            obj_ptrs=self.obj_ptrs.clone(),
+            obj_scores_logits=self.obj_score_logits.clone(),
+        )
+
     @staticmethod
     def cat(results: list[SAM2Result]) -> SAM2Result:
         return SAM2Result(
