@@ -1,0 +1,198 @@
+name: Build Wheels
+
+on:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+jobs:
+  precache-cuda:
+    name: Pre-cache CUDA
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      # Linux CUDA caching
+      - name: Cache CUDA (Linux)
+        if: runner.os == 'Linux'
+        id: cache-linux-cuda
+        uses: actions/cache@v3
+        with:
+          path: /usr/local/cuda-12.6
+          key: precache-linux-cuda-12.6
+          restore-keys: precache-linux-cuda-
+
+      - name: Install CUDA (Linux)
+        if: runner.os == 'Linux' && steps.cache-linux-cuda.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-compiler-12-6 cuda-cudart-dev-12-6 cuda-libraries-dev-12-6
+
+          echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
+          echo "CUDA_HOME=/usr/local/cuda-12.6" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "/usr/local/cuda-12.6/lib64" | sudo tee /etc/ld.so.conf.d/cuda.conf
+          sudo ldconfig
+
+      # Windows CUDA caching
+      - name: Cache CUDA (Windows)
+        if: runner.os == 'Windows'
+        id: cache-windows-cuda
+        uses: actions/cache@v3
+        with:
+          path: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6'
+          key: precache-windows-cuda-12.6
+          restore-keys: precache-windows-cuda-
+
+      - name: Install CUDA Toolkit 12.6 (Windows)
+        if: runner.os == 'Windows' && steps.cache-windows-cuda.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          $installer = "$env:TEMP\cuda_12.6.0_windows.exe"
+          Invoke-WebRequest -Uri "https://developer.download.nvidia.com/compute/cuda/12.6.0/local_installers/cuda_12.6.0_560.76_windows.exe" -OutFile $installer
+          Start-Process -Wait -FilePath $installer -ArgumentList "-s"
+
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin'
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\libnvvp'
+
+  build-cpu:
+    name: Build CPU Wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        python: ["3.10", "3.11", "3.12"]
+        torch: ["2.6", "2.7", "2.8", "2.9"]
+    env:
+      FORCE_CUDA: 0
+      SAM2_BUILD_ALLOW_ERRORS: 0
+      SAM2_BUILD_CUDA: 0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build setuptools wheel
+
+      - name: Install PyTorch
+        shell: bash
+        run: |
+          python -m pip install "torch~=${{ matrix.torch }}" torchvision
+
+      - name: Suffix version
+        shell: bash
+        run: |
+          BUILD_SUFFIX="+cpu_torch${{ matrix.torch }}"
+          sed -i "s|^__suffix__ = .*|__suffix__ = '${BUILD_SUFFIX}'|" sam2/version.py
+          cat sam2/version.py
+
+      - name: Build package
+        run: |
+          python -m build --wheel --no-isolation --verbose
+
+      - name: Upload wheel to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          files: dist/*.whl
+
+  build-cuda:
+    name: Build CUDA Wheels
+    needs: [precache-cuda]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        python: ["3.10", "3.11", "3.12"]
+        torch: ["2.6", "2.7", "2.8", "2.9"]
+    env:
+      TORCH_CUDA_ARCH_LIST: "8.6 8.7 9.0+PTX"
+      FORCE_CUDA: 1
+      SAM2_BUILD_ALLOW_ERRORS: 0
+      SAM2_BUILD_CUDA: 1
+    steps:
+      - name: Free up disk space
+        if: runner.os == 'Linux'
+        run: |
+          echo "Listing 100 largest packages"
+          dpkg-query -Wf "${Installed-Size}\t${Package}\n" | sort -n | tail -n 100
+          df -h
+          sudo apt-get remove -y '^ghc-8.*' || true
+          sudo apt-get remove -y '^dotnet-.*' || true
+          sudo apt-get remove -y '^llvm-.*' || true
+          sudo apt-get remove -y 'php.*' || true
+          sudo apt-get remove -y azure-cli || true
+          sudo apt-get remove -y google-cloud-sdk || true
+          sudo apt-get remove -y hhvm || true
+          sudo apt-get remove -y google-chrome-stable || true
+          sudo apt-get remove -y firefox || true
+          sudo apt-get remove -y powershell || true
+          sudo apt-get remove -y mono-devel || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo rm -rf /usr/share/dotnet/ /opt/hostedtoolcache /var/lib/apt/lists/*
+          df -h
+
+      - name: Restore CUDA cache (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v3
+        with:
+          path: /usr/local/cuda-12.6
+          key: precache-linux-cuda-12.6
+          restore-keys: |
+            precache-linux-cuda-
+
+      - name: Restore CUDA cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v3
+        with:
+          path: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6'
+          key: precache-windows-cuda-12.6
+          restore-keys: |
+            precache-windows-cuda-
+      
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build setuptools wheel
+
+      - name: Install PyTorch
+        shell: bash
+        run: |
+          python -m pip install "torch~=${{ matrix.torch }}" torchvision --index-url https://download.pytorch.org/whl/cu126
+
+      - name: Suffix version
+        shell: bash
+        run: |
+          BUILD_SUFFIX="+cu126_torch${{ matrix.torch }}"
+          sed -i "s|^__suffix__ = .*|__suffix__ = '${BUILD_SUFFIX}'|" sam2/version.py
+          cat sam2/version.py
+
+      - name: Build package
+        run: python -m build --wheel --no-isolation --verbose
+
+      - name: Upload wheel to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          files: dist/*.whl

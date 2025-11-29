@@ -7,9 +7,16 @@ import os
 
 from setuptools import find_packages, setup
 
+def get_full_version() -> str:
+    version_fp = os.path.join(os.path.dirname(__file__), "sam2", "version.py")
+    version_ns = {}
+    with open(version_fp) as f:
+        exec(f.read(), version_ns)
+    return version_ns["__full_version__"]
+
 # Package metadata
 NAME = "sam2"
-VERSION = "1.0"
+VERSION = get_full_version()
 DESCRIPTION = "SAM 2: Segment Anything in Images and Videos"
 URL = "https://github.com/facebookresearch/sam2"
 AUTHOR = "Meta AI"
