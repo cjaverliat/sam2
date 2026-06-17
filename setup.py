@@ -115,6 +115,8 @@ def get_extensions():
             ],
         }
         ext_modules = [CUDAExtension("sam2._C", srcs, extra_compile_args=compile_args)]
+    except ImportError:
+        ext_modules = []
     except Exception as e:
         if BUILD_ALLOW_ERRORS:
             print(CUDA_ERROR_MSG.format(e))
@@ -159,6 +161,8 @@ try:
             else BuildExtension.with_options(no_python_abi_suffix=True)
         )
     }
+except ImportError:
+    cmdclass = {}
 except Exception as e:
     cmdclass = {}
     if BUILD_ALLOW_ERRORS:
