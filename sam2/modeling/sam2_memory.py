@@ -21,9 +21,9 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
     """
 
     def __init__(
-        self,
-        memory_temporal_stride: int = 1,
-        storage_device: torch.device = torch.device("cpu"),
+            self,
+            memory_temporal_stride: int = 1,
+            storage_device: torch.device = torch.device("cpu"),
     ):
         super(SAM2ObjectMemoryBank, self).__init__()
         # Create the storage for the memories
@@ -46,13 +46,13 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         return len(self.non_conditional_memories.get(obj_id, []))
 
     def try_add_memories(
-        self,
-        frame_idx: int,
-        obj_ids: list[int],
-        memory_embeddings: torch.Tensor,
-        memory_pos_embeddings: torch.Tensor,
-        results: SAM2Result,
-        prompts: list[SAM2Prompt],
+            self,
+            frame_idx: int,
+            obj_ids: list[int],
+            memory_embeddings: torch.Tensor,
+            memory_pos_embeddings: torch.Tensor,
+            results: SAM2Result,
+            prompts: list[SAM2Prompt],
     ) -> list[tuple[bool, ObjectMemory]]:
         n_objs = len(obj_ids)
         assert len(set(obj_ids)) == len(
@@ -60,19 +60,19 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         ), f"obj_ids must be unique, got {obj_ids}"
 
         assert (
-            memory_embeddings.ndim == 4
+                memory_embeddings.ndim == 4
         ), f"Expected memory_embeddings to be of shape (B, N, H, W), got {memory_embeddings.shape}"
         assert (
-            memory_pos_embeddings.ndim == 4
+                memory_pos_embeddings.ndim == 4
         ), f"Expected memory_pos_embeddings to be of shape (B, N, H, W), got {memory_pos_embeddings.shape}"
         assert (
-            memory_embeddings.shape[0] == n_objs
+                memory_embeddings.shape[0] == n_objs
         ), f"Expected memory_embeddings to have batch size {n_objs}, got {memory_embeddings.shape[0]}"
         assert (
-            memory_pos_embeddings.shape[0] == n_objs
+                memory_pos_embeddings.shape[0] == n_objs
         ), f"Expected memory_pos_embeddings to have batch size {n_objs}, got {memory_pos_embeddings.shape[0]}"
         assert (
-            results.batch_size == n_objs
+                results.batch_size == n_objs
         ), f"Expected {n_objs} results, got {results.batch_size}"
 
         prompts_dict = {p.obj_id: p for p in prompts}
@@ -112,8 +112,8 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                 )
 
                 if (
-                    pos < len(cond_obj_memories)
-                    and cond_obj_memories[pos].frame_idx == frame_idx
+                        pos < len(cond_obj_memories)
+                        and cond_obj_memories[pos].frame_idx == frame_idx
                 ):
                     cond_obj_memories[pos] = memory
                 else:
@@ -129,8 +129,8 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                     frame_idx,
                 )
                 if (
-                    pos < len(non_cond_obj_memories)
-                    and non_cond_obj_memories[pos].frame_idx == frame_idx
+                        pos < len(non_cond_obj_memories)
+                        and non_cond_obj_memories[pos].frame_idx == frame_idx
                 ):
                     non_cond_obj_memories[pos] = memory
                 else:
@@ -141,20 +141,20 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         return ret
 
     def prune_memories(
-        self, obj_ids: list[int], current_frame_idx: int
+            self, obj_ids: list[int], current_frame_idx: int
     ) -> dict[int, list[ObjectMemory]]:
         # The original SAM2 implementation has no forgetting strategy, so we don't remove any memories.
         return {}
 
     def select_memories(
-        self,
-        obj_ids: list[int],
-        current_frame_idx: int,
-        max_conditional_memories: int,
-        max_non_conditional_memories: int,
-        max_ptr_memories: int,
-        only_include_pointers_in_past: bool = False,
-        reverse_tracking: bool = False,
+            self,
+            obj_ids: list[int],
+            current_frame_idx: int,
+            max_conditional_memories: int,
+            max_non_conditional_memories: int,
+            max_ptr_memories: int,
+            only_include_pointers_in_past: bool = False,
+            reverse_tracking: bool = False,
     ) -> dict[int, ObjectMemorySelection]:
 
         assert len(set(obj_ids)) == len(
@@ -206,20 +206,31 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
                 selected_obj_conditional_memory
                 for selected_obj_conditional_memory in selected_obj_conditional_memories
                 if selected_obj_conditional_memory.frame_idx < current_frame_idx
-                or not only_include_pointers_in_past
+                   or not only_include_pointers_in_past
             ]
+
+            if max_ptr_memories != -1 and len(selected_obj_ptrs_memories) > max_ptr_memories:
+                # There's too many conditional memory (> max_ptr_memories), so sort by proximity and
+                # keep max_ptr_memories conditional memories.
+                selected_obj_ptrs_memories = sorted(
+                    selected_obj_ptrs_memories,
+                    key=lambda m: abs(m.frame_idx - current_frame_idx),
+                )[:max_ptr_memories]
+                selected_obj_ptrs_memories.sort(key=lambda m: m.frame_idx)  # restore temporal order
 
             # Add up to (max_object_memories - 1) non-conditioning frames before current frame
             remaining_ptr_slots = max(0, max_ptr_memories - len(selected_obj_ptrs_memories))
-            selected_obj_ptrs_memories.extend(
-                _select_N_last_non_conditional_memories(
-                    non_conditional_memories=selected_obj_non_conditional_memories,
-                    N=remaining_ptr_slots,
-                    current_frame_idx=current_frame_idx,
-                    reverse_tracking=reverse_tracking,
-                    temporal_stride=self.memory_temporal_stride,
+
+            if remaining_ptr_slots > 0:
+                selected_obj_ptrs_memories.extend(
+                    _select_N_last_non_conditional_memories(
+                        non_conditional_memories=selected_obj_non_conditional_memories,
+                        N=remaining_ptr_slots,
+                        current_frame_idx=current_frame_idx,
+                        reverse_tracking=reverse_tracking,
+                        temporal_stride=self.memory_temporal_stride,
+                    )
                 )
-            )
 
             ret[obj_id] = ObjectMemorySelection(
                 conditional_memories=selected_obj_conditional_memories,
@@ -274,7 +285,7 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         removed_memories = [m for m in self.conditional_memories[obj_id] if m.frame_idx == frame_idx]
         self.conditional_memories[obj_id] = kept_memories
         return removed_memories
-    
+
     def clear_object_non_conditional_memories_in_frame(self, obj_id: int, frame_idx: int) -> list[ObjectMemory]:
         if obj_id not in self.non_conditional_memories:
             return []
@@ -285,9 +296,9 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
 
 
 def _select_N_closest_conditional_memories(
-    conditional_memories: list[ObjectMemory],
-    N: int,
-    current_frame_idx: int,
+        conditional_memories: list[ObjectMemory],
+        N: int,
+        current_frame_idx: int,
 ) -> tuple[list[ObjectMemory], list[ObjectMemory]]:
     """
     Select up to `N` conditioning frames from `conditional_memories`
@@ -333,11 +344,11 @@ def _select_N_closest_conditional_memories(
 
 
 def _select_N_last_non_conditional_memories(
-    non_conditional_memories: list[ObjectMemory],
-    N: int,
-    current_frame_idx: int,
-    reverse_tracking: bool,
-    temporal_stride: int,
+        non_conditional_memories: list[ObjectMemory],
+        N: int,
+        current_frame_idx: int,
+        reverse_tracking: bool,
+        temporal_stride: int,
 ) -> list[ObjectMemory]:
     """
     Select up to `N` non-conditional memories from `non_conditional_memories`.
