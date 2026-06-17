@@ -210,10 +210,11 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             ]
 
             # Add up to (max_object_memories - 1) non-conditioning frames before current frame
+            remaining_ptr_slots = max(0, max_ptr_memories - len(selected_obj_ptrs_memories))
             selected_obj_ptrs_memories.extend(
                 _select_N_last_non_conditional_memories(
                     non_conditional_memories=selected_obj_non_conditional_memories,
-                    N=max_ptr_memories,
+                    N=remaining_ptr_slots,
                     current_frame_idx=current_frame_idx,
                     reverse_tracking=reverse_tracking,
                     temporal_stride=self.memory_temporal_stride,
