@@ -89,6 +89,12 @@ cuda-libraries-dev = "*"
 cuda-cudart-dev = "*"
 python = ">=3.10"
 numpy = ">=1.24.4"
+# Force the OpenBLAS BLAS variant. On win-64 the default libblas resolves to the
+# MKL build, which pulls a second OpenMP runtime (Intel libiomp5md via
+# mkl -> llvm-openmp) alongside the one bundled in the pip torch wheel ->
+# "OMP: Error #15". OpenBLAS avoids MKL, leaving a single OMP. (linux-64 already
+# defaults to OpenBLAS.)
+libblas = { build = "*openblas" }
 cmake = ">=3.21"
 ninja = "*"
 scikit-build-core = ">=0.8.0"
