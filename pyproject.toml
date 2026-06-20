@@ -20,6 +20,7 @@ dependencies = [
     "hydra-core>=1.3.2",
     "iopath>=0.1.10",
     "pillow>=9.4.0",
+    "opencv-python>=4.7.0",
 ]
 [project.urls]
 Homepage = "https://github.com/facebookresearch/sam2"
@@ -28,7 +29,6 @@ Homepage = "https://github.com/facebookresearch/sam2"
 notebooks = [
     "matplotlib>=3.9.1",
     "jupyter>=1.0.0",
-    "opencv-python>=4.7.0",
     "eva-decord>=0.6.1",
 ]
 interactive-demo = [
@@ -52,7 +52,6 @@ dev = [
     "tensorboard>=2.17.0",
     "pycocotools>=2.0.8",
     "tensordict>=0.6.0",
-    "opencv-python>=4.7.0",
     "submitit>=1.5.1",
 ]
 
@@ -93,6 +92,8 @@ numpy = ">=1.24.4"
 cmake = ">=3.21"
 ninja = "*"
 scikit-build-core = ">=0.8.0"
+curl = "*"
+pixi-pycharm = "*"
 
 [tool.pixi.pypi-options]
 # Build sam2 against the already-installed cu128 torch (and the env's Python),
@@ -110,3 +111,95 @@ torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/
 dev = { features = ["dev"] }
 notebooks = { features = ["notebooks"] }
 interactive-demo = { features = ["interactive-demo"] }
+
+# ---------------------------------------------------------------------------
+# Checkpoint download tasks (cross-platform via curl, conda-provided so it is
+# available on both linux-64 and win-64). Each task declares an `outputs` entry
+# so pixi's task cache skips the download when the file already exists.
+# `curl -L -O -C -` follows redirects, keeps the remote filename, and resumes
+# partial downloads. Aggregate tasks fan out via `depends-on`.
+# ---------------------------------------------------------------------------
+
+# --- SAM 2.1 individual checkpoints ---
+[tool.pixi.tasks.download-sam2-tiny]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_tiny.pt"]
+
+[tool.pixi.tasks.download-sam2-small]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_small.pt"]
+
+[tool.pixi.tasks.download-sam2-base-plus]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_base_plus.pt"]
+
+[tool.pixi.tasks.download-sam2-large]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_large.pt"]
+
+# --- SAM 2.1: all checkpoints ---
+[tool.pixi.tasks.download-sam2]
+depends-on = [
+    "download-sam2-tiny",
+    "download-sam2-small",
+    "download-sam2-base-plus",
+    "download-sam2-large",
+]
+
+# --- EfficientTAM individual checkpoints ---
+[tool.pixi.tasks.download-efficienttam-s]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s.pt"]
+
+[tool.pixi.tasks.download-efficienttam-s-512x512]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_512x512.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s_512x512.pt"]
+
+[tool.pixi.tasks.download-efficienttam-s-1]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_1.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s_1.pt"]
+
+[tool.pixi.tasks.download-efficienttam-s-2]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_2.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s_2.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti-512x512]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti_512x512.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti_512x512.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti-1]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti_1.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti_1.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti-2]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti_2.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti_2.pt"]
+
+# --- EfficientTAM: all checkpoints ---
+[tool.pixi.tasks.download-efficienttam]
+depends-on = [
+    "download-efficienttam-s",
+    "download-efficienttam-s-512x512",
+    "download-efficienttam-s-1",
+    "download-efficienttam-s-2",
+    "download-efficienttam-ti",
+    "download-efficienttam-ti-512x512",
+    "download-efficienttam-ti-1",
+    "download-efficienttam-ti-2",
+]
