@@ -141,7 +141,7 @@ def get_connected_components(mask):
     - counts: A tensor of shape (N, 1, H, W) containing the area of the connected
               components for foreground pixels and 0 for background pixels.
     """
-    return _load_connected_components_ext().get_connected_componnets(
+    return _load_connected_components_ext().get_connected_components(
         mask.to(torch.uint8).contiguous()
     )
 

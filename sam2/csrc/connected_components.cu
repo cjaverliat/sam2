@@ -212,7 +212,7 @@ __global__ void final_counting(
 
 } // namespace cc2d
 
-std::vector<at::Tensor> get_connected_componnets(
+std::vector<at::Tensor> get_connected_components(
     const at::Tensor& inputs) {
   AT_ASSERTM(inputs.is_cuda(), "inputs must be a CUDA tensor");
   AT_ASSERTM(inputs.ndimension() == 4, "inputs must be [N, 1, H, W] shape");

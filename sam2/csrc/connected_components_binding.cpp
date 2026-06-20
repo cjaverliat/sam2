@@ -11,11 +11,11 @@
 #include <vector>
 
 // Defined in connected_components.cu
-std::vector<at::Tensor> get_connected_componnets(const at::Tensor& inputs);
+std::vector<at::Tensor> get_connected_components(const at::Tensor& inputs);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
-      "get_connected_componnets",
-      &get_connected_componnets,
-      "get_connected_componnets");
+      "get_connected_components",
+      &get_connected_components,
+      "get_connected_components");
 }
