@@ -1,4 +1,4 @@
-__version__ = "1.0.3"
+__version__ = "1.0.2"
 
 # Build suffix: "+cpu", "+cu126-torch2.8", etc. set dynamically in CI workflows
 __suffix__ = ""

@@ -6,11 +6,13 @@
 
 // adapted from https://github.com/zsef123/Connected_components_PyTorch
 // with license found in the LICENSE_cctorch file in the root directory.
+// Use only ATen headers here, not <torch/extension.h>: on Windows the latter
+// pulls compiled_autograd.h, which fails under nvcc/MSVC (pytorch#173232).
+// The pybind binding lives in connected_components_binding.cpp.
+#include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <torch/extension.h>
-#include <torch/script.h>
 #include <vector>
 
 // 2d
@@ -210,12 +212,12 @@ __global__ void final_counting(
 
 } // namespace cc2d
 
-std::vector<torch::Tensor> get_connected_componnets(
-    const torch::Tensor& inputs) {
+std::vector<at::Tensor> get_connected_componnets(
+    const at::Tensor& inputs) {
   AT_ASSERTM(inputs.is_cuda(), "inputs must be a CUDA tensor");
   AT_ASSERTM(inputs.ndimension() == 4, "inputs must be [N, 1, H, W] shape");
   AT_ASSERTM(
-      inputs.scalar_type() == torch::kUInt8, "inputs must be a uint8 type");
+      inputs.scalar_type() == at::kByte, "inputs must be a uint8 type");
 
   const uint32_t N = inputs.size(0);
   const uint32_t C = inputs.size(1);
@@ -228,10 +230,10 @@ std::vector<torch::Tensor> get_connected_componnets(
 
   // label must be uint32_t
   auto label_options =
-      torch::TensorOptions().dtype(torch::kInt32).device(inputs.device());
-  torch::Tensor labels = torch::zeros({N, C, H, W}, label_options);
-  torch::Tensor counts_init = torch::zeros({N, C, H, W}, label_options);
-  torch::Tensor counts_final = torch::zeros({N, C, H, W}, label_options);
+      at::TensorOptions().dtype(at::kInt).device(inputs.device());
+  at::Tensor labels = at::zeros({N, C, H, W}, label_options);
+  at::Tensor counts_init = at::zeros({N, C, H, W}, label_options);
+  at::Tensor counts_final = at::zeros({N, C, H, W}, label_options);
 
   dim3 grid = dim3(
       ((W + 1) / 2 + BLOCK_COLS - 1) / BLOCK_COLS,
@@ -275,15 +277,8 @@ std::vector<torch::Tensor> get_connected_componnets(
   }
 
   // returned values are [labels, counts]
-  std::vector<torch::Tensor> outputs;
+  std::vector<at::Tensor> outputs;
   outputs.push_back(labels);
   outputs.push_back(counts_final);
   return outputs;
-}
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def(
-      "get_connected_componnets",
-      &get_connected_componnets,
-      "get_connected_componnets");
 }
