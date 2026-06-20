@@ -123,9 +123,22 @@ class SAM2GenericVideoPredictor(SAM2Generic):
                     masks_logits=masks_logits,
                 )
 
+                # Prompt frame is decoded without memory; condition with empty
+                # memories so the `no_mem_embed` is added to the lowest-res
+                # feature (otherwise predictions deviate from the base model).
+                conditioned_last = self.condition_image_embeddings_on_memories(
+                    frame_idx=frame_idx,
+                    img_embeddings=img_embeddings,
+                    img_pos_embeddings=img_pos_embeddings,
+                    conditional_memories=[],
+                    non_conditional_memories=[],
+                    ptr_memories=[],
+                )
+                conditioned_img_embeddings = img_embeddings[:-1] + [conditioned_last]
+
                 result = self.generate_masks(
                     orig_hw=state.video_hw,
-                    img_embeddings=img_embeddings,
+                    img_embeddings=conditioned_img_embeddings,
                     prompt_embeddings=prompt_embeddings,
                     multimask_output=multimask_output,
                 )

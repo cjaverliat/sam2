@@ -38,7 +38,17 @@ class SAM2Generic(SAM2Base):
         self.mask_threshold = mask_threshold
         self.non_overlap_masks = non_overlap_masks
 
-        self.empty_prompt_embeddings = self.encode_prompts()
+        # Computed lazily on first use: doing it here in __init__ would capture
+        # the randomly-initialized prompt-encoder weights (the checkpoint is
+        # loaded *after* construction), producing wrong empty-prompt embeddings
+        # that are fed to the decoder on every propagation frame.
+        self._empty_prompt_embeddings = None
+
+    @property
+    def empty_prompt_embeddings(self):
+        if self._empty_prompt_embeddings is None:
+            self._empty_prompt_embeddings = self.encode_prompts()
+        return self._empty_prompt_embeddings
 
     def _prepare_images(
         self, img: torch.Tensor | list[torch.Tensor], scale: bool = True
@@ -353,9 +363,17 @@ class SAM2Generic(SAM2Base):
                 memories.append(memory_embeddings)
                 memories_pos_embed.append(memory_tpos_embeddings)
 
-            # Add non-conditional memories (memory from previous frames, or other depending on the memory strategy)
+            # Add non-conditional memories (memory from previous frames, or other depending on the memory strategy).
+            # `non_conditional_memories` is ordered closest-first (i=0 is the
+            # previous frame). The base model assigns the closest frame the
+            # temporal encoding `maskmem_tpos_enc[0]` and the farthest one
+            # `maskmem_tpos_enc[num_maskmem - 2]`. Since
+            # `_prepare_memory_for_memory_conditioning` indexes the encoding as
+            # `num_maskmem - t_pos - 1`, the closest frame must get the largest
+            # t_pos. Using `t_pos = i + 1` here inverted the temporal order and
+            # broke tracking.
             for i, non_cond_mem in enumerate(non_conditional_memories):
-                t_pos = i + 1
+                t_pos = self.num_maskmem - 1 - i
                 memory_embeddings, memory_tpos_embeddings = (
                     self._prepare_memory_for_memory_conditioning(
                         t_pos,
@@ -576,17 +594,20 @@ class SAM2Generic(SAM2Base):
             high_res_features=high_res_img_embeddings,
         )
 
-        # Upscale the masks to the image_size
-        masks_logits = self._transforms.postprocess_masks(
-            masks_logits, (self.image_size, self.image_size)
-        )
-        masks_logits = torch.clamp(masks_logits, -32.0, 32.0)
-
-        # Apply non-overlapping constraints if specified
+        # Apply non-overlapping constraints if specified (on the low-res logits,
+        # before upscaling, as in the base model).
         if self.non_overlap_masks:
             masks_logits = self._apply_non_overlapping_constraints(masks_logits)
 
-        masks_logits = self._transforms.upscale_masks_logits(masks_logits, orig_hw)
+        # Single bilinear upscale of the low-res masks directly to the original
+        # size (matches the base model; avoids an intermediate resize to
+        # image_size and the antialiasing that shifted mask boundaries).
+        masks_logits = self._transforms.postprocess_masks(masks_logits, orig_hw)
+
+        # Clamp after upscaling: capping the magnitude here does not move the
+        # mask boundary (the 0-crossing of the bilinear interpolation), unlike
+        # clamping the low-res logits beforehand.
+        masks_logits = torch.clamp(masks_logits, -32.0, 32.0)
 
         # Extract object pointer from the SAM output token (with occlusion handling)
         sam_output_token = sam_output_tokens[:, 0]

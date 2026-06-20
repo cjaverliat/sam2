@@ -202,7 +202,11 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             # 2. Select the non-conditional memories
             # If an unselected conditioning frame is among the last frames, we still attend to it as if it's a non-conditioning frame.
 
-            selected_obj_non_conditional_memories = obj_non_conditional_memories
+            # Copy the stored list before extending: `obj_non_conditional_memories`
+            # is a reference to the bank's list, so extending it in place would
+            # permanently insert the unselected conditional memories into the
+            # bank (duplicating them across frames).
+            selected_obj_non_conditional_memories = list(obj_non_conditional_memories)
             selected_obj_non_conditional_memories.extend(
                 unselected_obj_conditional_memories
             )

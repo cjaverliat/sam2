@@ -174,7 +174,19 @@ class SAM2AutomaticMaskGenerator:
             torch.as_tensor(image, device=self.device).permute(2, 0, 1).contiguous()
         )
         self._orig_hw = image.shape[:2]
-        self._img_embeddings, _ = self.model.encode_image(img)
+        img_embeddings, img_pos_embeddings = self.model.encode_image(img)
+        # No memories here (single image): condition with empty memories so the
+        # `no_mem_embed` is added to the lowest-res feature, matching what the
+        # decoder expects (otherwise predictions deviate from the base model).
+        conditioned_last = self.model.condition_image_embeddings_on_memories(
+            frame_idx=0,
+            img_embeddings=img_embeddings,
+            img_pos_embeddings=img_pos_embeddings,
+            conditional_memories=[],
+            non_conditional_memories=[],
+            ptr_memories=[],
+        )
+        self._img_embeddings = img_embeddings[:-1] + [conditioned_last]
 
     def _reset_image(self) -> None:
         self._img_embeddings = None
