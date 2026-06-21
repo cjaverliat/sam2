@@ -1,0 +1,77 @@
+name: build-wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.cuda }}-${{ matrix.py }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        cuda: [cu126, cu128, cu130, cu132]
+        py: [py310, py311, py312]
+    env:
+      PIXI_ENV: ${{ matrix.cuda }}-${{ matrix.py }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # MSVC host compiler for nvcc on Windows (pixi cannot ship MSVC).
+      # nvcc only supports cl.exe as host on win-64. No-op on Linux (pixi's gxx).
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # pixi supplies cuda-nvcc / ninja / python / torch (cuXXX) / build. No
+      # separate CUDA-toolkit or Python install: the cuNNN-pyMMM env pins them.
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: ${{ env.PIXI_ENV }}
+
+      # The build-wheel task sets SAM2_FORCE_BUILD=1 + SAM2_FORCE_CUDA=1, so
+      # setup.py compiles from source (no prebuilt download) and configures the
+      # CUDA ext even though the runner has no GPU. CUDA arch list comes from the
+      # ext build; nvcc cross-compiles, no GPU needed.
+      - run: pixi run -e ${{ env.PIXI_ENV }} build-wheel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sam2-${{ env.PIXI_ENV }}-${{ runner.os }}
+          path: dist/*.whl
+
+  # CPU-only wheel: pure-Python (no _C), one build covers all interpreters and
+  # platforms. No CUDA toolkit, MSVC, or GPU needed.
+  build-cpu:
+    name: cpu (pure-python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: cpu
+      # cpu feature sets SAM2_SKIP_CUDA_BUILD=1 -> pure-Python wheel (+cpu).
+      - run: pixi run -e cpu python -m build --wheel --no-isolation
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sam2-cpu
+          path: dist/*.whl
+
+  # Attach every built wheel to the GitHub Release for the pushed tag, where
+  # setup.py's flash-attn-style downloader looks for them.
+  release:
+    needs: [build, build-cpu]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: wheels/*.whl
