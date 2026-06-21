@@ -96,8 +96,9 @@ cuda-nvcc = "*"
 cuda-libraries-dev = "*"
 cuda-cudart-dev = "*"
 ninja = "*"
+# Cap g++ < 14: CUDA 12.6/12.8 nvcc reject host gcc >= 14 (13.x also accepts it).
 [tool.pixi.feature.cudabuild.target.linux-64.dependencies]
-gxx = "*"
+gxx = "<14"
 
 # CPU-only: torch from the PyTorch CPU index, no CUDA. Wheel is pure-Python
 # (no _C extension), so it carries a +cpu label and works on any platform.

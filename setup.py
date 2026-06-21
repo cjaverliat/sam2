@@ -163,6 +163,22 @@ def get_wheel_filename(version, local_label):
 def get_extensions(torch):
     from torch.utils.cpp_extension import CUDAExtension
 
+    cxx_args = []
+    nvcc_args = [
+        "-DCUDA_HAS_FP16=1",
+        "-D__CUDA_NO_HALF_OPERATORS__",
+        "-D__CUDA_NO_HALF_CONVERSIONS__",
+        "-D__CUDA_NO_HALF2_OPERATORS__",
+    ]
+    # Pin C++17 on Windows. torch >= 2.12 requests C++20, but nvcc + MSVC ignores
+    # -std=c++20 and falls back to a pre-C++17 default, breaking torch headers
+    # ("one-argument static_assert not enabled"). Setting -std explicitly stops
+    # torch from injecting C++20; C++17 satisfies the headers. (Linux/gcc builds
+    # C++20 fine, so leave them untouched.)
+    if sys.platform == "win32":
+        cxx_args.append("/std:c++17")
+        nvcc_args += ["-std=c++17", "-Xcompiler", "/std:c++17"]
+
     # setuptools requires /-separated paths relative to setup.py, never absolute.
     return [
         CUDAExtension(
@@ -171,15 +187,7 @@ def get_extensions(torch):
                 "sam2/csrc/connected_components.cu",
                 "sam2/csrc/connected_components_binding.cpp",
             ],
-            extra_compile_args={
-                "cxx": [],
-                "nvcc": [
-                    "-DCUDA_HAS_FP16=1",
-                    "-D__CUDA_NO_HALF_OPERATORS__",
-                    "-D__CUDA_NO_HALF_CONVERSIONS__",
-                    "-D__CUDA_NO_HALF2_OPERATORS__",
-                ],
-            },
+            extra_compile_args={"cxx": cxx_args, "nvcc": nvcc_args},
         )
     ]
 
