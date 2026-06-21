@@ -14283,7 +14283,7 @@ packages:
 - pypi: ./
   name: sam2
   version: 1.0.3
-  sha256: 55fc3dd23a10d7b95ddc1cebba3bb5a6da4771792e75b5d15da175b48ad3981b
+  sha256: 73257b70dc1743c4a380db630dc26d49db7c190bb546daaa69d567d153fd581c
   requires_dist:
   - numpy>=1.24.4
   - tqdm>=4.66.1

@@ -119,25 +119,32 @@ sam2 = { path = ".", editable = true }
 # system-requirements) and the matching torch index. The wheel's +cuXXXtorchYY
 # local label is derived from the linked torch by setup.py (not hard-coded here).
 # All else shared via [tool.pixi.dependencies]. Combine with envs below.
+# TORCH_CUDA_ARCH_LIST is required: CI runners have no GPU, so torch cannot
+# auto-detect the arch and crashes (IndexError in _get_cuda_arch_flags) without
+# it. Blackwell (10.0/12.0) needs CUDA >= 12.8, so cu126 omits them.
 [tool.pixi.feature.cu126]
 system-requirements = { cuda = "12.6" }
 dependencies = { cuda-version = "12.6.*" }
 pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu126" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu126" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0+PTX" } }
 
 [tool.pixi.feature.cu128]
 system-requirements = { cuda = "12.8" }
 dependencies = { cuda-version = "12.8.*" }
 pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu128" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu128" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0 10.0 12.0+PTX" } }
 
 [tool.pixi.feature.cu130]
 system-requirements = { cuda = "13.0" }
 dependencies = { cuda-version = "13.0.*" }
 pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu130" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu130" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0 10.0 12.0+PTX" } }
 
 [tool.pixi.feature.cu132]
 system-requirements = { cuda = "13.2" }
 dependencies = { cuda-version = "13.2.*" }
 pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu132" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu132" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0 10.0 12.0+PTX" } }
 
 # --- Per-Python features -----------------------------------------------------
 # One feature per supported interpreter, crossed with the cuNNN features below to
