@@ -7,29 +7,91 @@
 - [CUDA toolkits](https://developer.nvidia.com/cuda-toolkit-archive) that match the CUDA version for your PyTorch installation. This should typically be CUDA 12.1 if you follow the default installation command.
 - If you are installing on Windows, it's strongly recommended to use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu.
 
-Then, install SAM 2 from the root of this repository via
+### Installing prebuilt wheels (GitHub Releases)
+
+Prebuilt wheels are published per release at
+`https://github.com/cjaverliat/sam2/releases`. Because the CUDA extension links
+against PyTorch's C++ ABI, each CUDA wheel is bound to a **specific CUDA major,
+torch minor, Python version, and platform** — encoded in its local version label,
+e.g. `sam2-1.0.3+cu128torch211cxx11abitrue-cp311-cp311-linux_x86_64.whl`. A
+separate pure-Python **CPU** wheel (`+cpu`, no extension) works anywhere.
+
+There is no `pip` mechanism to auto-select a binary by your installed torch
+version, so `setup.py` does it (flash-attn style): when you install **from
+source with torch already present**, it computes the exact wheel name for your
+stack and downloads it from the GitHub Release — no compile. This requires
+`--no-build-isolation` (otherwise the build runs in an isolated env without your
+torch and falls back to a source/CPU build).
+
+```bash
+# 1) install the torch build matching your CUDA first (example: CUDA 12.8)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# 2) install sam2 from source; setup.py fetches the matching prebuilt wheel
+pip install "sam2 @ git+https://github.com/cjaverliat/sam2@v1.0.3" --no-build-isolation
+```
+
+Alternatives:
+
+```bash
+# Pin an exact prebuilt wheel by URL (no torch/python auto-selection)
+pip install https://github.com/cjaverliat/sam2/releases/download/v1.0.3/sam2-1.0.3+cu128torch211cxx11abitrue-cp311-cp311-linux_x86_64.whl
+
+# CPU-only (pure Python, no CUDA toolkit or GPU needed)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install "sam2 @ git+https://github.com/cjaverliat/sam2@v1.0.3" --no-build-isolation
+```
+
+Build-time environment toggles (read by `setup.py`):
+
+| Variable | Effect |
+| --- | --- |
+| `SAM2_FORCE_BUILD=1` | Skip the prebuilt-wheel download; always compile from source. |
+| `SAM2_SKIP_CUDA_BUILD=1` | Build a pure-Python (`+cpu`) wheel — no extension, no toolchain. |
+| `SAM2_FORCE_CUDA=1` | Configure the CUDA extension even if no GPU is detected (CI cross-compile). |
+| `SAM2_WHEEL_BASE_URL=...` | Override the GitHub Releases download URL template. |
+
+> If no matching prebuilt wheel exists for your stack, the install falls back to
+> compiling the extension from source — which needs a CUDA toolkit + host
+> compiler (see [Building the SAM 2 CUDA extension](#building-the-sam-2-cuda-extension)).
+> The runtime also JIT-compiles the kernel on first use if `_C` is missing.
+
+### Building from source (editable / development)
+
+The recommended dev setup uses [pixi](https://pixi.sh), which provisions the CUDA
+toolchain (nvcc, ninja, and on Linux g++) and the matching torch automatically:
+
+```bash
+pixi install                      # default env: CUDA 12.8 + matching torch
+pixi run -e cu128-py311 build-wheel   # build a wheel for a specific CUDA/Python
+pixi run -e cpu python -m build --wheel --no-isolation   # CPU-only wheel
+```
+
+On Windows the only piece pixi cannot provide is **MSVC** (nvcc requires `cl.exe`
+as its host compiler); install Visual Studio Build Tools and run from a developer
+prompt (or let CI's `ilammy/msvc-dev-cmd` handle it).
+
+Or install SAM 2 from the root of this repository via
 ```bash
 pip install -e ".[notebooks]"
 ```
 
-Note that you may skip building the SAM 2 CUDA extension during installation via environment variable `SAM2_BUILD_CUDA=0`, as follows:
+Note that you may skip building the SAM 2 CUDA extension during installation via environment variable `SAM2_SKIP_CUDA_BUILD=1`, as follows:
 ```bash
-# skip the SAM 2 CUDA extension
-SAM2_BUILD_CUDA=0 pip install -e ".[notebooks]"
+# skip the SAM 2 CUDA extension (pure-Python install)
+SAM2_SKIP_CUDA_BUILD=1 pip install -e ".[notebooks]"
 ```
 This would also skip the post-processing step at runtime (removing small holes and sprinkles in the output masks, which requires the CUDA extension), but shouldn't affect the results in most cases.
 
 ### Building the SAM 2 CUDA extension
 
-By default, we allow the installation to proceed even if the SAM 2 CUDA extension fails to build. (In this case, the build errors are hidden unless using `-v` for verbose output in `pip install`.)
+If the CUDA extension is missing at runtime, SAM 2 still works for both image and video applications — the post-processing step (removing small holes and sprinkles in the output masks) is skipped, which shouldn't affect results in most cases. The kernel is also JIT-compiled on first use if a CUDA toolchain is available (see `sam2/utils/misc.py`).
 
-If you see a message like `Skipping the post-processing step due to the error above` at runtime or `Failed to build the SAM 2 CUDA extension due to the error above` during installation, it indicates that the SAM 2 CUDA extension failed to build in your environment. In this case, **you can still use SAM 2 for both image and video applications**. The post-processing step (removing small holes and sprinkles in the output masks) will be skipped, but this shouldn't affect the results in most cases.
-
-If you would like to enable this post-processing step, you can reinstall SAM 2 on a GPU machine with environment variable `SAM2_BUILD_ALLOW_ERRORS=0` to force building the CUDA extension (and raise errors if it fails to build), as follows
+To force a source build of the extension (and surface build errors), set `SAM2_FORCE_BUILD=1`:
 ```bash
 pip uninstall -y SAM-2 && \
-rm -f ./sam2/*.so && \
-SAM2_BUILD_ALLOW_ERRORS=0 pip install -v -e ".[notebooks]"
+rm -f ./sam2/*.so ./sam2/*.pyd && \
+SAM2_FORCE_BUILD=1 pip install -v -e ".[notebooks]" --no-build-isolation
 ```
 
 Note that PyTorch needs to be installed first before building the SAM 2 CUDA extension. It's also necessary to install [CUDA toolkits](https://developer.nvidia.com/cuda-toolkit-archive) that match the CUDA version for your PyTorch installation. (This should typically be CUDA 12.1 if you follow the default installation command.) After installing the CUDA toolkits, you can check its version via `nvcc --version`.

@@ -12,7 +12,7 @@ class SAM2Generic(SAM2Base):
     def __init__(
         self,
         mask_threshold=0.0,
-        max_hole_area=0.0,
+        fill_hole_area=0.0,
         max_sprinkle_area=0.0,
         non_overlap_masks=False,
         **kwargs,
@@ -23,8 +23,8 @@ class SAM2Generic(SAM2Base):
         Arguments:
           mask_threshold (float): The threshold to use when converting mask logits
             to binary masks. Masks are thresholded at 0 by default.
-          max_hole_area (int): If max_hole_area > 0, we fill small holes in up to
-            the maximum area of max_hole_area in low_res_masks.
+          fill_hole_area (int): If fill_hole_area > 0, we fill small holes in up to
+            the maximum area of fill_hole_area in low_res_masks.
           max_sprinkle_area (int): If max_sprinkle_area > 0, we remove small sprinkles up to
             the maximum area of max_sprinkle_area in low_res_masks.
         """
@@ -32,13 +32,23 @@ class SAM2Generic(SAM2Base):
         self._transforms = SAM2Transforms(
             resolution=self.image_size,
             mask_threshold=mask_threshold,
-            max_hole_area=max_hole_area,
+            max_hole_area=fill_hole_area,
             max_sprinkle_area=max_sprinkle_area,
         )
         self.mask_threshold = mask_threshold
         self.non_overlap_masks = non_overlap_masks
 
-        self.empty_prompt_embeddings = self.encode_prompts()
+        # Computed lazily on first use: doing it here in __init__ would capture
+        # the randomly-initialized prompt-encoder weights (the checkpoint is
+        # loaded *after* construction), producing wrong empty-prompt embeddings
+        # that are fed to the decoder on every propagation frame.
+        self._empty_prompt_embeddings = None
+
+    @property
+    def empty_prompt_embeddings(self):
+        if self._empty_prompt_embeddings is None:
+            self._empty_prompt_embeddings = self.encode_prompts()
+        return self._empty_prompt_embeddings
 
     def _prepare_images(
         self, img: torch.Tensor | list[torch.Tensor], scale: bool = True
@@ -61,7 +71,6 @@ class SAM2Generic(SAM2Base):
 
         return torch.cat(img_list, dim=0)
 
-    @torch.inference_mode()
     def encode_image(
         self, image: torch.Tensor | list[torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -97,7 +106,6 @@ class SAM2Generic(SAM2Base):
 
         return img_embeddings, img_pos_embeddings
 
-    @torch.inference_mode()
     def encode_memory(
         self,
         img_embeddings: list[torch.Tensor],
@@ -180,7 +188,6 @@ class SAM2Generic(SAM2Base):
 
         return memory_embeddings, memory_pos_embeddings
 
-    @torch.inference_mode()
     def _prepare_obj_ptrs_for_memory_conditioning(
         self,
         current_frame_idx: int,
@@ -234,7 +241,6 @@ class SAM2Generic(SAM2Base):
 
         return obj_ptrs, obj_tpos_rel
 
-    @torch.inference_mode()
     def _prepare_memory_for_memory_conditioning(
         self,
         t_pos: int,
@@ -254,7 +260,6 @@ class SAM2Generic(SAM2Base):
         )
         return memory_embeddings, memory_tpos_embeddings
 
-    @torch.inference_mode()
     def condition_image_embeddings_on_memories(
         self,
         frame_idx: int,
@@ -358,9 +363,17 @@ class SAM2Generic(SAM2Base):
                 memories.append(memory_embeddings)
                 memories_pos_embed.append(memory_tpos_embeddings)
 
-            # Add non-conditional memories (memory from previous frames, or other depending on the memory strategy)
+            # Add non-conditional memories (memory from previous frames, or other depending on the memory strategy).
+            # `non_conditional_memories` is ordered closest-first (i=0 is the
+            # previous frame). The base model assigns the closest frame the
+            # temporal encoding `maskmem_tpos_enc[0]` and the farthest one
+            # `maskmem_tpos_enc[num_maskmem - 2]`. Since
+            # `_prepare_memory_for_memory_conditioning` indexes the encoding as
+            # `num_maskmem - t_pos - 1`, the closest frame must get the largest
+            # t_pos. Using `t_pos = i + 1` here inverted the temporal order and
+            # broke tracking.
             for i, non_cond_mem in enumerate(non_conditional_memories):
-                t_pos = i + 1
+                t_pos = self.num_maskmem - 1 - i
                 memory_embeddings, memory_tpos_embeddings = (
                     self._prepare_memory_for_memory_conditioning(
                         t_pos,
@@ -404,9 +417,13 @@ class SAM2Generic(SAM2Base):
             1, 2, 0
         ).view(B, C, H, W)
 
+        # Clone to help torch.compile
+        low_res_img_embeddings_with_mem = low_res_img_embeddings_with_mem.clone()
+        for i in range(len(high_res_img_embeddings)):
+            high_res_img_embeddings[i] = high_res_img_embeddings[i].clone()
+
         return high_res_img_embeddings + [low_res_img_embeddings_with_mem]
 
-    @torch.inference_mode()
     def encode_prompts(
         self,
         orig_hw: tuple[int, int] | None = None,
@@ -475,8 +492,11 @@ class SAM2Generic(SAM2Base):
             ), f"Expected masks to be of shape (B, 1, H, W), got {masks_logits.shape}"
 
             masks_low_res_logits = self._transforms.downscale_masks_logits(
-                masks_low_res_logits
+                masks_logits
             )
+            from torchvision.transforms import functional as F, InterpolationMode
+            masks_low_res_logits = F.resize(masks_low_res_logits,size=(self.sam_prompt_encoder.mask_input_size[0], self.sam_prompt_encoder.mask_input_size[1]), interpolation=InterpolationMode.BICUBIC, antialias=True)
+            masks_low_res_logits = (masks_low_res_logits >= 0.5).float()
 
         if boxes is not None:
             assert (
@@ -501,13 +521,20 @@ class SAM2Generic(SAM2Base):
             else:
                 points = (box_points_coords, box_points_labels)
 
+        if points is not None:
+            points = (points[0].clone(), points[1].clone())
+        if masks_low_res_logits is not None:
+            masks_low_res_logits = masks_low_res_logits.clone()
+
         sparse_embeddings, dense_embeddings = self.sam_prompt_encoder.forward(
             points=points, masks=masks_low_res_logits, boxes=None
         )
 
+        sparse_embeddings = sparse_embeddings.clone()
+        dense_embeddings = dense_embeddings.clone()
+
         return sparse_embeddings, dense_embeddings
 
-    @torch.inference_mode()
     def generate_masks(
         self,
         orig_hw: tuple[int, int],
@@ -567,17 +594,20 @@ class SAM2Generic(SAM2Base):
             high_res_features=high_res_img_embeddings,
         )
 
-        # Upscale the masks to the image_size
-        masks_logits = self._transforms.postprocess_masks(
-            masks_logits, (self.image_size, self.image_size)
-        )
-        masks_logits = torch.clamp(masks_logits, -32.0, 32.0)
-
-        # Apply non-overlapping constraints if specified
+        # Apply non-overlapping constraints if specified (on the low-res logits,
+        # before upscaling, as in the base model).
         if self.non_overlap_masks:
             masks_logits = self._apply_non_overlapping_constraints(masks_logits)
 
-        masks_logits = self._transforms.upscale_masks_logits(masks_logits, orig_hw)
+        # Single bilinear upscale of the low-res masks directly to the original
+        # size (matches the base model; avoids an intermediate resize to
+        # image_size and the antialiasing that shifted mask boundaries).
+        masks_logits = self._transforms.postprocess_masks(masks_logits, orig_hw)
+
+        # Clamp after upscaling: capping the magnitude here does not move the
+        # mask boundary (the 0-crossing of the bilinear interpolation), unlike
+        # clamping the low-res logits beforehand.
+        masks_logits = torch.clamp(masks_logits, -32.0, 32.0)
 
         # Extract object pointer from the SAM output token (with occlusion handling)
         sam_output_token = sam_output_tokens[:, 0]
@@ -593,6 +623,12 @@ class SAM2Generic(SAM2Base):
         if self.fixed_no_obj_ptr:
             obj_ptr = obj_visibility * obj_ptr
         obj_ptr = obj_ptr + (1 - obj_visibility) * self.no_obj_ptr
+
+        # Clone to help torch.compile
+        masks_logits = masks_logits.clone()
+        ious = ious.clone()
+        obj_ptr = obj_ptr.clone()
+        obj_scores_logits = obj_scores_logits.clone()
 
         return SAM2Result(
             masks_logits=masks_logits,

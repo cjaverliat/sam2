@@ -11,8 +11,7 @@ import numpy as np
 import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
 
-from sam2.modeling.sam2_base import SAM2Base
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+from sam2.modeling.sam2_generic import SAM2Generic
 from sam2.utils.amg import (
     area_from_rle,
     batch_iterator,
@@ -36,7 +35,7 @@ from sam2.utils.amg import (
 class SAM2AutomaticMaskGenerator:
     def __init__(
         self,
-        model: SAM2Base,
+        model: SAM2Generic,
         points_per_side: Optional[int] = 32,
         points_per_batch: int = 64,
         pred_iou_thresh: float = 0.8,
@@ -129,11 +128,10 @@ class SAM2AutomaticMaskGenerator:
                 print("Please install pycocotools")
                 raise e
 
-        self.predictor = SAM2ImagePredictor(
-            model,
-            max_hole_area=min_mask_region_area,
-            max_sprinkle_area=min_mask_region_area,
-        )
+        self.model = model
+        # Per-image state, populated by `_set_image` and cleared by `_reset_image`.
+        self._img_embeddings: Optional[List[torch.Tensor]] = None
+        self._orig_hw: Optional[Tuple[int, int]] = None
         self.points_per_batch = points_per_batch
         self.pred_iou_thresh = pred_iou_thresh
         self.stability_score_thresh = stability_score_thresh
@@ -161,10 +159,80 @@ class SAM2AutomaticMaskGenerator:
         Returns:
           (SAM2AutomaticMaskGenerator): The loaded model.
         """
-        from sam2.build_sam import build_sam2_hf
+        from sam2.build_sam import build_sam2_generic_hf
 
-        sam_model = build_sam2_hf(model_id, **kwargs)
+        sam_model = build_sam2_generic_hf(model_id, **kwargs)
         return cls(sam_model, **kwargs)
+
+    @property
+    def device(self) -> torch.device:
+        return self.model.device
+
+    def _set_image(self, image: np.ndarray) -> None:
+        """Encode an HWC uint8 image and cache its embeddings for prompting."""
+        img = (
+            torch.as_tensor(image, device=self.device).permute(2, 0, 1).contiguous()
+        )
+        self._orig_hw = image.shape[:2]
+        img_embeddings, img_pos_embeddings = self.model.encode_image(img)
+        # No memories here (single image): condition with empty memories so the
+        # `no_mem_embed` is added to the lowest-res feature, matching what the
+        # decoder expects (otherwise predictions deviate from the base model).
+        conditioned_last = self.model.condition_image_embeddings_on_memories(
+            frame_idx=0,
+            img_embeddings=img_embeddings,
+            img_pos_embeddings=img_pos_embeddings,
+            conditional_memories=[],
+            non_conditional_memories=[],
+            ptr_memories=[],
+        )
+        self._img_embeddings = img_embeddings[:-1] + [conditioned_last]
+
+    def _reset_image(self) -> None:
+        self._img_embeddings = None
+        self._orig_hw = None
+
+    def _predict_points(
+        self,
+        points: torch.Tensor,
+        labels: torch.Tensor,
+        masks_logits: Optional[torch.Tensor] = None,
+        multimask_output: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the generic model on a batch of single-point prompts.
+
+        Args:
+            points: (B, N, 2) point coordinates in pixels of the current image.
+            labels: (B, N) point labels.
+            masks_logits: optional (B, 1, H, W) mask prompts at the image resolution.
+            multimask_output: whether to return multiple masks per prompt.
+
+        Returns:
+            masks_logits (B, M, H, W) and ious (B, M).
+        """
+        assert (
+            self._img_embeddings is not None and self._orig_hw is not None
+        ), "An image must be set with `_set_image(...)` before prediction."
+
+        batch_size = points.shape[0]
+        prompt_embeddings = self.model.encode_prompts(
+            orig_hw=self._orig_hw,
+            batch_size=batch_size,
+            points_coords=points,
+            points_labels=labels,
+            masks_logits=masks_logits,
+        )
+        # Broadcast the single image embeddings over the prompt batch.
+        img_embeddings = [
+            e.expand(batch_size, *e.shape[1:]) for e in self._img_embeddings
+        ]
+        result = self.model.generate_masks(
+            orig_hw=self._orig_hw,
+            img_embeddings=img_embeddings,
+            prompt_embeddings=prompt_embeddings,
+            multimask_output=multimask_output,
+        )
+        return result.masks_logits, result.ious
 
     @torch.no_grad()
     def generate(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -194,6 +262,14 @@ class SAM2AutomaticMaskGenerator:
 
         # Generate masks
         mask_data = self._generate_masks(image)
+
+        # Filter small disconnected regions and holes in masks
+        if self.min_mask_region_area > 0:
+            mask_data = self.postprocess_small_regions(
+                mask_data,
+                self.min_mask_region_area,
+                max(self.box_nms_thresh, self.crop_nms_thresh),
+            )
 
         # Encode masks
         if self.output_mode == "coco_rle":
@@ -259,7 +335,7 @@ class SAM2AutomaticMaskGenerator:
         x0, y0, x1, y1 = crop_box
         cropped_im = image[y0:y1, x0:x1, :]
         cropped_im_size = cropped_im.shape[:2]
-        self.predictor.set_image(cropped_im)
+        self._set_image(cropped_im)
 
         # Get points for this crop
         points_scale = np.array(cropped_im_size)[None, ::-1]
@@ -273,7 +349,7 @@ class SAM2AutomaticMaskGenerator:
             )
             data.cat(batch_data)
             del batch_data
-        self.predictor.reset_predictor()
+        self._reset_image()
 
         # Remove duplicates within this crop.
         keep_by_nms = batched_nms(
@@ -301,31 +377,35 @@ class SAM2AutomaticMaskGenerator:
     ) -> MaskData:
         orig_h, orig_w = orig_size
 
-        # Run model on this batch
-        points = torch.as_tensor(
-            points, dtype=torch.float32, device=self.predictor.device
-        )
-        in_points = self.predictor._transforms.transform_coords(
-            points, normalize=normalize, orig_hw=im_size
-        )
-        in_labels = torch.ones(
-            in_points.shape[0], dtype=torch.int, device=in_points.device
-        )
-        masks, iou_preds, low_res_masks = self.predictor._predict(
-            in_points[:, None, :],
+        # Run model on this batch. `encode_prompts` normalizes the pixel
+        # coordinates wrt the current image, so we pass them as-is.
+        points = torch.as_tensor(points, dtype=torch.float32, device=self.device)
+        in_labels = torch.ones(points.shape[0], dtype=torch.int, device=points.device)
+        masks_logits, iou_preds = self._predict_points(
+            points[:, None, :],
             in_labels[:, None],
             multimask_output=self.multimask_output,
-            return_logits=True,
         )
+        n_masks = masks_logits.shape[1]
 
         # Serialize predictions and store in MaskData
         data = MaskData(
-            masks=masks.flatten(0, 1),
+            masks=masks_logits.flatten(0, 1),
             iou_preds=iou_preds.flatten(0, 1),
-            points=points.repeat_interleave(masks.shape[1], dim=0),
-            low_res_masks=low_res_masks.flatten(0, 1),
+            points=points.repeat_interleave(n_masks, dim=0),
         )
-        del masks
+        if self.use_m2m:
+            # Keep low-resolution mask logits to feed back as mask prompts. We
+            # downscale here so we don't hold image-resolution masks for every
+            # grid point (`encode_prompts` resizes them to the prompt encoder's
+            # input size anyway).
+            data["low_res_masks"] = torch.nn.functional.interpolate(
+                masks_logits.flatten(0, 1).unsqueeze(1),
+                size=(256, 256),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(1)
+        del masks_logits
 
         if not self.use_m2m:
             # Filter by predicted IoU
@@ -342,14 +422,11 @@ class SAM2AutomaticMaskGenerator:
                 data.filter(keep_mask)
         else:
             # One step refinement using previous mask predictions
-            in_points = self.predictor._transforms.transform_coords(
-                data["points"], normalize=normalize, orig_hw=im_size
-            )
             labels = torch.ones(
-                in_points.shape[0], dtype=torch.int, device=in_points.device
+                data["points"].shape[0], dtype=torch.int, device=self.device
             )
             masks, ious = self.refine_with_m2m(
-                in_points, labels, data["low_res_masks"], self.points_per_batch
+                data["points"], labels, data["low_res_masks"], self.points_per_batch
             )
             data["masks"] = masks.squeeze(1)
             data["iou_preds"] = ious.squeeze(1)
@@ -434,19 +511,18 @@ class SAM2AutomaticMaskGenerator:
 
         return mask_data
 
-    def refine_with_m2m(self, points, point_labels, low_res_masks, points_per_batch):
+    def refine_with_m2m(self, points, point_labels, mask_logits, points_per_batch):
         new_masks = []
         new_iou_preds = []
 
-        for cur_points, cur_point_labels, low_res_mask in batch_iterator(
-            points_per_batch, points, point_labels, low_res_masks
+        for cur_points, cur_point_labels, cur_mask in batch_iterator(
+            points_per_batch, points, point_labels, mask_logits
         ):
-            best_masks, best_iou_preds, _ = self.predictor._predict(
+            best_masks, best_iou_preds = self._predict_points(
                 cur_points[:, None, :],
                 cur_point_labels[:, None],
-                mask_input=low_res_mask[:, None, :],
+                masks_logits=cur_mask[:, None, :],
                 multimask_output=False,
-                return_logits=True,
             )
             new_masks.append(best_masks)
             new_iou_preds.append(best_iou_preds)

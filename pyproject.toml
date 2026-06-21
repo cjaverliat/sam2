@@ -1,5 +1,285 @@
 [build-system]
-requires = [
-    "setuptools>=61.0",
-]
+# setuptools + torch so setup.py can declare the CUDAExtension and run the
+# flash-attn-style prebuilt-wheel download. torch must be importable at build
+# time -> built with --no-build-isolation (pixi) or against an env that has it.
+requires = ["setuptools>=61", "wheel", "torch>=2.5.1"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "sam2"
+# version + dependencies are set in setup.py: each prebuilt wheel pins torch to
+# the exact minor it was compiled against (ABI lock), so a mismatched torch fails
+# at install instead of crashing on import.
+dynamic = ["version", "dependencies"]
+description = "SAM 2: Segment Anything in Images and Videos"
+readme = "README.md"
+requires-python = ">=3.10.0"
+license = {text = "Apache 2.0"}
+authors = [
+    {name = "Meta AI", email = "segment-anything@meta.com"},
+]
+[project.urls]
+Homepage = "https://github.com/facebookresearch/sam2"
+
+[project.optional-dependencies]
+notebooks = [
+    "matplotlib>=3.9.1",
+    "jupyter>=1.0.0",
+    "eva-decord>=0.6.1",
+]
+interactive-demo = [
+    "Flask>=3.0.3",
+    "Flask-Cors>=5.0.0",
+    "av>=13.0.0",
+    "dataclasses-json>=0.6.7",
+    "eva-decord>=0.6.1",
+    "gunicorn>=23.0.0",
+    "imagesize>=1.4.1",
+    "pycocotools>=2.0.8",
+    "strawberry-graphql>=0.243.0",
+]
+dev = [
+    "black==24.2.0",
+    "usort==1.0.2",
+    "ufmt==2.0.0b2",
+    "fvcore>=0.1.5.post20221221",
+    "pandas>=2.2.2",
+    "scikit-image>=0.24.0",
+    "tensorboard>=2.17.0",
+    "pycocotools>=2.0.8",
+    "tensordict>=0.6.0",
+    "submitit>=1.5.1",
+]
+
+# version (incl. +cuXXXtorchYY local label) and ext_modules are set in setup.py.
+[tool.setuptools.packages.find]
+include = ["sam2*"]
+exclude = ["notebooks*", "demo*", "tools*", "training*", "sav_dataset*"]
+
+[tool.setuptools.package-data]
+# Hydra configs + CUDA sources (the latter for the JIT source-build fallback in
+# sam2/utils/misc.py when no _C extension is present).
+sam2 = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge", "pytorch", "nvidia"]
+platforms = ["linux-64", "win-64"]
+
+# CUDA-version-agnostic deps shared by every environment. The CUDA toolkit pin,
+# torch index, and system-requirements live in the cu128/cu130 features so a
+# single source tree can build both wheels (see [tool.pixi.environments]).
+# Truly shared deps (no CUDA toolkit here -> the cpu env stays CUDA-free). The
+# CUDA build toolchain lives in the `cudabuild` feature, added to every CUDA env.
+[tool.pixi.dependencies]
+python = ">=3.10"
+numpy = ">=1.24.4"
+# Force the OpenBLAS BLAS variant. On win-64 the default libblas resolves to the
+# MKL build, which pulls a second OpenMP runtime (Intel libiomp5md via
+# mkl -> llvm-openmp) alongside the one bundled in the pip torch wheel ->
+# "OMP: Error #15". OpenBLAS avoids MKL, leaving a single OMP. (linux-64 already
+# defaults to OpenBLAS.)
+libblas = { build = "*openblas" }
+# Build backend deps: present in-env because sam2 builds with --no-build-isolation
+# (needs the env's torch, not an isolated CPU torch).
+setuptools = ">=61,<82"   # torch wheels cap setuptools <82 (pkg_resources use)
+wheel = "*"
+python-build = "*"   # provides `python -m build` for the build-wheel task
+curl = "*"
+pixi-pycharm = "*"
+
+# CUDA build toolchain: nvcc + dev libs + ninja (CUDAExtension build / JIT) and,
+# on linux, the g++ host compiler so the extension builds with zero system
+# toolchain. On win-64 nvcc only supports MSVC cl.exe -> from the machine/runner
+# (conda cannot ship MSVC). Not in the `cpu` feature -> CPU env pulls none of it.
+[tool.pixi.feature.cudabuild.dependencies]
+cuda-nvcc = "*"
+cuda-libraries-dev = "*"
+cuda-cudart-dev = "*"
+ninja = "*"
+# Cap g++ < 14: CUDA 12.6/12.8 nvcc reject host gcc >= 14 (13.x also accepts it).
+[tool.pixi.feature.cudabuild.target.linux-64.dependencies]
+gxx = "<14"
+
+# CPU-only: torch from the PyTorch CPU index, no CUDA. Wheel is pure-Python
+# (no _C extension), so it carries a +cpu label and works on any platform.
+[tool.pixi.feature.cpu]
+pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cpu" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cpu" } }
+activation = { env = { SAM2_SKIP_CUDA_BUILD = "1" } }
+
+[tool.pixi.pypi-options]
+# Build sam2 against the already-installed cuXXX torch (and the env's Python),
+# not a fresh CPU torch pulled from default PyPI in an isolated build env.
+# The isolated build torch lacks c10/cuda/impl/cuda_cmake_macros.h (CUDA-build-only).
+no-build-isolation = ["sam2"]
+
+[tool.pixi.pypi-dependencies]
+sam2 = { path = ".", editable = true }
+
+# --- Per-CUDA toolchains -----------------------------------------------------
+# One feature per supported CUDA version: each pins the toolkit (cuda-version +
+# system-requirements) and the matching torch index. The wheel's +cuXXXtorchYY
+# local label is derived from the linked torch by setup.py (not hard-coded here).
+# All else shared via [tool.pixi.dependencies]. Combine with envs below.
+# TORCH_CUDA_ARCH_LIST is required: CI runners have no GPU, so torch cannot
+# auto-detect the arch and crashes (IndexError in _get_cuda_arch_flags) without
+# it. Blackwell (10.0/12.0) needs CUDA >= 12.8, so cu126 omits them.
+[tool.pixi.feature.cu126]
+system-requirements = { cuda = "12.6" }
+dependencies = { cuda-version = "12.6.*" }
+pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu126" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu126" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0+PTX" } }
+
+[tool.pixi.feature.cu128]
+system-requirements = { cuda = "12.8" }
+dependencies = { cuda-version = "12.8.*" }
+pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu128" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu128" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0 10.0 12.0+PTX" } }
+
+[tool.pixi.feature.cu130]
+system-requirements = { cuda = "13.0" }
+dependencies = { cuda-version = "13.0.*" }
+pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu130" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu130" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0 10.0 12.0+PTX" } }
+
+[tool.pixi.feature.cu132]
+system-requirements = { cuda = "13.2" }
+dependencies = { cuda-version = "13.2.*" }
+pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu132" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu132" } }
+activation = { env = { TORCH_CUDA_ARCH_LIST = "7.5 8.0 8.6 8.9 9.0 10.0 12.0+PTX" } }
+
+# --- Per-Python features -----------------------------------------------------
+# One feature per supported interpreter, crossed with the cuNNN features below to
+# build the full wheel matrix. Pins satisfy the default `python = ">=3.10"`.
+[tool.pixi.feature.py310.dependencies]
+python = "3.10.*"
+[tool.pixi.feature.py311.dependencies]
+python = "3.11.*"
+[tool.pixi.feature.py312.dependencies]
+python = "3.12.*"
+
+# --- Environments ------------------------------------------------------------
+# `default` rides cu128 (+ default python>=3.10) so a bare `pixi run`/`pixi shell`
+# resolves real cu128 torch (not CPU torch from PyPI). The cuNNN-pyMMM grid is the
+# wheel build matrix (CUDA x Python); dev/notebooks/interactive-demo layer their
+# extras on cu128. Each combo gets its own solve-group.
+[tool.pixi.environments]
+default          = { features = ["cu128", "cudabuild"], solve-group = "cu128" }
+dev              = { features = ["cu128", "cudabuild", "dev"], solve-group = "cu128" }
+notebooks        = { features = ["cu128", "cudabuild", "notebooks"], solve-group = "cu128" }
+interactive-demo = { features = ["cu128", "cudabuild", "interactive-demo"], solve-group = "cu128" }
+
+cu126-py310 = { features = ["cu126", "cudabuild", "py310"], solve-group = "cu126-py310" }
+cu126-py311 = { features = ["cu126", "cudabuild", "py311"], solve-group = "cu126-py311" }
+cu126-py312 = { features = ["cu126", "cudabuild", "py312"], solve-group = "cu126-py312" }
+cu128-py310 = { features = ["cu128", "cudabuild", "py310"], solve-group = "cu128-py310" }
+cu128-py311 = { features = ["cu128", "cudabuild", "py311"], solve-group = "cu128-py311" }
+cu128-py312 = { features = ["cu128", "cudabuild", "py312"], solve-group = "cu128-py312" }
+cu130-py310 = { features = ["cu130", "cudabuild", "py310"], solve-group = "cu130-py310" }
+cu130-py311 = { features = ["cu130", "cudabuild", "py311"], solve-group = "cu130-py311" }
+cu130-py312 = { features = ["cu130", "cudabuild", "py312"], solve-group = "cu130-py312" }
+cu132-py310 = { features = ["cu132", "cudabuild", "py310"], solve-group = "cu132-py310" }
+cu132-py311 = { features = ["cu132", "cudabuild", "py311"], solve-group = "cu132-py311" }
+cu132-py312 = { features = ["cu132", "cudabuild", "py312"], solve-group = "cu132-py312" }
+
+# CPU-only wheel is pure-Python -> one build covers all interpreters/platforms;
+# a single env suffices (no cudabuild, no py-version matrix).
+cpu = { features = ["cpu"], solve-group = "cpu" }
+
+# Build a wheel for the active env's stack. setup.py stamps the +cuXXXtorchYY
+# local label from the linked torch and forces a source compile (no download).
+#   pixi run -e cu128-py311 build-wheel
+[tool.pixi.tasks.build-wheel]
+cmd = "python -m build --wheel --no-isolation"
+env = { SAM2_FORCE_BUILD = "1", SAM2_FORCE_CUDA = "1" }
+
+# ---------------------------------------------------------------------------
+# Checkpoint download tasks (cross-platform via curl, conda-provided so it is
+# available on both linux-64 and win-64). Each task declares an `outputs` entry
+# so pixi's task cache skips the download when the file already exists.
+# `curl -L -O -C -` follows redirects, keeps the remote filename, and resumes
+# partial downloads. Aggregate tasks fan out via `depends-on`.
+# ---------------------------------------------------------------------------
+
+# --- SAM 2.1 individual checkpoints ---
+[tool.pixi.tasks.download-sam2-tiny]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_tiny.pt"]
+
+[tool.pixi.tasks.download-sam2-small]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_small.pt"]
+
+[tool.pixi.tasks.download-sam2-base-plus]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_base_plus.pt"]
+
+[tool.pixi.tasks.download-sam2-large]
+cmd = "curl -L -O -C - https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/sam2.1_hiera_large.pt"]
+
+# --- SAM 2.1: all checkpoints ---
+[tool.pixi.tasks.download-sam2]
+depends-on = [
+    "download-sam2-tiny",
+    "download-sam2-small",
+    "download-sam2-base-plus",
+    "download-sam2-large",
+]
+
+# --- EfficientTAM individual checkpoints ---
+[tool.pixi.tasks.download-efficienttam-s]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s.pt"]
+
+[tool.pixi.tasks.download-efficienttam-s-512x512]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_512x512.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s_512x512.pt"]
+
+[tool.pixi.tasks.download-efficienttam-s-1]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_1.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s_1.pt"]
+
+[tool.pixi.tasks.download-efficienttam-s-2]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_2.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_s_2.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti-512x512]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti_512x512.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti_512x512.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti-1]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti_1.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti_1.pt"]
+
+[tool.pixi.tasks.download-efficienttam-ti-2]
+cmd = "curl -L -O -C - https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_ti_2.pt"
+cwd = "checkpoints"
+outputs = ["checkpoints/efficienttam_ti_2.pt"]
+
+# --- EfficientTAM: all checkpoints ---
+[tool.pixi.tasks.download-efficienttam]
+depends-on = [
+    "download-efficienttam-s",
+    "download-efficienttam-s-512x512",
+    "download-efficienttam-s-1",
+    "download-efficienttam-s-2",
+    "download-efficienttam-ti",
+    "download-efficienttam-ti-512x512",
+    "download-efficienttam-ti-1",
+    "download-efficienttam-ti-2",
+]

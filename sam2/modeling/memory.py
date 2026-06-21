@@ -122,6 +122,24 @@ class ObjectMemoryBank(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def select_memories_at_frame(
+        self,
+        obj_ids: list[int],
+        frame_idx: int,
+    ) -> dict[int, ObjectMemory]:
+        """
+        Select the memory for an object at a given frame. If no memory is found, return None.
+
+        Args:
+            obj_ids: The object IDs.
+            frame_idx: The frame index.
+
+        Returns:
+            A dictionary mapping object IDs to memories.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def select_memories(
         self,
         obj_ids: list[int],

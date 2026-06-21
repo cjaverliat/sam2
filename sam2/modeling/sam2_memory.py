@@ -146,6 +146,28 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
         # The original SAM2 implementation has no forgetting strategy, so we don't remove any memories.
         return {}
 
+    def select_memories_at_frame(
+        self,
+        obj_ids: list[int],
+        frame_idx: int,
+    ) -> dict[int, ObjectMemory]:
+        ret: dict[int, ObjectMemory] = {}
+        for obj_id in obj_ids:
+            if obj_id in self.conditional_memories:
+                obj_cond_memories = self.conditional_memories[obj_id]
+                obj_cond_memory = next((m for m in obj_cond_memories if m.frame_idx == frame_idx), None)
+                if obj_cond_memory is not None:
+                    ret[obj_id] = obj_cond_memory
+                    continue
+            
+            if obj_id in self.non_conditional_memories:
+                obj_non_cond_memories = self.non_conditional_memories[obj_id]
+                obj_non_cond_memory = next((m for m in obj_non_cond_memories if m.frame_idx == frame_idx), None)
+                if obj_non_cond_memory is not None:
+                    ret[obj_id] = obj_non_cond_memory
+                    continue
+        return ret
+
     def select_memories(
             self,
             obj_ids: list[int],
@@ -180,7 +202,11 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             # 2. Select the non-conditional memories
             # If an unselected conditioning frame is among the last frames, we still attend to it as if it's a non-conditioning frame.
 
-            selected_obj_non_conditional_memories = obj_non_conditional_memories
+            # Copy the stored list before extending: `obj_non_conditional_memories`
+            # is a reference to the bank's list, so extending it in place would
+            # permanently insert the unselected conditional memories into the
+            # bank (duplicating them across frames).
+            selected_obj_non_conditional_memories = list(obj_non_conditional_memories)
             selected_obj_non_conditional_memories.extend(
                 unselected_obj_conditional_memories
             )

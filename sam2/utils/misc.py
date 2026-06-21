@@ -44,6 +44,89 @@ def get_sdpa_settings():
     return old_gpu, use_flash_attn, math_kernel_on
 
 
+# None = not yet tried; False = all attempts failed; module object = ready.
+_connected_components_ext = None
+
+
+def _load_connected_components_ext():
+    global _connected_components_ext
+    if _connected_components_ext is False:
+        raise ImportError(
+            "sam2._C is not available (pre-built extension missing; JIT compile also failed)."
+        )
+    if _connected_components_ext is not None:
+        return _connected_components_ext
+
+    # 1) Pre-built extension.
+    try:
+        from sam2 import _C
+
+        _connected_components_ext = _C
+        return _connected_components_ext
+    except ImportError:
+        pass
+
+    # 2) JIT compile from source.
+    try:
+        import os
+        import platform
+        from pathlib import Path
+
+        # Redirect CUDA_HOME to the active pixi/conda env's toolkit BEFORE
+        # importing torch.utils.cpp_extension — it caches CUDA_HOME at import
+        # time, so the env var must be set first. The pixi env's nvcc matches
+        # the CUDA version torch was built with; a system nvcc may differ.
+        _conda = os.environ.get("CONDA_PREFIX") or os.environ.get("MAMBA_ROOT_PREFIX")
+        if _conda:
+            _conda_cuda = os.path.join(
+                _conda, "Library" if platform.system() == "Windows" else ""
+            )
+            _nvcc = os.path.join(
+                _conda_cuda,
+                "bin",
+                "nvcc.exe" if platform.system() == "Windows" else "nvcc",
+            )
+            if os.path.isfile(_nvcc):
+                os.environ["CUDA_HOME"] = _conda_cuda
+
+        import torch.utils.cpp_extension as _cpp_ext
+
+        # Also patch the cached module-level variable in case cpp_extension
+        # was already imported earlier with a different CUDA_HOME.
+        if _conda and os.path.isfile(_nvcc):
+            _cpp_ext.CUDA_HOME = _conda_cuda
+
+        _csrc = Path(__file__).parent.parent / "csrc"
+        warnings.warn(
+            "sam2._C (pre-built CUDA extension) not found. "
+            "Attempting JIT compile — this may take a few minutes on first run.",
+            category=UserWarning,
+            stacklevel=4,
+        )
+
+        _connected_components_ext = _cpp_ext.load(
+            name="_C",
+            sources=[
+                str(_csrc / "connected_components.cu"),
+                str(_csrc / "connected_components_binding.cpp"),
+            ],
+            extra_cuda_cflags=[
+                "-DCUDA_HAS_FP16=1",
+                "-D__CUDA_NO_HALF_OPERATORS__",
+                "-D__CUDA_NO_HALF_CONVERSIONS__",
+                "-D__CUDA_NO_HALF2_OPERATORS__",
+            ],
+            verbose=False,
+        )
+        return _connected_components_ext
+    except Exception as e:
+        _connected_components_ext = False
+        raise ImportError(
+            f"sam2._C JIT compile failed: {e}. "
+            "Install a CUDA toolchain or set SAM2_BUILD_CUDA=0 to skip the extension."
+        ) from e
+
+
 def get_connected_components(mask):
     """
     Get the connected components (8-connectivity) of binary masks of shape (N, 1, H, W).
@@ -58,9 +141,9 @@ def get_connected_components(mask):
     - counts: A tensor of shape (N, 1, H, W) containing the area of the connected
               components for foreground pixels and 0 for background pixels.
     """
-    from sam2 import _C
-
-    return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    return _load_connected_components_ext().get_connected_components(
+        mask.to(torch.uint8).contiguous()
+    )
 
 
 def mask_to_box(masks: torch.Tensor):

@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.transforms import Normalize, Resize, ToTensor
-
+from sam2.utils.misc import get_connected_components
 
 class SAM2Transforms(nn.Module):
     def __init__(
@@ -95,7 +95,6 @@ class SAM2Transforms(nn.Module):
         """
         Perform PostProcessing on output masks.
         """
-        from sam2.utils.misc import get_connected_components
 
         masks = masks.float()
         input_masks = masks

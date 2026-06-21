@@ -37,8 +37,9 @@ class SAM2Prompt:
         if boxes is not None and (boxes.ndim != 2 or boxes.shape[1] != 4):
             raise ValueError(f"Expected boxes to be of shape (N, 4), got {boxes.shape}")
         
-        if masks_logits is not None and (masks_logits.ndim != 3 or masks_logits.shape[1] != masks_logits.shape[2]):
-            raise ValueError(f"Expected masks_logits to be of shape (N, H, W), got {masks_logits.shape}")
+        if masks_logits is not None:
+            mask_res = masks_logits.shape[-2:]
+            masks_logits = masks_logits.reshape(1, *mask_res) # Reshape to (1, H, W)
 
         self.obj_id = obj_id
         self.points_coords = points_coords
