@@ -176,8 +176,15 @@ def get_extensions(torch):
     # torch from injecting C++20; C++17 satisfies the headers. (Linux/gcc builds
     # C++20 fine, so leave them untouched.)
     if sys.platform == "win32":
-        cxx_args.append("/std:c++17")
-        nvcc_args += ["-std=c++17", "-Xcompiler", "/std:c++17"]
+        # /Zc:preprocessor: CUDA 13.2+ CCCL headers hard-error (C1189) on MSVC's
+        # traditional preprocessor; force the standard-conforming one. Harmless on
+        # older CUDA.
+        cxx_args += ["/std:c++17", "/Zc:preprocessor"]
+        nvcc_args += [
+            "-std=c++17",
+            "-Xcompiler", "/std:c++17",
+            "-Xcompiler", "/Zc:preprocessor",
+        ]
 
     # setuptools requires /-separated paths relative to setup.py, never absolute.
     return [
