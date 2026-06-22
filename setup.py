@@ -160,8 +160,32 @@ def get_wheel_filename(version, local_label):
 # ---------------------------------------------------------------------------
 # Extension definition (only when building from source)
 # ---------------------------------------------------------------------------
+def _require_msvc():
+    """Fail early with a clear message if MSVC's cl.exe isn't on PATH (Windows).
+
+    nvcc compiles the host side of sam2._C with MSVC. Without an activated MSVC
+    environment the build otherwise dies deep inside ninja with an opaque,
+    swallowed error. Check up front and tell the user how to fix it.
+    """
+    if sys.platform != "win32":
+        return
+    import shutil
+
+    if shutil.which("cl") is None:
+        raise SystemExit(
+            "\n"
+            "sam2 build error: MSVC compiler 'cl.exe' was not found on PATH.\n"
+            "\n"
+            "Building the sam2._C CUDA extension on Windows needs the MSVC x64\n"
+            "toolchain active. Build from an \"x64 Native Tools Command Prompt for\n"
+            "VS\" (or run vcvars64.bat first), then retry the install/build.\n"
+        )
+
+
 def get_extensions(torch):
     from torch.utils.cpp_extension import CUDAExtension
+
+    _require_msvc()
 
     cxx_args = []
     nvcc_args = [
