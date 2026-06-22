@@ -1,8 +1,11 @@
 [build-system]
-# setuptools + torch so setup.py can declare the CUDAExtension and run the
-# flash-attn-style prebuilt-wheel download. torch must be importable at build
-# time -> built with --no-build-isolation (pixi) or against an env that has it.
-requires = ["setuptools>=61", "wheel", "torch>=2.5.1"]
+# torch is deliberately NOT listed here. setup.py inspects the *installed* torch
+# (CUDA vs CPU, version, C++ ABI) to pick the right prebuilt wheel and to pin the
+# install_requires torch. An isolated build env would install some unrelated torch
+# (typically CPU-only) and silently produce a mismatched/CPU wheel. So torch must
+# come from the target environment: install it first and build with
+# --no-build-isolation. setup.py hard-fails if torch is missing.
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]

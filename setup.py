@@ -207,26 +207,68 @@ ext_modules = []
 cmdclass = {}
 local_label = None
 
-# torch may be absent during metadata-only steps (e.g. uv's editable metadata
-# prep). Degrade gracefully: no torch -> plain version, no extension. The runtime
-# JIT fallback in sam2/utils/misc.py still builds _C on first use for dev/editable
-# installs on a machine that has a CUDA toolchain.
+# torch must come from the target environment (not an isolated build env): the
+# build keys the CUDA/CPU choice, C++ ABI tag and install_requires pin off the
+# *installed* torch. An isolated build would silently produce a mismatched
+# (typically CPU-only) wheel, so we refuse to build without torch.
+#
+# Exception: metadata-only steps (egg_info / dist_info / --version, e.g. uv's
+# editable metadata prep during a pixi solve) run *before* torch is installed
+# into the env. Those must degrade gracefully (no torch -> plain version, no
+# extension) so the solve can bootstrap; the real build happens later with torch
+# present. So only hard-fail on commands that actually build a distribution.
+_BUILD_COMMANDS = {
+    "build",
+    "build_ext",
+    "bdist_wheel",
+    "bdist_egg",
+    "editable_wheel",
+    "install",
+    "develop",
+}
+_is_building = not _BUILD_COMMANDS.isdisjoint(sys.argv)
+
 try:
     import torch  # noqa: F401
 except ImportError:
+    if _is_building and not SKIP_CUDA_BUILD:
+        raise SystemExit(
+            "\n"
+            "sam2 build error: PyTorch is not importable in the build environment.\n"
+            "\n"
+            "sam2 inspects the installed torch (CUDA vs CPU, version, C++ ABI) to\n"
+            "select/build the right native extension and to pin its torch dependency.\n"
+            "It therefore must NOT be built with build isolation. Do this instead:\n"
+            "\n"
+            "  1. Install torch for your target platform first, e.g.\n"
+            "       pip install torch torchvision\n"
+            "     (or the CUDA build from https://pytorch.org for GPU kernels)\n"
+            "  2. Reinstall sam2 with build isolation disabled:\n"
+            "       pip install --no-build-isolation "
+            "git+https://github.com/cjaverliat/sam2.git\n"
+            "\n"
+            "If torch reports a CPU-only build, sam2 produces a pure-Python (no _C)\n"
+            "wheel; a CUDA torch enables the prebuilt-or-source compiled kernels.\n"
+        )
+    # Metadata-only step (or explicit SKIP_CUDA_BUILD): degrade gracefully.
     torch = None
 
-# CPU build: explicit skip, or torch is a CPU-only build (no CUDA to link).
-# Produces a pure-Python wheel (no _C) labelled +cpu, valid on any platform.
-is_cpu_build = SKIP_CUDA_BUILD or (
-    torch is not None and getattr(torch.version, "cuda", None) is None
+# CPU build: no torch yet (metadata-only), explicit skip, or torch is a CPU-only
+# build (no CUDA to link). Produces a pure-Python wheel (no _C) labelled +cpu.
+is_cpu_build = (
+    SKIP_CUDA_BUILD
+    or torch is None
+    or getattr(torch.version, "cuda", None) is None
 )
 
-if is_cpu_build and torch is not None:
+if torch is None:
+    # Metadata-only: plain version, no extension, loose deps.
+    pass
+elif is_cpu_build:
     local_label = "cpu"
     # No extension, no download command: a pure-Python build needs no toolchain
     # and is instant, so source-build is always the right fallback.
-elif torch is not None:
+else:
     _point_cuda_home_at_conda()
     from torch.utils.cpp_extension import BuildExtension
     from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
