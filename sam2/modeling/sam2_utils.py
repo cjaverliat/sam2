@@ -16,6 +16,16 @@ import torch.nn.functional as F
 from sam2.utils.misc import mask_to_box
 
 
+def is_exporting() -> bool:
+    """True while the graph is being captured for ONNX export (or torch.compile /
+    jit tracing). Used to pick ONNX-friendly ops over eager fast paths."""
+    return (
+        torch.onnx.is_in_onnx_export()
+        or torch.compiler.is_compiling()
+        or torch.jit.is_tracing()
+    )
+
+
 def select_closest_cond_frames(frame_idx, cond_frame_outputs, max_cond_frame_num):
     """
     Select up to `max_cond_frame_num` conditioning frames from `cond_frame_outputs`
