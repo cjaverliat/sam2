@@ -107,9 +107,11 @@ def build_sam2_generic(
     mode="eval",
     hydra_overrides_extra=[],
     apply_postprocessing=True,
+    use_half=False,
 ) -> SAM2Generic:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2Generic",
+        f"++model.use_half={use_half}",
     ]
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
@@ -144,17 +146,25 @@ def build_sam2_generic_video_predictor(
     hydra_overrides_extra=[],
     apply_postprocessing=True,
     vos_optimized=False,
+    use_half=False,
+    compile_image_encoder=False,
     **kwargs,
 ) -> SAM2GenericVideoPredictor:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
+        f"++model.use_half={use_half}",
     ]
-    
+
     if vos_optimized:
+        # VOS always compiles the image encoder; don't append compile_image_encoder
+        # again below to avoid a duplicate hydra override.
         hydra_overrides = [
             "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
+            f"++model.use_half={use_half}",
         ]
+    elif compile_image_encoder:
+        hydra_overrides.append("++model.compile_image_encoder=True")
 
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
