@@ -30,6 +30,53 @@ notebooks = [
     "jupyter>=1.0.0",
     "eva-decord>=0.6.1",
 ]
+# ONNX export + runtime. Export uses the dynamo exporter (onnxscript) at opset 18
+# (decomposed; native opset-23 ops break on the ORT TensorRT EP). Pick a runtime tier
+# by execution provider (onnxruntime CPU and
+# onnxruntime-gpu conflict, so each tier pulls exactly one) and CUDA line:
+#   onnx                -> CPU EP (export + CPU inference / parity checks)
+#   onnx-gpu-cu12       -> CUDA EP, CUDA 12 (cu128 torch)
+#   onnx-tensorrt-cu12  -> TensorRT EP + CUDA fallback, CUDA 12
+#   onnx-gpu-cu13       -> CUDA EP, CUDA 13 (cu130 torch)
+#   onnx-tensorrt-cu13  -> TensorRT EP + CUDA fallback, CUDA 13
+onnx = [
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "onnxruntime>=1.17",
+    # mixed-precision fp16 export (tools/export_onnx.py --fp16).
+    "onnxconverter-common>=1.14.0",
+]
+# CUDA-12 tiers: onnxruntime-gpu >= 1.23 ships only CUDA 13 wheels, so cap to the
+# CUDA-12 line (<1.23) to match cu128 torch. Those wheels exist only for Python
+# <= 3.13, so the cu12 environments below also pin python (py312). `tensorrt` is
+# pinned to the explicit cu12 metapackage — plain `tensorrt` now resolves to the
+# cu13 build, which mismatches a CUDA-12 env.
+onnx-gpu-cu12 = [
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "onnxruntime-gpu>=1.20,<1.23",
+]
+onnx-tensorrt-cu12 = [
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "onnxruntime-gpu>=1.20,<1.23",
+    # <11: onnxruntime-gpu links nvinfer_10.dll, so TRT 11 fails the EP plugin load.
+    "tensorrt-cu12>=10.0.0,<11",
+]
+# CUDA-13 tiers: onnxruntime-gpu >= 1.23 = CUDA-13 wheels (cuDNN 9), paired with
+# cu130 torch. tensorrt-cu13 must match the TensorRT the onnxruntime-gpu build
+# links (TRT 10.x): cap <11 since the EP plugin imports nvinfer_10.dll.
+onnx-gpu-cu13 = [
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "onnxruntime-gpu>=1.23",
+]
+onnx-tensorrt-cu13 = [
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "onnxruntime-gpu>=1.23",
+    "tensorrt-cu13>=10.0.0,<11",
+]
 interactive-demo = [
     "Flask>=3.0.3",
     "Flask-Cors>=5.0.0",
@@ -177,6 +224,18 @@ default          = { features = ["cu128", "cudabuild"], solve-group = "cu128" }
 dev              = { features = ["cu128", "cudabuild", "dev"], solve-group = "cu128" }
 notebooks        = { features = ["cu128", "cudabuild", "notebooks"], solve-group = "cu128" }
 interactive-demo = { features = ["cu128", "cudabuild", "interactive-demo"], solve-group = "cu128" }
+# Separate solve-groups: the CPU onnxruntime and onnxruntime-gpu variants conflict,
+# so these cannot share the cu128 group (nor each other's). The GPU envs also pin
+# py312: the CUDA-12 onnxruntime-gpu wheels (<1.23) exist only for Python <= 3.13.
+onnx               = { features = ["cu128", "cudabuild", "onnx"], solve-group = "onnx-cpu" }
+# CPU-only export env (no CUDA toolchain): used by the export-onnx CI to build the
+# .onnx graphs and CPU-parity-check them. Export is device-agnostic; opset-23 graphs
+# validate on the CPU EP with onnxruntime >= 1.23.
+onnx-export        = { features = ["cpu", "onnx"], solve-group = "onnx-export" }
+onnx-gpu-cu12      = { features = ["cu128", "cudabuild", "py312", "onnx-gpu-cu12"], solve-group = "onnx-gpu-cu12" }
+onnx-tensorrt-cu12 = { features = ["cu128", "cudabuild", "py312", "onnx-tensorrt-cu12"], solve-group = "onnx-trt-cu12" }
+onnx-gpu-cu13      = { features = ["cu130", "cudabuild", "py312", "onnx-gpu-cu13"], solve-group = "onnx-gpu-cu13" }
+onnx-tensorrt-cu13 = { features = ["cu130", "cudabuild", "py312", "onnx-tensorrt-cu13"], solve-group = "onnx-trt-cu13" }
 
 cu126-py310 = { features = ["cu126", "cudabuild", "py310"], solve-group = "cu126-py310" }
 cu126-py311 = { features = ["cu126", "cudabuild", "py311"], solve-group = "cu126-py311" }
@@ -294,4 +353,83 @@ depends-on = [
     "download-efficienttam-ti-512x512",
     "download-efficienttam-ti-1",
     "download-efficienttam-ti-2",
+]
+
+# ---------------------------------------------------------------------------
+# ONNX export tasks. One task per model: it downloads the checkpoint (via
+# `depends-on`) and exports the 5 SAM2 blocks twice at opset 18 (decomposed RoPE/SDPA;
+# the native opset-23 ops break on the ORT TensorRT EP) — fp32 and mixed fp16 — into
+# outputs/onnx/<model>/{opset18,opset18-fp16}. Export needs the
+# dynamo exporter (onnxscript), so
+# run these in an onnx env, e.g.:
+#     pixi run -e onnx-export export-onnx            # all variants
+#     pixi run -e onnx-export export-onnx-sam2-tiny  # one variant
+# The export-onnx CI uses the same tasks (onnx-export env).
+# ---------------------------------------------------------------------------
+
+# --- SAM 2.1 ---
+[tool.pixi.tasks.export-onnx-sam2-tiny]
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_t.yaml --ckpt checkpoints/sam2.1_hiera_tiny.pt --out-dir outputs/onnx/sam2.1_hiera_tiny/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_t.yaml --ckpt checkpoints/sam2.1_hiera_tiny.pt --out-dir outputs/onnx/sam2.1_hiera_tiny/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-sam2-tiny"]
+
+[tool.pixi.tasks.export-onnx-sam2-small]
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --out-dir outputs/onnx/sam2.1_hiera_small/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --out-dir outputs/onnx/sam2.1_hiera_small/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-sam2-small"]
+
+[tool.pixi.tasks.export-onnx-sam2-base-plus]
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_b+.yaml --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir outputs/onnx/sam2.1_hiera_base_plus/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_b+.yaml --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir outputs/onnx/sam2.1_hiera_base_plus/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-sam2-base-plus"]
+
+[tool.pixi.tasks.export-onnx-sam2-large]
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_l.yaml --ckpt checkpoints/sam2.1_hiera_large.pt --out-dir outputs/onnx/sam2.1_hiera_large/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_l.yaml --ckpt checkpoints/sam2.1_hiera_large.pt --out-dir outputs/onnx/sam2.1_hiera_large/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-sam2-large"]
+
+# --- EfficientTAM ---
+[tool.pixi.tasks.export-onnx-efficienttam-s]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s.yaml --ckpt checkpoints/efficienttam_s.pt --out-dir outputs/onnx/efficienttam_s/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s.yaml --ckpt checkpoints/efficienttam_s.pt --out-dir outputs/onnx/efficienttam_s/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-s"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-s-512x512]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_512x512.yaml --ckpt checkpoints/efficienttam_s_512x512.pt --out-dir outputs/onnx/efficienttam_s_512x512/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_512x512.yaml --ckpt checkpoints/efficienttam_s_512x512.pt --out-dir outputs/onnx/efficienttam_s_512x512/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-s-512x512"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-s-1]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_1.yaml --ckpt checkpoints/efficienttam_s_1.pt --out-dir outputs/onnx/efficienttam_s_1/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_1.yaml --ckpt checkpoints/efficienttam_s_1.pt --out-dir outputs/onnx/efficienttam_s_1/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-s-1"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-s-2]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_2.yaml --ckpt checkpoints/efficienttam_s_2.pt --out-dir outputs/onnx/efficienttam_s_2/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_2.yaml --ckpt checkpoints/efficienttam_s_2.pt --out-dir outputs/onnx/efficienttam_s_2/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-s-2"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-ti]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti.yaml --ckpt checkpoints/efficienttam_ti.pt --out-dir outputs/onnx/efficienttam_ti/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti.yaml --ckpt checkpoints/efficienttam_ti.pt --out-dir outputs/onnx/efficienttam_ti/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-ti"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-ti-512x512]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_512x512.yaml --ckpt checkpoints/efficienttam_ti_512x512.pt --out-dir outputs/onnx/efficienttam_ti_512x512/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_512x512.yaml --ckpt checkpoints/efficienttam_ti_512x512.pt --out-dir outputs/onnx/efficienttam_ti_512x512/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-ti-512x512"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-ti-1]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_1.yaml --ckpt checkpoints/efficienttam_ti_1.pt --out-dir outputs/onnx/efficienttam_ti_1/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_1.yaml --ckpt checkpoints/efficienttam_ti_1.pt --out-dir outputs/onnx/efficienttam_ti_1/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-ti-1"]
+
+[tool.pixi.tasks.export-onnx-efficienttam-ti-2]
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_2.yaml --ckpt checkpoints/efficienttam_ti_2.pt --out-dir outputs/onnx/efficienttam_ti_2/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_2.yaml --ckpt checkpoints/efficienttam_ti_2.pt --out-dir outputs/onnx/efficienttam_ti_2/opset18-fp16 --opset 18 --fp16"
+depends-on = ["download-efficienttam-ti-2"]
+
+# --- all variants ---
+[tool.pixi.tasks.export-onnx]
+depends-on = [
+    "export-onnx-sam2-tiny",
+    "export-onnx-sam2-small",
+    "export-onnx-sam2-base-plus",
+    "export-onnx-sam2-large",
+    "export-onnx-efficienttam-s",
+    "export-onnx-efficienttam-s-512x512",
+    "export-onnx-efficienttam-s-1",
+    "export-onnx-efficienttam-s-2",
+    "export-onnx-efficienttam-ti",
+    "export-onnx-efficienttam-ti-512x512",
+    "export-onnx-efficienttam-ti-1",
+    "export-onnx-efficienttam-ti-2",
 ]
