@@ -69,8 +69,7 @@ jobs:
         python: ["3.10", "3.11", "3.12"]
         torch: ["2.6", "2.7", "2.8", "2.9"]
     env:
-      FORCE_CUDA: 0
-      SAM2_BUILD_ALLOW_ERRORS: 0
+      SAM2_ALLOW_BUILD_ERRORS: 0
       SAM2_BUILD_CUDA: 0
     steps:
       - name: Checkout repository
@@ -119,8 +118,7 @@ jobs:
         torch: ["2.6", "2.7", "2.8", "2.9"]
     env:
       TORCH_CUDA_ARCH_LIST: "8.6 8.7 9.0+PTX"
-      FORCE_CUDA: 1
-      SAM2_BUILD_ALLOW_ERRORS: 0
+      SAM2_ALLOW_BUILD_ERRORS: 0
       SAM2_BUILD_CUDA: 1
     steps:
       - name: Free up disk space

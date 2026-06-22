@@ -64,6 +64,13 @@ exclude = ["notebooks*", "demo*", "tools*", "training*", "sav_dataset*"]
 # sam2/utils/misc.py when no _C extension is present).
 sam2 = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
 
+# Windows: the sam2 native extension is built with nvcc + MSVC cl.exe, which conda
+# cannot ship. Before running any pixi command that builds/installs sam2 (e.g.
+# `pixi run`, `pixi install`, `pixi shell`), source the MSVC environment first so
+# cl.exe is on PATH, e.g. in a cmd shell:
+#     "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+# (adjust the edition/year for your install). Otherwise the build fails with a
+# missing cl.exe / "Error compiling objects for extension".
 [tool.pixi.workspace]
 channels = ["conda-forge", "pytorch", "nvidia"]
 platforms = ["linux-64", "win-64"]
@@ -107,7 +114,7 @@ gxx = "<14"
 # (no _C extension), so it carries a +cpu label and works on any platform.
 [tool.pixi.feature.cpu]
 pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cpu" }, torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cpu" } }
-activation = { env = { SAM2_SKIP_CUDA_BUILD = "1" } }
+activation = { env = { SAM2_BUILD_CUDA = "0" } }
 
 [tool.pixi.pypi-options]
 # Build sam2 against the already-installed cuXXX torch (and the env's Python),
@@ -190,10 +197,12 @@ cpu = { features = ["cpu"], solve-group = "cpu" }
 
 # Build a wheel for the active env's stack. setup.py stamps the +cuXXXtorchYY
 # local label from the linked torch and forces a source compile (no download).
+# SAM2_BUILD_CUDA=1 builds _C even on a GPU-less runner (nvcc cross-compiles);
+# SAM2_ALLOW_BUILD_ERRORS=0 makes a broken kernel build fail the CI loudly.
 #   pixi run -e cu128-py311 build-wheel
 [tool.pixi.tasks.build-wheel]
 cmd = "python -m build --wheel --no-isolation"
-env = { SAM2_FORCE_BUILD = "1", SAM2_FORCE_CUDA = "1" }
+env = { SAM2_FORCE_BUILD = "1", SAM2_BUILD_CUDA = "1", SAM2_ALLOW_BUILD_ERRORS = "0" }
 
 # ---------------------------------------------------------------------------
 # Checkpoint download tasks (cross-platform via curl, conda-provided so it is
