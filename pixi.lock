@@ -14060,8 +14060,8 @@ packages:
   requires_python: '>=3.11'
 - pypi: ./
   name: sam2
-  version: 1.0.3
-  sha256: f9b6da4aacd9884f5e6b2dbb7a74d60748a74448ea898534ac10f5ce9c7f68da
+  version: 1.0.4+cpu
+  sha256: 307898088c0d352129761ac4b789c65e6576ef178daef2de205a9a744f03b30e
   requires_dist:
   - numpy>=1.24.4
   - tqdm>=4.66.1
