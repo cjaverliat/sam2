@@ -38,6 +38,11 @@ class SAM2Generic(SAM2Base):
         self.mask_threshold = mask_threshold
         self.non_overlap_masks = non_overlap_masks
 
+        # When False, the defensive `.clone()`s that only exist to keep
+        # torch.compile happy are skipped (they cost an extra copy per call on
+        # the eager path). Set to True by subclasses that compile components.
+        self._compile_enabled = False
+
         # Computed lazily on first use: doing it here in __init__ would capture
         # the randomly-initialized prompt-encoder weights (the checkpoint is
         # loaded *after* construction), producing wrong empty-prompt embeddings
@@ -417,10 +422,11 @@ class SAM2Generic(SAM2Base):
             1, 2, 0
         ).view(B, C, H, W)
 
-        # Clone to help torch.compile
-        low_res_img_embeddings_with_mem = low_res_img_embeddings_with_mem.clone()
-        for i in range(len(high_res_img_embeddings)):
-            high_res_img_embeddings[i] = high_res_img_embeddings[i].clone()
+        # Clone to help torch.compile (only needed on the compiled path)
+        if self._compile_enabled:
+            low_res_img_embeddings_with_mem = low_res_img_embeddings_with_mem.clone()
+            for i in range(len(high_res_img_embeddings)):
+                high_res_img_embeddings[i] = high_res_img_embeddings[i].clone()
 
         return high_res_img_embeddings + [low_res_img_embeddings_with_mem]
 
@@ -521,17 +527,20 @@ class SAM2Generic(SAM2Base):
             else:
                 points = (box_points_coords, box_points_labels)
 
-        if points is not None:
-            points = (points[0].clone(), points[1].clone())
-        if masks_low_res_logits is not None:
-            masks_low_res_logits = masks_low_res_logits.clone()
+        # Clone to help torch.compile (only needed on the compiled path)
+        if self._compile_enabled:
+            if points is not None:
+                points = (points[0].clone(), points[1].clone())
+            if masks_low_res_logits is not None:
+                masks_low_res_logits = masks_low_res_logits.clone()
 
         sparse_embeddings, dense_embeddings = self.sam_prompt_encoder.forward(
             points=points, masks=masks_low_res_logits, boxes=None
         )
 
-        sparse_embeddings = sparse_embeddings.clone()
-        dense_embeddings = dense_embeddings.clone()
+        if self._compile_enabled:
+            sparse_embeddings = sparse_embeddings.clone()
+            dense_embeddings = dense_embeddings.clone()
 
         return sparse_embeddings, dense_embeddings
 
@@ -624,11 +633,12 @@ class SAM2Generic(SAM2Base):
             obj_ptr = obj_visibility * obj_ptr
         obj_ptr = obj_ptr + (1 - obj_visibility) * self.no_obj_ptr
 
-        # Clone to help torch.compile
-        masks_logits = masks_logits.clone()
-        ious = ious.clone()
-        obj_ptr = obj_ptr.clone()
-        obj_scores_logits = obj_scores_logits.clone()
+        # Clone to help torch.compile (only needed on the compiled path)
+        if self._compile_enabled:
+            masks_logits = masks_logits.clone()
+            ious = ious.clone()
+            obj_ptr = obj_ptr.clone()
+            obj_scores_logits = obj_scores_logits.clone()
 
         return SAM2Result(
             masks_logits=masks_logits,
