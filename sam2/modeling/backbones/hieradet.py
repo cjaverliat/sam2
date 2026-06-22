@@ -225,9 +225,12 @@ class Hiera(nn.Module):
             torch.zeros(1, embed_dim, self.window_spec[0], self.window_spec[0])
         )
 
+        # stochastic depth decay rule (plain-python so the module can be built on a
+        # meta device — ``Tensor.item()`` is unavailable on meta tensors)
         dpr = [
-            x.item() for x in torch.linspace(0, drop_path_rate, depth)
-        ]  # stochastic depth decay rule
+            drop_path_rate * i / (depth - 1) if depth > 1 else 0.0
+            for i in range(depth)
+        ]
 
         cur_stage = 1
         self.blocks = nn.ModuleList()
