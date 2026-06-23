@@ -341,7 +341,16 @@ def main():
     # above so TensorRT can build a single profiled engine. (min=1: examples use size
     # 1/2, and torch.export Dim defaults to min=2.)
     npts = Dim("npts", min=1)
-    mlen = Dim("mem_len", min=1, max=rope_max)
+    # Spatial (rope) memory is always num_frames * HW tokens — each frame contributes a
+    # G*G grid. Express the length as a derived dim (HW * num_frames) so the per-frame
+    # landmark fold + avg_pool2d in EfficientRoPEAttention traces under torch.export
+    # instead of specializing the frame axis (a plain Dim("mem_len") collapses to
+    # min=max=1 on the single-frame example). Non-landmark models are unaffected: their
+    # rope memory is a multiple of HW too, so the derived dim is just a tighter (correct)
+    # bound on the same dynamic axis.
+    nframes_max = rope_max // HW if rope_max is not None else None
+    nframes = Dim("num_frames", min=1, max=nframes_max)
+    mlen = HW * nframes
     plen = Dim("ptr_len", min=1, max=ptr_max)
 
     # ---------- image encoder (with hi-res convs folded in) ----------
@@ -439,11 +448,17 @@ def main():
 
     # ---------- memory attention ----------
     print("memory attention")
+    # Multi-frame memory example: the rope-memory length must be num_frames * HW for the
+    # derived `mlen` dim, and >1 frame so (a) the landmark frame axis stays genuinely
+    # dynamic and (b) the eager parity reference also takes the landmark branch (its
+    # num_k_rope <= nq guard would otherwise pick full attention on a single frame and
+    # disagree with the always-landmark exported graph).
+    nf_example = 3
     curr = torch.randn(HW, 1, C, device=device)
     curr_pos = torch.randn(HW, 1, C, device=device)
-    mem_rope = torch.randn(HW, 1, mem_dim, device=device)
+    mem_rope = torch.randn(nf_example * HW, 1, mem_dim, device=device)
     mem_norope = torch.randn(4, 1, mem_dim, device=device)
-    mpos_rope = torch.randn(HW, 1, mem_dim, device=device)
+    mpos_rope = torch.randn(nf_example * HW, 1, mem_dim, device=device)
     mpos_norope = torch.randn(4, 1, mem_dim, device=device)
     _export(
         _MemoryAttention(model.memory_attention),

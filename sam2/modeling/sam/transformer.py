@@ -378,11 +378,22 @@ class EfficientRoPEAttention1(Attention):
         if self.rope_k_repeat:
             fs, bs, ns, ds = k.shape
             nq = q.shape[-2]
-            if num_k_rope <= nq:
+            # Eager keeps the original policy: short spatial memory (num_k_rope <= nq)
+            # uses exact full attention; longer memory uses the landmark approximation.
+            # During ONNX export we drop the guard and always take the landmark path, so
+            # the exported graph applies the spatial-memory token reduction at every
+            # memory length. (The guard is also data-dependent on the dynamic mem_len,
+            # which torch.export cannot trace; the landmark path uses a derived
+            # mem_len = num_frames * nq dim instead.)
+            if not is_exporting() and num_k_rope <= nq:
                 out = self.sdpa(q, k, v, dropout_p)
             else:
                 s_kernel_size = 2
-                intw, inth = int(w), int(h)
+                # Per-frame spatial memory is a square grid of `nq` tokens; recover the
+                # side length to fold the flat tokens back to 2D for avg_pool2d landmark
+                # pooling. (All shipped configs use square feature maps, so sqrt is exact.)
+                side = int(round(math.sqrt(nq)))
+                intw, inth = side, side
                 k_landmarks = k[:, :, :num_k_rope, :].reshape(fs, -1, nq, ds)
                 k_landmarks = k_landmarks.transpose(-2, -1).reshape(fs, -1, intw, inth)
                 k_landmarks = F.avg_pool2d(
@@ -486,11 +497,22 @@ class EfficientRoPEAttention2(Attention):
         if self.rope_k_repeat:
             fs, bs, ns, ds = k.shape
             nq = q.shape[-2]
-            if num_k_rope <= nq:
+            # Eager keeps the original policy: short spatial memory (num_k_rope <= nq)
+            # uses exact full attention; longer memory uses the landmark approximation.
+            # During ONNX export we drop the guard and always take the landmark path, so
+            # the exported graph applies the spatial-memory token reduction at every
+            # memory length. (The guard is also data-dependent on the dynamic mem_len,
+            # which torch.export cannot trace; the landmark path uses a derived
+            # mem_len = num_frames * nq dim instead.)
+            if not is_exporting() and num_k_rope <= nq:
                 out = self.sdpa(q, k, v, dropout_p)
             else:
                 s_kernel_size = 2
-                intw, inth = int(w), int(h)
+                # Per-frame spatial memory is a square grid of `nq` tokens; recover the
+                # side length to fold the flat tokens back to 2D for avg_pool2d landmark
+                # pooling. (All shipped configs use square feature maps, so sqrt is exact.)
+                side = int(round(math.sqrt(nq)))
+                intw, inth = side, side
                 k_landmarks = k[:, :, :num_k_rope, :].reshape(fs, -1, nq, ds)
                 k_landmarks = k_landmarks.transpose(-2, -1).reshape(fs, -1, intw, inth)
                 k_landmarks = F.avg_pool2d(
