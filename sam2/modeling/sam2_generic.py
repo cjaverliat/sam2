@@ -1,3 +1,5 @@
+import functools
+
 import torch
 from sam2.modeling.sam2_base import SAM2Base
 from sam2.utils.transforms import SAM2Transforms
@@ -7,15 +9,42 @@ from sam2.modeling.sam2_result import SAM2Result
 from sam2.modeling.memory import ObjectMemory
 
 
+def _half_inference(method):
+    """Run a SAM2Generic compute method under the fastest half precision for this
+    GPU (when ``self._use_half``), in inference_mode unless the module is training.
+
+    Lets callers invoke the methods directly instead of wrapping every call in
+    autocast / inference_mode. Both gates are decided at call time: the dtype needs
+    ``self._use_half`` + ``self.device`` and the grad mode needs ``self.training``
+    (set by .train()/.eval()).
+
+    bf16 tensor cores exist only on Ampere (sm_80)+; on older GPUs bf16 is emulated
+    and slower than fp16 (whose tensor cores exist since Volta sm_70), and
+    torch.cuda.is_bf16_supported() returns True even on Turing — so gate on capability.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        half = self._use_half and self.device.type == "cuda"
+        bf16 = half and torch.cuda.get_device_capability(self.device)[0] >= 8
+        with torch.inference_mode(not self.training), torch.autocast(
+                "cuda", dtype=torch.bfloat16 if bf16 else torch.float16, enabled=half
+        ):
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class SAM2Generic(SAM2Base):
 
     def __init__(
-        self,
-        mask_threshold=0.0,
-        fill_hole_area=0.0,
-        max_sprinkle_area=0.0,
-        non_overlap_masks=False,
-        **kwargs,
+            self,
+            mask_threshold=0.0,
+            fill_hole_area=0.0,
+            max_sprinkle_area=0.0,
+            non_overlap_masks=False,
+            use_half=False,
+            **kwargs,
     ) -> None:
         """
         SAM2Generic is a class that extends SAM2Base to provide easier APIs for generic segmentation tasks.
@@ -49,14 +78,17 @@ class SAM2Generic(SAM2Base):
         # that are fed to the decoder on every propagation frame.
         self._empty_prompt_embeddings = None
 
+        self._use_half = use_half
+
     @property
+    @_half_inference
     def empty_prompt_embeddings(self):
         if self._empty_prompt_embeddings is None:
             self._empty_prompt_embeddings = self.encode_prompts()
         return self._empty_prompt_embeddings
 
     def _prepare_images(
-        self, img: torch.Tensor | list[torch.Tensor], scale: bool = True
+            self, img: torch.Tensor | list[torch.Tensor], scale: bool = True
     ):
 
         # If we have a list of images (potentially of different sizes), we apply the transforms to each image
@@ -76,8 +108,9 @@ class SAM2Generic(SAM2Base):
 
         return torch.cat(img_list, dim=0)
 
+    @_half_inference
     def encode_image(
-        self, image: torch.Tensor | list[torch.Tensor]
+            self, image: torch.Tensor | list[torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the image for the SAM-2 model.
@@ -106,17 +139,18 @@ class SAM2Generic(SAM2Base):
         assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
         assert len(backbone_out["backbone_fpn"]) >= self.num_feature_levels
 
-        img_embeddings = backbone_out["backbone_fpn"][-self.num_feature_levels :]
-        img_pos_embeddings = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
+        img_embeddings = backbone_out["backbone_fpn"][-self.num_feature_levels:]
+        img_pos_embeddings = backbone_out["vision_pos_enc"][-self.num_feature_levels:]
 
         return img_embeddings, img_pos_embeddings
 
+    @_half_inference
     def encode_memory(
-        self,
-        img_embeddings: list[torch.Tensor],
-        masks_logits: torch.Tensor,
-        obj_score_logits: torch.Tensor,
-        is_prompt: torch.BoolTensor,
+            self,
+            img_embeddings: list[torch.Tensor],
+            masks_logits: torch.Tensor,
+            obj_score_logits: torch.Tensor,
+            is_prompt: torch.BoolTensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the image and its prediction into a memory.
@@ -137,7 +171,7 @@ class SAM2Generic(SAM2Base):
         ], f"Expected all levels of img_embeddings to be of shape (B, C, H, W), got {[t.shape for t in img_embeddings]}"
         B = img_embeddings[0].shape[0]
         assert (
-            masks_logits.ndim == 4 and masks_logits.shape[0] == B
+                masks_logits.ndim == 4 and masks_logits.shape[0] == B
         ), f"Expected masks_logits to be of shape (B, C, H, W), got {masks_logits.shape}"
         assert obj_score_logits.shape == (
             B,
@@ -156,7 +190,7 @@ class SAM2Generic(SAM2Base):
 
         # Scale the raw mask logits with a temperature before applying sigmoid
         binarize = (
-            self.binarize_mask_from_pts_for_mem_enc & is_prompt & (not self.training)
+                self.binarize_mask_from_pts_for_mem_enc & is_prompt & (not self.training)
         )
 
         mask_for_mem = torch.where(
@@ -186,25 +220,25 @@ class SAM2Generic(SAM2Base):
         if self.no_obj_embed_spatial is not None:
             is_obj_appearing = (obj_score_logits > 0).float()
             memory_embeddings += (
-                1 - is_obj_appearing[..., None, None]
-            ) * self.no_obj_embed_spatial[..., None, None].expand(
+                                         1 - is_obj_appearing[..., None, None]
+                                 ) * self.no_obj_embed_spatial[..., None, None].expand(
                 *memory_embeddings.shape
             )
 
         return memory_embeddings, memory_pos_embeddings
 
     def _prepare_obj_ptrs_for_memory_conditioning(
-        self,
-        current_frame_idx: int,
-        obj_ptrs: torch.Tensor,
-        obj_ptrs_frame_idx: list[int],
-        reverse_time: bool = False,
+            self,
+            current_frame_idx: int,
+            obj_ptrs: torch.Tensor,
+            obj_ptrs_frame_idx: list[int],
+            reverse_time: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the object pointers into a memory.
         """
         assert (
-            obj_ptrs.ndim == 3
+                obj_ptrs.ndim == 3
         ), f"Expected obj_ptrs to be of shape (ptr_seq_len, B, C), got {obj_ptrs.shape}"
 
         B = obj_ptrs.shape[1]
@@ -247,10 +281,10 @@ class SAM2Generic(SAM2Base):
         return obj_ptrs, obj_tpos_rel
 
     def _prepare_memory_for_memory_conditioning(
-        self,
-        t_pos: int,
-        memory_embeddings: torch.Tensor,
-        memory_pos_embeddings: torch.Tensor,
+            self,
+            t_pos: int,
+            memory_embeddings: torch.Tensor,
+            memory_pos_embeddings: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         memory_embeddings = memory_embeddings.flatten(2).permute(
             2, 0, 1
@@ -261,19 +295,20 @@ class SAM2Generic(SAM2Base):
 
         # Add temporal positional encoding
         memory_tpos_embeddings = (
-            memory_pos_embeddings + self.maskmem_tpos_enc[self.num_maskmem - t_pos - 1]
+                memory_pos_embeddings + self.maskmem_tpos_enc[self.num_maskmem - t_pos - 1]
         )
         return memory_embeddings, memory_tpos_embeddings
 
+    @_half_inference
     def condition_image_embeddings_on_memories(
-        self,
-        frame_idx: int,
-        img_embeddings: list[torch.Tensor],
-        img_pos_embeddings: list[torch.Tensor],
-        conditional_memories: list[ObjectMemory],
-        non_conditional_memories: list[ObjectMemory],
-        ptr_memories: list[ObjectMemory],
-        reverse_time: bool = False,
+            self,
+            frame_idx: int,
+            img_embeddings: list[torch.Tensor],
+            img_pos_embeddings: list[torch.Tensor],
+            conditional_memories: list[ObjectMemory],
+            non_conditional_memories: list[ObjectMemory],
+            ptr_memories: list[ObjectMemory],
+            reverse_time: bool = False,
     ) -> list[torch.Tensor]:
         """
         Condition the image embeddings on the memory embeddings.
@@ -310,15 +345,15 @@ class SAM2Generic(SAM2Base):
         obj_ptrs_frame_indices = [m.frame_idx for m in ptr_memories]
 
         assert (
-            self.max_cond_frames_in_attn == -1
-            or len(conditional_memories) <= self.max_cond_frames_in_attn
+                self.max_cond_frames_in_attn == -1
+                or len(conditional_memories) <= self.max_cond_frames_in_attn
         ), f"Expected at most {self.max_cond_frames_in_attn} conditional memories, got {len(conditional_memories)}"
         assert (
-            len(non_conditional_memories) <= self.num_maskmem - 1
+                len(non_conditional_memories) <= self.num_maskmem - 1
         ), f"Expected at most {self.num_maskmem - 1} non-conditional memories, got {len(non_conditional_memories)}"
         assert (
-            self.max_obj_ptrs_in_encoder == -1
-            or len(ptr_memories) <= self.max_obj_ptrs_in_encoder
+                self.max_obj_ptrs_in_encoder == -1
+                or len(ptr_memories) <= self.max_obj_ptrs_in_encoder
         ), f"Expected at most {self.max_obj_ptrs_in_encoder} object pointer memories, got {len(ptr_memories)}"
 
         low_res_img_embeddings = img_embeddings[-1]
@@ -332,9 +367,9 @@ class SAM2Generic(SAM2Base):
         n_ptrs_memories = len(obj_ptrs_seq)
 
         if (
-            n_conditional_memories == 0
-            and n_non_conditional_memories == 0
-            and n_ptrs_memories == 0
+                n_conditional_memories == 0
+                and n_non_conditional_memories == 0
+                and n_ptrs_memories == 0
         ):
             # We don't have any memories, we add the no-mem embedding
             if self.directly_add_no_mem_embed:
@@ -389,7 +424,6 @@ class SAM2Generic(SAM2Base):
                 memories.append(memory_embeddings)
                 memories_pos_embed.append(memory_tpos_embeddings)
             if self.use_obj_ptrs_in_encoder:
-
                 obj_ptrs_enc, obj_pos_enc = (
                     self._prepare_obj_ptrs_for_memory_conditioning(
                         frame_idx, obj_ptrs_seq, obj_ptrs_frame_indices, reverse_time
@@ -430,14 +464,15 @@ class SAM2Generic(SAM2Base):
 
         return high_res_img_embeddings + [low_res_img_embeddings_with_mem]
 
+    @_half_inference
     def encode_prompts(
-        self,
-        orig_hw: tuple[int, int] | None = None,
-        batch_size: int = 1,
-        points_coords: torch.Tensor | None = None,
-        points_labels: torch.Tensor | None = None,
-        boxes: torch.Tensor | None = None,
-        masks_logits: torch.Tensor | None = None,
+            self,
+            orig_hw: tuple[int, int] | None = None,
+            batch_size: int = 1,
+            points_coords: torch.Tensor | None = None,
+            points_labels: torch.Tensor | None = None,
+            boxes: torch.Tensor | None = None,
+            masks_logits: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the prompts for the SAM-2 model.
@@ -456,23 +491,23 @@ class SAM2Generic(SAM2Base):
 
         if points_coords is not None or boxes is not None:
             assert (
-                orig_hw is not None
+                    orig_hw is not None
             ), "Expected orig_hw to be provided if points_coords or boxes are provided"
 
         points = None
 
         if points_coords is not None:
             assert (
-                points_labels is not None
+                    points_labels is not None
             ), "Expected points_labels to be provided if points_coords is provided, got None"
             assert (
-                points_coords.ndim == 3
-                and points_coords.shape[0] == batch_size
-                and points_coords.shape[2] == 2
+                    points_coords.ndim == 3
+                    and points_coords.shape[0] == batch_size
+                    and points_coords.shape[2] == 2
             ), f"Expected points_coords to be of shape (B, N, 2), got {points_coords.shape}"
             assert (
-                points_labels.ndim == 2
-                and points_labels.shape == points_coords.shape[:2]
+                    points_labels.ndim == 2
+                    and points_labels.shape == points_coords.shape[:2]
             ), f"Expected points_labels to be of shape (B, N), got {points_labels.shape}"
             points_coords = self._transforms.transform_coords(
                 points_coords, normalize=True, orig_hw=orig_hw
@@ -501,12 +536,14 @@ class SAM2Generic(SAM2Base):
                 masks_logits
             )
             from torchvision.transforms import functional as F, InterpolationMode
-            masks_low_res_logits = F.resize(masks_low_res_logits,size=(self.sam_prompt_encoder.mask_input_size[0], self.sam_prompt_encoder.mask_input_size[1]), interpolation=InterpolationMode.BICUBIC, antialias=True)
+            masks_low_res_logits = F.resize(masks_low_res_logits, size=(self.sam_prompt_encoder.mask_input_size[0],
+                                                                        self.sam_prompt_encoder.mask_input_size[1]),
+                                            interpolation=InterpolationMode.BICUBIC, antialias=True)
             masks_low_res_logits = (masks_low_res_logits >= 0.5).float()
 
         if boxes is not None:
             assert (
-                boxes.ndim == 3 and boxes.shape[0] == batch_size and boxes.shape[2] == 4
+                    boxes.ndim == 3 and boxes.shape[0] == batch_size and boxes.shape[2] == 4
             ), f"Expected boxes to be of shape (B, N, 4), got {boxes.shape}"
             n_boxes = boxes.shape[1]
             # Encode the boxes as points with labels 2 and 3
@@ -544,12 +581,13 @@ class SAM2Generic(SAM2Base):
 
         return sparse_embeddings, dense_embeddings
 
+    @_half_inference
     def generate_masks(
-        self,
-        orig_hw: tuple[int, int],
-        img_embeddings: list[torch.Tensor],
-        prompt_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-        multimask_output: bool = True,
+            self,
+            orig_hw: tuple[int, int],
+            img_embeddings: list[torch.Tensor],
+            prompt_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+            multimask_output: bool = True,
     ) -> SAM2Result:
 
         low_res_img_embeddings = img_embeddings[-1]

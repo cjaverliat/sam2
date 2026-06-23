@@ -30,6 +30,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from frame_utils import read_frame, warmup
 from sam2.build_sam import build_sam2_generic_video_predictor
 from sam2.modeling.sam2_prompt import SAM2Prompt
 from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
@@ -96,26 +97,6 @@ def show_points(coords, labels, ax, marker_size=200):
     )
 
 
-def read_frame(cap, device) -> torch.Tensor:
-    ret, frame = cap.read()
-    if not ret:
-        return None
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame = torch.as_tensor(frame).permute(2, 0, 1).to(device)
-    frame = frame / 255.0
-    return frame
-
-
-def warmup(predictor, video_state, device):
-    """Pay one-time CUDA/cuDNN init cost up front instead of on the first real
-    frame. Empty prompts return early without writing memory, so state stays
-    clean."""
-    dummy = torch.zeros(3, *video_state.video_hw, device=device)
-    predictor.forward(
-        state=video_state, frame=dummy, frame_idx=0, prompts=[], create_memory=False
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--video", default="notebooks/videos/bedroom.mp4")
@@ -137,7 +118,7 @@ def main():
 
     predictor = build_sam2_generic_video_predictor(
         args.model_cfg, args.checkpoint, device=device,
-        vos_optimized=False, apply_postprocessing=False,
+        vos_optimized=False, apply_postprocessing=True,
     )
 
     cap = cv2.VideoCapture(args.video)

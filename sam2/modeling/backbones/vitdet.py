@@ -240,8 +240,12 @@ class ViT(nn.Module):
         else:
             self.pos_embed = None
 
-        # stochastic depth decay rule
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+        # stochastic depth decay rule (plain-python so the module can be built on a
+        # meta device — ``Tensor.item()`` is unavailable on meta tensors)
+        dpr = [
+            drop_path_rate * i / (depth - 1) if depth > 1 else 0.0
+            for i in range(depth)
+        ]
 
         self.blocks = nn.ModuleList()
         self.full_attn_ids = []

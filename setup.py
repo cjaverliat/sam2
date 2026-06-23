@@ -10,13 +10,18 @@ flash-attn-style install: at `pip install` / wheel-build time we first try to
 download a prebuilt wheel matching the user's exact (torch, CUDA, Python,
 platform, C++ ABI) from GitHub Releases. If none matches, we fall back to
 compiling the extension from source. Pure-Python install (no extension) is
-available via SAM2_SKIP_CUDA_BUILD=1.
+available via SAM2_BUILD_CUDA=0.
 
 Environment toggles:
-  SAM2_SKIP_CUDA_BUILD=1   build a pure-Python wheel (no _C extension)
+  SAM2_BUILD_CUDA=1        force-build the _C CUDA extension even if no GPU is
+                           visible at build time (CI cross-compile)
+  SAM2_BUILD_CUDA=0        build a pure-Python wheel (no _C extension)
+                           (unset = auto: build _C when the installed torch is a
+                           CUDA build with a usable runtime)
+  SAM2_ALLOW_BUILD_ERRORS=1  (default) on a _C build failure fall back to a
+                           pure-Python wheel; _C is JIT-compiled at runtime on
+                           first use. Set 0 (CI) to fail hard on a broken build.
   SAM2_FORCE_BUILD=1       skip the prebuilt-wheel download, always compile
-  SAM2_FORCE_CUDA=1        configure the CUDA extension even if CUDA is not
-                           detected at build time (cross-compile on CI)
   SAM2_WHEEL_BASE_URL=...  override the GitHub Releases base URL
 """
 
@@ -26,6 +31,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+import warnings
 from pathlib import Path
 
 from setuptools import setup
@@ -45,8 +51,14 @@ BASE_WHEEL_URL = os.environ.get(
 )
 
 FORCE_BUILD = os.getenv("SAM2_FORCE_BUILD", "0") == "1"
-SKIP_CUDA_BUILD = os.getenv("SAM2_SKIP_CUDA_BUILD", "0") == "1"
-FORCE_CUDA = os.getenv("SAM2_FORCE_CUDA", "0") == "1"
+# Tri-state _C build switch: "1" force the build (even with no GPU visible, e.g.
+# CI cross-compile), "0" skip it (pure-Python wheel), unset = auto (decided from
+# the installed torch below). None means "unset".
+BUILD_CUDA = os.getenv("SAM2_BUILD_CUDA")
+# On by default: if the from-source _C compile fails, drop the extension and ship
+# a pure-Python wheel (the runtime JIT-compiles _C on first use) instead of
+# aborting the install. CI sets this to 0 so a broken kernel build fails loudly.
+ALLOW_BUILD_ERRORS = os.getenv("SAM2_ALLOW_BUILD_ERRORS", "1") == "1"
 
 
 def _point_cuda_home_at_conda():
@@ -160,8 +172,35 @@ def get_wheel_filename(version, local_label):
 # ---------------------------------------------------------------------------
 # Extension definition (only when building from source)
 # ---------------------------------------------------------------------------
+class _BuildError(Exception):
+    """A recoverable _C build problem. Raised before/at compile so the tolerant
+    build path (SAM2_ALLOW_BUILD_ERRORS) can degrade to a pure-Python wheel."""
+
+
+def _require_msvc():
+    """Check MSVC's cl.exe is on PATH (Windows); raise ``_BuildError`` otherwise.
+
+    nvcc compiles the host side of sam2._C with MSVC. Without an activated MSVC
+    environment the build otherwise dies deep inside ninja with an opaque,
+    swallowed error. Check up front and tell the user how to fix it.
+    """
+    if sys.platform != "win32":
+        return
+    import shutil
+
+    if shutil.which("cl") is None:
+        raise _BuildError(
+            "MSVC compiler 'cl.exe' was not found on PATH. Building the sam2._C "
+            "CUDA extension on Windows needs the MSVC x64 toolchain active: build "
+            "from an \"x64 Native Tools Command Prompt for VS\" (or run vcvars64.bat "
+            "first), then retry."
+        )
+
+
 def get_extensions(torch):
     from torch.utils.cpp_extension import CUDAExtension
+
+    _require_msvc()
 
     cxx_args = []
     nvcc_args = [
@@ -231,7 +270,7 @@ _is_building = not _BUILD_COMMANDS.isdisjoint(sys.argv)
 try:
     import torch  # noqa: F401
 except ImportError:
-    if _is_building and not SKIP_CUDA_BUILD:
+    if _is_building and BUILD_CUDA != "0":
         raise SystemExit(
             "\n"
             "sam2 build error: PyTorch is not importable in the build environment.\n"
@@ -250,13 +289,13 @@ except ImportError:
             "If torch reports a CPU-only build, sam2 produces a pure-Python (no _C)\n"
             "wheel; a CUDA torch enables the prebuilt-or-source compiled kernels.\n"
         )
-    # Metadata-only step (or explicit SKIP_CUDA_BUILD): degrade gracefully.
+    # Metadata-only step (or explicit SAM2_BUILD_CUDA=0): degrade gracefully.
     torch = None
 
-# CPU build: no torch yet (metadata-only), explicit skip, or torch is a CPU-only
-# build (no CUDA to link). Produces a pure-Python wheel (no _C) labelled +cpu.
+# CPU build: no torch yet (metadata-only), explicit SAM2_BUILD_CUDA=0, or torch is
+# a CPU-only build (no CUDA to link). Produces a pure-Python wheel (no _C) +cpu.
 is_cpu_build = (
-    SKIP_CUDA_BUILD
+    BUILD_CUDA == "0"
     or torch is None
     or getattr(torch.version, "cuda", None) is None
 )
@@ -275,15 +314,51 @@ else:
 
     local_label = get_local_label(torch)
 
-    if torch.cuda.is_available() or FORCE_CUDA:
-        ext_modules = get_extensions(torch)
+    def _extensions_or_degrade():
+        """Configure the _C extension, degrading to none on a recoverable build
+        problem (e.g. missing MSVC) when SAM2_ALLOW_BUILD_ERRORS is set; the runtime
+        JIT-compiles _C later. Otherwise re-raise as a fatal build error."""
+        try:
+            return get_extensions(torch)
+        except _BuildError as e:
+            if not ALLOW_BUILD_ERRORS:
+                raise SystemExit(f"\nsam2 build error: {e}\n")
+            warnings.warn(
+                f"sam2: {e} Building a pure-Python wheel instead; sam2._C is "
+                "JIT-compiled at runtime on first use "
+                "(set SAM2_ALLOW_BUILD_ERRORS=0 to fail the build instead).",
+                stacklevel=2,
+            )
+            return []
+
+    if torch.cuda.is_available() or BUILD_CUDA == "1":
+        ext_modules = _extensions_or_degrade()
     elif not FORCE_BUILD:
         # No CUDA and not forcing a local build: a download attempt (below) is
         # the only way to get _C; leave ext_modules empty so the fallback build
         # produces a pure-Python wheel rather than erroring on missing nvcc.
         pass
     else:
-        ext_modules = get_extensions(torch)
+        ext_modules = _extensions_or_degrade()
+
+    class _TolerantBuildExt(BuildExtension.with_options(no_python_abi_suffix=True)):
+        """Compile _C; on a compile failure, degrade to a pure-Python wheel when
+        SAM2_ALLOW_BUILD_ERRORS is set (runtime JIT-compiles _C later) instead of
+        aborting the install."""
+
+        def build_extensions(self):
+            try:
+                super().build_extensions()
+            except Exception as e:
+                if not ALLOW_BUILD_ERRORS:
+                    raise
+                warnings.warn(
+                    f"sam2: compiling sam2._C failed ({e}). Installing a pure-Python "
+                    "sam2; _C is JIT-compiled at runtime on first use "
+                    "(set SAM2_ALLOW_BUILD_ERRORS=0 to fail the build instead).",
+                    stacklevel=2,
+                )
+                self.extensions = []
 
     class CachedWheelsCommand(_bdist_wheel):
         """Try a prebuilt GitHub Releases wheel before compiling (flash-attn style)."""
@@ -314,7 +389,7 @@ else:
 
     cmdclass = {
         "bdist_wheel": CachedWheelsCommand,
-        "build_ext": BuildExtension.with_options(no_python_abi_suffix=True),
+        "build_ext": _TolerantBuildExt,
     }
 
 # Local version label distinguishes one torch/CUDA build from another on the

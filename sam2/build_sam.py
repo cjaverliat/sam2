@@ -107,9 +107,11 @@ def build_sam2_generic(
     mode="eval",
     hydra_overrides_extra=[],
     apply_postprocessing=True,
+    use_half=False,
 ) -> SAM2Generic:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2Generic",
+        f"++model.use_half={use_half}",
     ]
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
@@ -136,6 +138,129 @@ def build_sam2_generic(
     return model
 
 
+def _meta_build_generic(
+    config_file,
+    target,
+    use_half,
+    apply_postprocessing,
+    hydra_overrides_extra,
+):
+    """Instantiate a SAM2Generic / SAM2GenericVideoPredictor on the ``meta`` device.
+
+    Builds the full orchestration skeleton (so every dim/sub-module is derived from
+    the real config) but allocates **no** weights — meta tensors carry shape only.
+    The ONNX path then swaps the 5 heavy blocks and materializes the small glue from
+    ``weights.npz``, so no real weights are ever built-then-discarded. ``ckpt_path``
+    is intentionally absent: the path is checkpoint-free."""
+    hydra_overrides = [
+        f"++model._target_={target}",
+        f"++model.use_half={use_half}",
+    ]
+    if apply_postprocessing:
+        hydra_overrides_extra = hydra_overrides_extra.copy()
+        hydra_overrides_extra += [
+            # dynamically fall back to multi-mask if the single mask is not stable
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta=0.05",
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
+            # sigmoid the mask logits on interacted frames so encoded masks match clicks
+            "++model.binarize_mask_from_pts_for_mem_enc=true",
+            # fill small holes in the low-res masks up to `fill_hole_area`
+            "++model.fill_hole_area=8",
+        ]
+    hydra_overrides.extend(hydra_overrides_extra)
+
+    cfg = compose(config_name=config_file, overrides=hydra_overrides)
+    OmegaConf.resolve(cfg)
+    with torch.device("meta"):
+        model = instantiate(cfg.model, _recursive_=True)
+    return model
+
+
+def build_sam2_generic_image_predictor_onnx(
+    config_file,
+    onnx_dir,
+    device="cuda",
+    use_half=False,
+    use_trt=True,
+    trt_opts=None,
+    apply_postprocessing=True,
+    hydra_overrides_extra=[],
+) -> SAM2Generic:
+    """Build a SAM2Generic image model and swap its 5 heavy blocks for the ONNX /
+    TensorRT wrappers exported by tools/export_onnx.py.
+
+    ``onnx_dir`` accepts an extracted export directory, a ``.zip`` of one (e.g. a CI
+    release artifact), or an ``http(s)`` URL to such a zip (downloaded + unpacked into
+    a cache; override the location with ``SAM2_ONNX_CACHE``).
+
+    Checkpoint-free: every weight the orchestration used to read from torch (the
+    mask-decoder hi-res convs ``conv_s0``/``conv_s1``, the dense positional encoding,
+    ``no_mask_embed``, and the memory-path glue) is baked into the export artifacts.
+    The orchestration skeleton is instantiated on the ``meta`` device (no weights
+    allocated), the 5 heavy blocks are swapped for their ONNX wrappers, and the small
+    glue is materialized from ``weights.npz`` — so no real weights are ever
+    built-then-discarded. ``use_half`` only affects the torch glue; the ONNX sessions own
+    their own precision via the exported graph (the TensorRT EP builds a strongly-typed
+    network, so for fp16 export a mixed-fp16 graph with ``tools/export_onnx.py
+    --fp16``). No ``vos_optimized`` knob — ONNX/TRT is already the optimized path."""
+    from sam2.onnx.sam2_generic_onnx import attach_onnx_blocks
+
+    model = _meta_build_generic(
+        config_file,
+        "sam2.sam2_generic_video_predictor.SAM2Generic",
+        use_half=use_half,
+        apply_postprocessing=apply_postprocessing,
+        hydra_overrides_extra=hydra_overrides_extra,
+    )
+    return attach_onnx_blocks(
+        model, onnx_dir, device=torch.device(device), use_trt=use_trt, trt_opts=trt_opts
+    )
+
+
+# Backwards-compatible alias for the original name.
+build_sam2_generic_onnx = build_sam2_generic_image_predictor_onnx
+
+
+def build_sam2_generic_video_predictor_onnx(
+    config_file,
+    onnx_dir,
+    device="cuda",
+    use_half=False,
+    use_trt=True,
+    trt_opts=None,
+    apply_postprocessing=True,
+    hydra_overrides_extra=[],
+) -> SAM2GenericVideoPredictor:
+    """Build a SAM2GenericVideoPredictor and swap its 5 heavy blocks for the ONNX /
+    TensorRT wrappers exported by tools/export_onnx.py.
+
+    ``onnx_dir`` accepts an extracted export directory, a ``.zip`` of one (e.g. a CI
+    release artifact), or an ``http(s)`` URL to such a zip (downloaded + unpacked into
+    a cache; override the location with ``SAM2_ONNX_CACHE``).
+
+    Same checkpoint-free contract as
+    :func:`build_sam2_generic_image_predictor_onnx`: the skeleton is meta-built (no
+    weights allocated), the 5 blocks are swapped and the glue materialized from
+    ``weights.npz``, ``use_half`` only touches the torch glue, and ``trt_opts`` tunes
+    the TensorRT engine build (cache, workspace, ...). Precision
+    is owned by the exported graph — the EP builds a strongly-typed network, so use a
+    mixed-fp16 export (``tools/export_onnx.py --fp16``) for fp16. No ``vos_optimized``
+    knob — ONNX/TRT is already the optimized path."""
+    from sam2.onnx.sam2_generic_onnx import attach_onnx_blocks
+
+    model = _meta_build_generic(
+        config_file,
+        "sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
+        use_half=use_half,
+        apply_postprocessing=apply_postprocessing,
+        hydra_overrides_extra=hydra_overrides_extra,
+    )
+    return attach_onnx_blocks(
+        model, onnx_dir, device=torch.device(device), use_trt=use_trt, trt_opts=trt_opts
+    )
+
+
 def build_sam2_generic_video_predictor(
     config_file,
     ckpt_path=None,
@@ -144,17 +269,25 @@ def build_sam2_generic_video_predictor(
     hydra_overrides_extra=[],
     apply_postprocessing=True,
     vos_optimized=False,
+    use_half=False,
+    compile_image_encoder=False,
     **kwargs,
 ) -> SAM2GenericVideoPredictor:
     hydra_overrides = [
         "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
+        f"++model.use_half={use_half}",
     ]
-    
+
     if vos_optimized:
+        # VOS always compiles the image encoder; don't append compile_image_encoder
+        # again below to avoid a duplicate hydra override.
         hydra_overrides = [
             "++model._target_=sam2.sam2_generic_video_predictor.SAM2GenericVideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
+            f"++model.use_half={use_half}",
         ]
+    elif compile_image_encoder:
+        hydra_overrides.append("++model.compile_image_encoder=True")
 
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()

@@ -12,8 +12,28 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
-from sam2.modeling.position_encoding import apply_rotary_enc, compute_axial_cis
-from sam2.modeling.sam2_utils import MLP
+from sam2.modeling.position_encoding import compute_axial_cis
+from sam2.modeling.sam.onnx_compat import RotaryEmbedding, ScaledDotProductAttention
+from sam2.modeling.sam2_utils import MLP, is_exporting
+
+
+def _resolve_freqs_cis(module: nn.Module, q: Tensor) -> Tensor:
+    """Return the rotary frequency table sized for ``q``'s token count.
+
+    Eager: reuse / lazily recompute the cached ``module.freqs_cis`` (caching the new
+    table on the module). Export: always recompute locally from concrete sizes so
+    ``compute_cis`` (which uses ``torch.polar``) runs at trace time and folds to real
+    cos/sin constants — never touching ``self`` (mutation is illegal during export)
+    nor leaking a complex tensor into the graph.
+    """
+    w = h = math.sqrt(q.shape[-2])
+    if is_exporting():
+        return module.compute_cis(end_x=w, end_y=h).to(q.device)
+    freqs_cis = module.freqs_cis.to(q.device)
+    if freqs_cis.shape[0] != q.shape[-2]:
+        freqs_cis = module.compute_cis(end_x=w, end_y=h).to(q.device)
+        module.freqs_cis = freqs_cis
+    return freqs_cis
 
 
 class TwoWayTransformer(nn.Module):
@@ -216,6 +236,8 @@ class Attention(nn.Module):
         self.out_proj = nn.Linear(self.internal_dim, embedding_dim)
 
         self.dropout_p = dropout
+        # ONNX-export-aware SDPA (native Attention op at opset>=23, else torch SDPA).
+        self.sdpa = ScaledDotProductAttention()
 
     def _separate_heads(self, x: Tensor, num_heads: int) -> Tensor:
         b, n, c = x.shape
@@ -240,7 +262,7 @@ class Attention(nn.Module):
 
         dropout_p = self.dropout_p if self.training else 0.0
         # Attention
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        out = self.sdpa(q, k, v, dropout_p)
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
@@ -267,10 +289,10 @@ class RoPEAttention(Attention):
             compute_axial_cis, dim=self.internal_dim // self.num_heads, theta=rope_theta
         )
         freqs_cis = self.compute_cis(end_x=feat_sizes[0], end_y=feat_sizes[1])
-        self.freqs_cis = (
-            freqs_cis.to("cuda") if torch.cuda.is_available() else freqs_cis
-        )
+        # Own-device move: no-op on cpu/cuda, meta-safe (forward re-homes per call).
+        self.freqs_cis = freqs_cis.to(freqs_cis.device)
         self.rope_k_repeat = rope_k_repeat
+        self.rope = RotaryEmbedding()
 
     def forward(
         self, q: Tensor, k: Tensor, v: Tensor, num_k_exclude_rope: int = 0
@@ -286,24 +308,17 @@ class RoPEAttention(Attention):
         v = self._separate_heads(v, self.num_heads)
 
         # Apply rotary position encoding
-        w = h = math.sqrt(q.shape[-2])
-        self.freqs_cis = self.freqs_cis.to(q.device)
-        if self.freqs_cis.shape[0] != q.shape[-2]:
-            self.freqs_cis = self.compute_cis(end_x=w, end_y=h).to(q.device)
+        freqs_cis = _resolve_freqs_cis(self, q)
         if q.shape[-2] != k.shape[-2]:
             assert self.rope_k_repeat
 
-        num_k_rope = k.size(-2) - num_k_exclude_rope
-        q, k[:, :, :num_k_rope] = apply_rotary_enc(
-            q,
-            k[:, :, :num_k_rope],
-            freqs_cis=self.freqs_cis,
-            repeat_freqs_k=self.rope_k_repeat,
+        q, k = self.rope(
+            q, k, freqs_cis, num_k_exclude_rope, self.rope_k_repeat
         )
 
         dropout_p = self.dropout_p if self.training else 0.0
         # Attention
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        out = self.sdpa(q, k, v, dropout_p)
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
@@ -330,10 +345,10 @@ class EfficientRoPEAttention1(Attention):
             compute_axial_cis, dim=self.internal_dim // self.num_heads, theta=rope_theta
         )
         freqs_cis = self.compute_cis(end_x=feat_sizes[0], end_y=feat_sizes[1])
-        self.freqs_cis = (
-            freqs_cis.to("cuda") if torch.cuda.is_available() else freqs_cis
-        )
+        # Own-device move: no-op on cpu/cuda, meta-safe (forward re-homes per call).
+        self.freqs_cis = freqs_cis.to(freqs_cis.device)
         self.rope_k_repeat = rope_k_repeat
+        self.rope = RotaryEmbedding()
 
     def forward(
         self, q: Tensor, k: Tensor, v: Tensor, num_k_exclude_rope: int = 0
@@ -349,19 +364,13 @@ class EfficientRoPEAttention1(Attention):
         v = self._separate_heads(v, self.num_heads)
 
         # Apply rotary position encoding
-        w = h = math.sqrt(q.shape[-2])
-        self.freqs_cis = self.freqs_cis.to(q.device)
-        if self.freqs_cis.shape[0] != q.shape[-2]:
-            self.freqs_cis = self.compute_cis(end_x=w, end_y=h).to(q.device)
+        freqs_cis = _resolve_freqs_cis(self, q)
         if q.shape[-2] != k.shape[-2]:
             assert self.rope_k_repeat
 
         num_k_rope = k.size(-2) - num_k_exclude_rope
-        q, k[:, :, :num_k_rope] = apply_rotary_enc(
-            q,
-            k[:, :, :num_k_rope],
-            freqs_cis=self.freqs_cis,
-            repeat_freqs_k=self.rope_k_repeat,
+        q, k = self.rope(
+            q, k, freqs_cis, num_k_exclude_rope, self.rope_k_repeat
         )
 
         dropout_p = self.dropout_p if self.training else 0.0
@@ -370,7 +379,7 @@ class EfficientRoPEAttention1(Attention):
             fs, bs, ns, ds = k.shape
             nq = q.shape[-2]
             if num_k_rope <= nq:
-                out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+                out = self.sdpa(q, k, v, dropout_p)
             else:
                 s_kernel_size = 2
                 intw, inth = int(w), int(h)
@@ -418,7 +427,7 @@ class EfficientRoPEAttention1(Attention):
                 )
                 out = attn_weight @ v_landmarks
         else:
-            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+            out = self.sdpa(q, k, v, dropout_p)
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
@@ -447,6 +456,7 @@ class EfficientRoPEAttention2(Attention):
         freqs_cis = self.compute_cis(end_x=feat_sizes[0], end_y=feat_sizes[1])
         self.freqs_cis = freqs_cis
         self.rope_k_repeat = rope_k_repeat
+        self.rope = RotaryEmbedding()
 
     def forward(
         self, q: Tensor, k: Tensor, v: Tensor, num_k_exclude_rope: int = 0
@@ -462,19 +472,13 @@ class EfficientRoPEAttention2(Attention):
         v = self._separate_heads(v, self.num_heads)
 
         # Apply rotary position encoding
-        w = h = math.sqrt(q.shape[-2])
-        self.freqs_cis = self.freqs_cis.to(q.device)
-        if self.freqs_cis.shape[0] != q.shape[-2]:
-            self.freqs_cis = self.compute_cis(end_x=w, end_y=h).to(q.device)
+        freqs_cis = _resolve_freqs_cis(self, q)
         if q.shape[-2] != k.shape[-2]:
             assert self.rope_k_repeat
 
         num_k_rope = k.size(-2) - num_k_exclude_rope
-        q, k[:, :, :num_k_rope] = apply_rotary_enc(
-            q,
-            k[:, :, :num_k_rope],
-            freqs_cis=self.freqs_cis,
-            repeat_freqs_k=self.rope_k_repeat,
+        q, k = self.rope(
+            q, k, freqs_cis, num_k_exclude_rope, self.rope_k_repeat
         )
 
         dropout_p = self.dropout_p if self.training else 0.0
@@ -483,7 +487,7 @@ class EfficientRoPEAttention2(Attention):
             fs, bs, ns, ds = k.shape
             nq = q.shape[-2]
             if num_k_rope <= nq:
-                out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+                out = self.sdpa(q, k, v, dropout_p)
             else:
                 s_kernel_size = 2
                 intw, inth = int(w), int(h)
@@ -523,7 +527,7 @@ class EfficientRoPEAttention2(Attention):
                     q, k_landmarks, v_landmarks, dropout_p=dropout_p
                 )
         else:
-            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+            out = self.sdpa(q, k, v, dropout_p)
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)

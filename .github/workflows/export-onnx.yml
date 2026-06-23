@@ -1,0 +1,116 @@
+name: export-onnx
+
+# Export the 5 SAM2 neural-network blocks to ONNX (opset 18 + opset 23) for each
+# model and attach the graphs to the GitHub Release for the pushed tag.
+#
+# opset 18: decomposed (rotate-half + SDPA primitives) — portable, runs on any
+#           onnxruntime >= 1.17 (CPU / CUDA / TensorRT), CUDA 11/12/13.
+# opset 23: native RotaryEmbedding / Attention ops — needs onnxruntime >= 1.23.
+#
+# Export is CPU-only (device-agnostic), so this uses the CPU `onnx-export` env: no
+# CUDA toolchain / GPU required. opset-23 graphs are CPU-parity-checked with ORT>=1.23.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  export:
+    name: onnx / ${{ matrix.model }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model: sam2.1_hiera_tiny
+            task: export-onnx-sam2-tiny
+          - model: sam2.1_hiera_small
+            task: export-onnx-sam2-small
+          - model: sam2.1_hiera_base_plus
+            task: export-onnx-sam2-base-plus
+          - model: sam2.1_hiera_large
+            task: export-onnx-sam2-large
+          - model: efficienttam_s
+            task: export-onnx-efficienttam-s
+          - model: efficienttam_s_512x512
+            task: export-onnx-efficienttam-s-512x512
+          - model: efficienttam_s_1
+            task: export-onnx-efficienttam-s-1
+          - model: efficienttam_s_2
+            task: export-onnx-efficienttam-s-2
+          - model: efficienttam_ti
+            task: export-onnx-efficienttam-ti
+          - model: efficienttam_ti_512x512
+            task: export-onnx-efficienttam-ti-512x512
+          - model: efficienttam_ti_1
+            task: export-onnx-efficienttam-ti-1
+          - model: efficienttam_ti_2
+            task: export-onnx-efficienttam-ti-2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: onnx-export
+
+      # Downloads the checkpoint (task `depends-on`) and exports opset 18 fp32 + opset 18
+      # mixed fp16 into outputs/onnx/<model>/{opset18,opset18-fp16}. opset 18 is fully
+      # decomposed; the native opset-23 ops break on the ORT TensorRT EP.
+      - name: Export ONNX (opset 18 fp32 + fp16)
+        run: pixi run -e onnx-export ${{ matrix.task }}
+
+      # One zip per variant, .onnx files (+ manifest.json, .npy) at the zip root — no
+      # opset18/ wrapper dir — so an extracted zip is directly a valid onnx_dir.
+      - name: Zip (one per variant)
+        run: |
+          (cd outputs/onnx/${{ matrix.model }}/opset18 && zip -r "$GITHUB_WORKSPACE/${{ matrix.model }}-opset18.zip" .)
+          (cd outputs/onnx/${{ matrix.model }}/opset18-fp16 && zip -r "$GITHUB_WORKSPACE/${{ matrix.model }}-opset18-fp16.zip" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onnx-${{ matrix.model }}
+          path: ${{ matrix.model }}-opset*.zip
+
+  release:
+    needs: [export]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: onnx-artifacts
+          pattern: onnx-*
+          merge-multiple: true
+
+      - name: Compose release notes
+        run: |
+          cat > ONNX_NOTES.md <<'EOF'
+
+          ## ONNX block exports
+
+          Per model, two zips hold the 5 SAM2 blocks (image encoder, prompt encoder, mask
+          decoder, memory attention, memory encoder). Both target **opset 18** with attention
+          and RoPE fully decomposed: the native opset-23 ONNX `Attention` / `RotaryEmbedding`
+          ops break on the ONNX Runtime TensorRT EP (Attention falls back to CUDA → heavy
+          subgraph fragmentation; dynamic RoPE fails the engine build with a myelin error).
+
+          - **`<model>-opset18.zip`** — decomposed RoPE (rotate-half) + SDPA primitives, fp32.
+            Portable: runs on **onnxruntime >= 1.17** (CPU / CUDA / TensorRT EP), CUDA 11/12/13.
+          - **`<model>-opset18-fp16.zip`** — same graphs converted to mixed precision for the
+            CUDA/CPU EP (which can't convert precision at runtime). Only the two heavy blocks
+            (image encoder, memory attention) run fp16; the prompt encoder, mask decoder and
+            memory encoder stay fp32. Not because those blocks are individually fp16-unsafe
+            (each is — mask IoU 1.0), but because running ALL blocks fp16 compounds in the
+            recurrent memory loop and loses the masklet (mask IoU ~0); 2-block fp16 is safe.
+            For full-precision-speed everywhere, use the fp32 zip on TensorRT with bf16
+            (bf16's fp32 range survives all-blocks; Ampere+).
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: onnx-artifacts/*.zip
+          body_path: ONNX_NOTES.md
+          append_body: true

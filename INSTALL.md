@@ -47,14 +47,17 @@ Build-time environment toggles (read by `setup.py`):
 | Variable | Effect |
 | --- | --- |
 | `SAM2_FORCE_BUILD=1` | Skip the prebuilt-wheel download; always compile from source. |
-| `SAM2_SKIP_CUDA_BUILD=1` | Build a pure-Python (`+cpu`) wheel — no extension, no toolchain. |
-| `SAM2_FORCE_CUDA=1` | Configure the CUDA extension even if no GPU is detected (CI cross-compile). |
+| `SAM2_BUILD_CUDA=0` | Build a pure-Python (`+cpu`) wheel — no extension, no toolchain. |
+| `SAM2_BUILD_CUDA=1` | Force-build the CUDA extension even if no GPU is detected (CI cross-compile). Unset = auto (build `_C` when torch is a CUDA build). |
+| `SAM2_ALLOW_BUILD_ERRORS=1` | Default. On a `_C` build failure, fall back to a pure-Python wheel (`_C` JIT-compiles at runtime). Set `0` (CI) to fail hard. |
 | `SAM2_WHEEL_BASE_URL=...` | Override the GitHub Releases download URL template. |
 
 > If no matching prebuilt wheel exists for your stack, the install falls back to
 > compiling the extension from source — which needs a CUDA toolkit + host
 > compiler (see [Building the SAM 2 CUDA extension](#building-the-sam-2-cuda-extension)).
-> The runtime also JIT-compiles the kernel on first use if `_C` is missing.
+> By default a failed compile degrades to a pure-Python install (set
+> `SAM2_ALLOW_BUILD_ERRORS=0` to fail instead), and the runtime JIT-compiles the
+> kernel on first use if `_C` is missing.
 
 ### Building from source (editable / development)
 
@@ -76,10 +79,10 @@ Or install SAM 2 from the root of this repository via
 pip install -e ".[notebooks]"
 ```
 
-Note that you may skip building the SAM 2 CUDA extension during installation via environment variable `SAM2_SKIP_CUDA_BUILD=1`, as follows:
+Note that you may skip building the SAM 2 CUDA extension during installation via environment variable `SAM2_BUILD_CUDA=0`, as follows:
 ```bash
 # skip the SAM 2 CUDA extension (pure-Python install)
-SAM2_SKIP_CUDA_BUILD=1 pip install -e ".[notebooks]"
+SAM2_BUILD_CUDA=0 pip install -e ".[notebooks]"
 ```
 This would also skip the post-processing step at runtime (removing small holes and sprinkles in the output masks, which requires the CUDA extension), but shouldn't affect the results in most cases.
 
