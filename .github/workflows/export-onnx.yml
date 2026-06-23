@@ -99,11 +99,14 @@ jobs:
 
           - **`<model>-opset18.zip`** — decomposed RoPE (rotate-half) + SDPA primitives, fp32.
             Portable: runs on **onnxruntime >= 1.17** (CPU / CUDA / TensorRT EP), CUDA 11/12/13.
-          - **`<model>-opset18-fp16.zip`** — same graphs converted to mixed precision: the two
-            heavy transformer blocks (image encoder, memory attention) run fp16 with
-            LayerNorm/Softmax and graph IO kept fp32; the prompt encoder, mask decoder (small,
-            precision-sensitive logits) and memory encoder stay fp32. For the strongly-typed
-            TensorRT EP, which takes precision from the graph.
+          - **`<model>-opset18-fp16.zip`** — same graphs converted to mixed precision for the
+            CUDA/CPU EP (which can't convert precision at runtime). Only the two heavy blocks
+            (image encoder, memory attention) run fp16; the prompt encoder, mask decoder and
+            memory encoder stay fp32. Not because those blocks are individually fp16-unsafe
+            (each is — mask IoU 1.0), but because running ALL blocks fp16 compounds in the
+            recurrent memory loop and loses the masklet (mask IoU ~0); 2-block fp16 is safe.
+            For full-precision-speed everywhere, use the fp32 zip on TensorRT with bf16
+            (bf16's fp32 range survives all-blocks; Ampere+).
           EOF
 
       - uses: softprops/action-gh-release@v2
