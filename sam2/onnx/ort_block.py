@@ -134,6 +134,23 @@ class OrtBlock:
                 )
                 if trt_opts.timing_cache_enable:
                     timing_dir.mkdir(parents=True, exist_ok=True)
+                # fp16 is applied per-block: only the fp16-safe blocks get it, because
+                # fp16 error compounds through the recurrent memory loop and destroys the
+                # masklet if every block runs fp16. bf16 (fp32 range) is safe everywhere.
+                fp16 = trt_opts.fp16_enable and onnx_path.stem in trt_opts.fp16_safe_blocks
+                if trt_opts.fp16_enable:
+                    if fp16:
+                        logger.info(
+                            "TRT fp16 enabled for %s (fp16-safe block)", onnx_path.stem
+                        )
+                    else:
+                        logger.warning(
+                            "TRT fp16 requested but HELD AT fp32 for %s: not in "
+                            "fp16_safe_blocks %s. fp16 error compounds through this block "
+                            "+ the recurrent memory loop and destroys the masklet. Use "
+                            "bf16_enable (safe for all blocks) for full-speed fp16-range.",
+                            onnx_path.stem, sorted(trt_opts.fp16_safe_blocks),
+                        )
                 trt = {
                     "device_id": device_id,
                     "user_compute_stream": stream,
@@ -143,7 +160,7 @@ class OrtBlock:
                     # TRT auto-convert + per-layer tune from an fp32 graph — only valid
                     # for the decomposed opset-18 export (native opset-23 ops require a
                     # strongly-typed network). See TensorRTOptions.
-                    "trt_fp16_enable": trt_opts.fp16_enable,
+                    "trt_fp16_enable": fp16,
                     "trt_bf16_enable": trt_opts.bf16_enable,
                     "trt_cuda_graph_enable": trt_opts.cuda_graph_enable,
                     "trt_engine_cache_enable": trt_opts.cache_enable,

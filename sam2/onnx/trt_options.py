@@ -30,13 +30,20 @@ class TensorRTOptions:
     # the graph (i.e. a mixed-fp16 export, which is strongly-typed). bf16 needs Ampere+
     # (sm_80); fp16 since Volta. Don't set both.
     #
-    # WARNING: fp16_enable converts ALL blocks to fp16, which BREAKS SAM2's masks — the
-    # fp16 error compounds across blocks + the recurrent memory loop and the masklet is
-    # lost (mask IoU ~0). Each block is individually fp16-safe, but not all together.
-    # For fp16, prefer the mixed-fp16 export (only the 2 heavy blocks). bf16_enable is
+    # WARNING: fp16 on ALL blocks BREAKS SAM2's masks — the fp16 error compounds across
+    # blocks + the recurrent memory loop and the masklet is lost (mask IoU ~0). Each
+    # block is individually fp16-safe, but not all together. So fp16_enable is applied
+    # ONLY to the blocks in ``fp16_safe_blocks`` (the 2 heavy blocks the validated
+    # mixed-fp16 export targets); the recurrent-loop / mask-sensitive blocks stay fp32.
+    # OrtBlock logs, per block, whether fp16 was applied or held at fp32. bf16_enable is
     # safe for all blocks (fp32 range) — it is the recommended full-speed Ampere path.
     fp16_enable: bool = False
     bf16_enable: bool = False
+    # Blocks (matched by .onnx file stem) for which fp16_enable actually applies. The
+    # default is the two heavy blocks the mixed-fp16 export validates as fp16-safe;
+    # every other block is held at fp32 even when fp16_enable is set, because fp16 error
+    # compounds through the recurrent memory loop. Does NOT gate bf16 (safe everywhere).
+    fp16_safe_blocks: frozenset[str] = frozenset({"image_encoder", "memory_attention"})
     # Capture each TensorRT engine's execution as a CUDA graph and replay it, removing
     # per-kernel launch overhead. Needs stable input shapes + buffer addresses across
     # runs; ORT re-captures when they change, so it helps the static blocks (image
@@ -61,3 +68,14 @@ class TensorRTOptions:
     min_subgraph_size: int = 1
     # Optional path for the EP-context (pre-built engine) ONNX file.
     ep_context_file_path: str | Path | None = None
+
+    def __post_init__(self) -> None:
+        # Both precision flags build a weakly-typed network; setting both is ambiguous
+        # (TRT would pick one) and conflates two distinct paths. Force the caller to
+        # choose: bf16 (safe for all blocks) or fp16 (safe blocks only).
+        if self.fp16_enable and self.bf16_enable:
+            raise ValueError(
+                "TensorRTOptions: set fp16_enable OR bf16_enable, not both. "
+                "bf16_enable is safe for all blocks; fp16_enable applies only to "
+                "fp16_safe_blocks."
+            )
