@@ -21,6 +21,27 @@ class TensorRTOptions:
     cache directory.
     """
 
+    # Let TensorRT pick precision (weakly-typed network, per-layer auto-tuning) instead
+    # of taking it from the graph — the trtexec --fp16 / --bf16 path. Keep the ONNX fp32
+    # and TensorRT converts + tunes, holding numerically-sensitive layers at higher
+    # precision automatically (no manual fp16 block-list). REQUIRES a decomposed graph
+    # (opset 18; the native opset-23 Attention/RoPE ops need a strongly-typed network,
+    # which any precision flag disables). Leave BOTH off (default) to take precision from
+    # the graph (i.e. a mixed-fp16 export, which is strongly-typed). bf16 needs Ampere+
+    # (sm_80); fp16 since Volta. Don't set both.
+    #
+    # WARNING: fp16_enable converts ALL blocks to fp16, which BREAKS SAM2's masks — the
+    # fp16 error compounds across blocks + the recurrent memory loop and the masklet is
+    # lost (mask IoU ~0). Each block is individually fp16-safe, but not all together.
+    # For fp16, prefer the mixed-fp16 export (only the 2 heavy blocks). bf16_enable is
+    # safe for all blocks (fp32 range) — it is the recommended full-speed Ampere path.
+    fp16_enable: bool = False
+    bf16_enable: bool = False
+    # Capture each TensorRT engine's execution as a CUDA graph and replay it, removing
+    # per-kernel launch overhead. Needs stable input shapes + buffer addresses across
+    # runs; ORT re-captures when they change, so it helps the static blocks (image
+    # encoder) more than the dynamic-shape memory attention.
+    cuda_graph_enable: bool = False
     cache_enable: bool = True
     cache_dir: str | Path | None = None
     timing_cache_enable: bool = True
@@ -29,6 +50,10 @@ class TensorRTOptions:
     # Reuse the timing cache even if the device/CUDA/TRT version differs (faster
     # builds at the risk of slightly sub-optimal tactic choices on a mismatch).
     force_timing_cache: bool = False
+    # 0-5; higher = more tactic search => faster engine, slower build. Default 3 keeps
+    # iteration fast; use 5 for a max-performance Ampere+ deployment engine (built once,
+    # cached). On Ampere+ the strongly-typed fp16 graph lets TensorRT fuse a flash/MHA
+    # attention kernel; on Turing (no fused-MHA) the CUDA EP is the faster ONNX path.
     builder_optimization_level: int = 3
     max_workspace_size: int = 4 << 30  # 4 GiB
     force_sequential_build: bool = False

@@ -137,10 +137,15 @@ class OrtBlock:
                 trt = {
                     "device_id": device_id,
                     "user_compute_stream": stream,
-                    # No trt_fp16_enable: it forces a weakly-typed network, which
-                    # rejects the native opset-23 Attention/RoPE ops. Leaving it off
-                    # makes the EP build a strongly-typed network (precision comes from
-                    # the graph; use a mixed-fp16 export for fp16).
+                    # Precision: with both flags off the EP builds a STRONGLY-typed
+                    # network and takes precision from the graph (use a mixed-fp16
+                    # export). Enabling fp16/bf16 builds a WEAKLY-typed network and lets
+                    # TRT auto-convert + per-layer tune from an fp32 graph — only valid
+                    # for the decomposed opset-18 export (native opset-23 ops require a
+                    # strongly-typed network). See TensorRTOptions.
+                    "trt_fp16_enable": trt_opts.fp16_enable,
+                    "trt_bf16_enable": trt_opts.bf16_enable,
+                    "trt_cuda_graph_enable": trt_opts.cuda_graph_enable,
                     "trt_engine_cache_enable": trt_opts.cache_enable,
                     "trt_engine_cache_path": cache_dir.as_posix(),
                     "trt_engine_cache_prefix": onnx_path.stem,
