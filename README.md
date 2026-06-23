@@ -1,217 +1,291 @@
-# SAM 2: Segment Anything in Images and Videos
+# SAM 2 — Streaming, ONNX & EfficientTAM fork
 
-**[AI at Meta, FAIR](https://ai.meta.com/research/)**
-
-[Nikhila Ravi](https://nikhilaravi.com/), [Valentin Gabeur](https://gabeur.github.io/), [Yuan-Ting Hu](https://scholar.google.com/citations?user=E8DVVYQAAAAJ&hl=en), [Ronghang Hu](https://ronghanghu.com/), [Chaitanya Ryali](https://scholar.google.com/citations?user=4LWx24UAAAAJ&hl=en), [Tengyu Ma](https://scholar.google.com/citations?user=VeTSl0wAAAAJ&hl=en), [Haitham Khedr](https://hkhedr.com/), [Roman Rädle](https://scholar.google.de/citations?user=Tpt57v0AAAAJ&hl=en), [Chloe Rolland](https://scholar.google.com/citations?hl=fr&user=n-SnMhoAAAAJ), [Laura Gustafson](https://scholar.google.com/citations?user=c8IpF9gAAAAJ&hl=en), [Eric Mintun](https://ericmintun.github.io/), [Junting Pan](https://junting.github.io/), [Kalyan Vasudev Alwala](https://scholar.google.co.in/citations?user=m34oaWEAAAAJ&hl=en), [Nicolas Carion](https://www.nicolascarion.com/), [Chao-Yuan Wu](https://chaoyuan.org/), [Ross Girshick](https://www.rossgirshick.info/), [Piotr Dollár](https://pdollar.github.io/), [Christoph Feichtenhofer](https://feichtenhofer.github.io/)
-
-[[`Paper`](https://ai.meta.com/research/publications/sam-2-segment-anything-in-images-and-videos/)] [[`Project`](https://ai.meta.com/sam2)] [[`Demo`](https://sam2.metademolab.com/)] [[`Dataset`](https://ai.meta.com/datasets/segment-anything-video)] [[`Blog`](https://ai.meta.com/blog/segment-anything-2)] [[`BibTeX`](#citing-sam-2)]
+A community fork of [**SAM 2: Segment Anything in Images and Videos**](https://github.com/facebookresearch/sam2) focused on **deployment** and **memory-efficient streaming video segmentation**.
 
 ![SAM 2 architecture](assets/model_diagram.png?raw=true)
 
-**Segment Anything Model 2 (SAM 2)** is a foundation model towards solving promptable visual segmentation in images and videos. We extend SAM to video by considering images as a video with a single frame. The model design is a simple transformer architecture with streaming memory for real-time video processing. We build a model-in-the-loop data engine, which improves model and data via user interaction, to collect [**our SA-V dataset**](https://ai.meta.com/datasets/segment-anything-video), the largest video segmentation dataset to date. SAM 2 trained on our data provides strong performance across a wide range of tasks and visual domains.
+This fork keeps the original SAM 2 models and weights bit-for-bit, and adds:
 
-![SA-V dataset](assets/sa_v_dataset.jpg?raw=true)
+- **ONNX / TensorRT inference** for both images and video — a checkpoint-free runtime that runs the model's heavy blocks as ONNX Runtime sessions (CPU, CUDA, or TensorRT execution providers).
+- **On-the-fly (streaming) video processing** — frames are fed one at a time instead of loading the entire video into memory. Peak memory stays roughly constant with video length.
+- **A pluggable memory bank** with custom strategies for storing, selecting, and pruning per-object memories (e.g. a sliding-window "forgetful" bank), instead of the original's unbounded store.
+- **Integrated [EfficientTAM](https://github.com/yformer/EfficientTAM)** — the lightweight ViT-based Track-Anything models, usable through the same APIs as SAM 2.
+- **Pre-built wheels with compiled CUDA kernels** attached to each release, so `pip install` does not require a local CUDA toolchain in the common case.
 
-## Latest updates
+> This is an unofficial fork. The underlying models, weights, and research are the work of Meta AI (FAIR). See [Citation](#citation).
 
-**12/11/2024 -- full model compilation for a major VOS speedup and a new `SAM2VideoPredictor` to better handle multi-object tracking**
+---
 
-- We now support `torch.compile` of the entire SAM 2 model on videos, which can be turned on by setting `vos_optimized=True` in `build_sam2_video_predictor`, leading to a major speedup for VOS inference.
-- We update the implementation of `SAM2VideoPredictor` to support independent per-object inference, allowing us to relax the assumption of prompting for multi-object tracking and adding new objects after tracking starts.
-- See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for full details.
+## Table of contents
 
-**09/30/2024 -- SAM 2.1 Developer Suite (new checkpoints, training code, web demo) is released**
+- [Why this fork](#why-this-fork)
+- [Installation](#installation)
+- [Download checkpoints](#download-checkpoints)
+- [Usage](#usage)
+  - [Image prediction (PyTorch)](#image-prediction-pytorch)
+  - [Streaming video prediction (PyTorch)](#streaming-video-prediction-pytorch)
+  - [Custom memory bank](#custom-memory-bank)
+  - [ONNX / TensorRT inference](#onnx--tensorrt-inference)
+- [EfficientTAM](#efficienttam)
+- [License](#license)
+- [Citation](#citation)
 
-- A new suite of improved model checkpoints (denoted as **SAM 2.1**) are released. See [Model Description](#model-description) for details.
-  * To use the new SAM 2.1 checkpoints, you need the latest model code from this repo. If you have installed an earlier version of this repo, please first uninstall the previous version via `pip uninstall SAM-2`, pull the latest code from this repo (with `git pull`), and then reinstall the repo following [Installation](#installation) below.
-- The training (and fine-tuning) code has been released. See [`training/README.md`](training/README.md) on how to get started.
-- The frontend + backend code for the SAM 2 web demo has been released. See [`demo/README.md`](demo/README.md) for details.
+---
+
+## Why this fork
+
+The upstream video predictor (`SAM2VideoPredictor`) builds an inference state that holds **every frame of the video in memory** before tracking, which scales linearly with video length and is impractical for long or live streams.
+
+This fork adds a **generic predictor** (`SAM2GenericVideoPredictor`) that processes **one frame at a time**. The only per-object state retained between frames lives in a **memory bank**, which you can cap or prune. Combined with the ONNX/TensorRT runtime, this makes the model practical for long videos, live camera feeds, and resource-constrained deployment.
+
+| | Upstream `SAM2VideoPredictor` | This fork `SAM2GenericVideoPredictor` |
+|---|---|---|
+| Frame ingestion | Whole video loaded into `init_state` | One frame per `forward()` call |
+| Memory footprint | Grows with video length | Bounded by the memory bank |
+| Memory policy | Unbounded store | Pluggable (`ObjectMemoryBank`), prunable |
+| Backends | PyTorch | PyTorch **and** ONNX Runtime (CPU / CUDA / TensorRT) |
+
+---
 
 ## Installation
 
-SAM 2 needs to be installed first before use. The code requires `python>=3.10`, as well as `torch>=2.5.1` and `torchvision>=0.20.1`. Please follow the instructions [here](https://pytorch.org/get-started/locally/) to install both PyTorch and TorchVision dependencies. You can install SAM 2 on a GPU machine using:
+The code requires `python>=3.10`, `torch>=2.5.1`, and `torchvision>=0.20.1`.
+
+### Option A — pip with pre-built wheels (recommended)
+
+At install time, `setup.py` first tries to download a **pre-built wheel** (with the compiled `sam2._C` CUDA kernels) from this repo's GitHub Releases, matched to your exact `(torch, CUDA, Python, platform, C++ ABI)`. If none matches, it compiles the extension from source; if the source build fails, it falls back to a pure-Python wheel that JIT-compiles `_C` on first use.
 
 ```bash
-git clone https://github.com/facebookresearch/sam2.git && cd sam2
-
+git clone https://github.com/cjaverliat/sam2.git && cd sam2
 pip install -e .
 ```
-If you are installing on Windows, it's strongly recommended to use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu.
 
-To use the SAM 2 predictor and run the example notebooks, `jupyter` and `matplotlib` are required and can be installed by:
+Useful environment toggles (see [`setup.py`](setup.py) for the full list):
 
-```bash
-pip install -e ".[notebooks]"
-```
+| Variable | Effect |
+|---|---|
+| `SAM2_FORCE_BUILD=1` | Skip the pre-built wheel download, always compile from source |
+| `SAM2_BUILD_CUDA=0` | Build a pure-Python wheel (no `_C` extension) |
+| `SAM2_ALLOW_BUILD_ERRORS=0` | Fail hard instead of falling back to pure-Python |
+| `SAM2_WHEEL_BASE_URL=...` | Override the GitHub Releases base URL |
 
-Note:
-1. It's recommended to create a new Python environment via [Anaconda](https://www.anaconda.com/) for this installation and install PyTorch 2.5.1 (or higher) via `pip` following https://pytorch.org/. If you have a PyTorch version lower than 2.5.1 in your current environment, the installation command above will try to upgrade it to the latest PyTorch version using `pip`.
-2. The step above requires compiling a custom CUDA kernel with the `nvcc` compiler. If it isn't already available on your machine, please install the [CUDA toolkits](https://developer.nvidia.com/cuda-toolkit-archive) with a version that matches your PyTorch CUDA version.
-3. If you see a message like `Failed to build the SAM 2 CUDA extension` during installation, you can ignore it and still use SAM 2 (some post-processing functionality may be limited, but it doesn't affect the results in most cases).
+See [`INSTALL.md`](./INSTALL.md) for FAQs and troubleshooting.
 
-Please see [`INSTALL.md`](./INSTALL.md) for FAQs on potential issues and solutions.
 
-## Getting Started
+### Option B — From source with pixi
 
-### Download Checkpoints
-
-First, we need to download a model checkpoint. All the model checkpoints can be downloaded by running:
+This fork ships a [pixi](https://pixi.sh) workspace that pins the full toolchain (matching torch + CUDA, build tooling, ONNX runtimes) per environment. It handles the CUDA build for you.
 
 ```bash
-cd checkpoints && \
-./download_ckpts.sh && \
-cd ..
+git clone https://github.com/cjaverliat/sam2.git && cd sam2
+
+# Default environment: CUDA 12.8 torch + compiled CUDA kernels
+pixi shell           # drop into the environment
+# or run a single command:
+pixi run python -c "import sam2; print(sam2.__version__)"
 ```
 
-or individually from:
+Available environments include `default` (CUDA 12.8 torch), `notebooks`, `dev`, and the ONNX tiers described in [ONNX / TensorRT inference](#onnx--tensorrt-inference).
+
+> **Windows:** `nvcc` only supports the MSVC `cl.exe` host compiler, which conda/pixi cannot ship. Source the MSVC environment (`vcvars64.bat`) before any `pixi` command that builds the extension. See [`pyproject.toml`](pyproject.toml) for the exact path.
+
+---
+
+## Download checkpoints
+
+Checkpoints download via pixi tasks (cross-platform, with resume and caching). Files land in `checkpoints/`.
+
+```bash
+# SAM 2.1 — all four sizes
+pixi run download-sam2
+
+# or an individual size
+pixi run download-sam2-tiny      # also: -small, -base-plus, -large
+
+# EfficientTAM — all variants
+pixi run download-efficienttam
+```
+
+SAM 2.1 checkpoints can also be fetched individually:
 
 - [sam2.1_hiera_tiny.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt)
 - [sam2.1_hiera_small.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt)
 - [sam2.1_hiera_base_plus.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)
 - [sam2.1_hiera_large.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt)
 
-(note that these are the improved checkpoints denoted as SAM 2.1; see [Model Description](#model-description) for details.)
+---
 
-Then SAM 2 can be used in a few lines as follows for image and video prediction.
+## Usage
 
-### Image prediction
+### Image prediction (PyTorch)
 
-SAM 2 has all the capabilities of [SAM](https://github.com/facebookresearch/segment-anything) on static images, and we provide image prediction APIs that closely resemble SAM for image use cases. The `SAM2ImagePredictor` class has an easy interface for image prompting.
+Encode the image once, then prompt it (see [`notebooks/image_predictor_example.ipynb`](notebooks/image_predictor_example.ipynb)):
+
+```python
+import numpy as np
+import torch
+from PIL import Image
+from sam2.build_sam import build_sam2_generic
+
+model = build_sam2_generic(
+    "configs/sam2.1/sam2.1_hiera_l.yaml",
+    "./checkpoints/sam2.1_hiera_large.pt",
+    device="cuda",
+    use_half=True,
+)
+
+image = np.array(Image.open("images/truck.jpg").convert("RGB"))   # HWC uint8
+orig_hw = image.shape[:2]
+img_embeddings, _ = model.encode_image(
+    torch.as_tensor(image, device=model.device).permute(2, 0, 1)
+)
+
+prompt_embeddings = model.encode_prompts(
+    orig_hw=orig_hw,
+    batch_size=1,
+    points_coords=torch.tensor([[[500, 375]]], dtype=torch.float32, device=model.device),
+    points_labels=torch.tensor([[1]], dtype=torch.int, device=model.device),
+)
+result = model.generate_masks(
+    orig_hw=orig_hw,
+    img_embeddings=img_embeddings,
+    prompt_embeddings=prompt_embeddings,
+    multimask_output=True,
+)
+masks = result.masks_logits[0] > model.mask_threshold
+```
+
+### Streaming video prediction (PyTorch)
+
+Build the predictor once, create a lightweight state, then call `forward()` per frame. Memory is carried in `state.memory_bank` — no full-video buffer (see [`notebooks/video_predictor_example.ipynb`](notebooks/video_predictor_example.ipynb)):
 
 ```python
 import torch
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+from sam2.build_sam import build_sam2_generic_video_predictor
+from sam2.modeling.sam2_prompt import SAM2Prompt
+from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
 
-checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-predictor = SAM2ImagePredictor(build_sam2(model_cfg, checkpoint))
+checkpoint = "./checkpoints/sam2.1_hiera_base_plus.pt"
+model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
+device = torch.device("cuda")
 
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    predictor.set_image(<your_image>)
-    masks, _, _ = predictor.predict(<input_prompts>)
+predictor = build_sam2_generic_video_predictor(model_cfg, checkpoint, device=device)
+
+# State holds only (H, W) and the memory bank — not the frames.
+state = SAM2GenericVideoPredictorState.create(video_hw=(height, width))
+
+# Frame 0: add a prompt for object id 1
+prompt = SAM2Prompt(
+    obj_id=1,
+    points_coords=torch.tensor([[210, 350]], dtype=torch.float32, device=device),
+    points_labels=torch.tensor([1], device=device),
+)
+results = predictor.forward(state=state, frame_idx=0, frame=frame_0, prompts=[prompt])
+
+# Subsequent frames: just feed pixels — tracking continues from the memory bank.
+for frame_idx, frame in stream:  # any iterable of (C, H, W) tensors
+    results = predictor.forward(state=state, frame_idx=frame_idx, frame=frame)
+    masks = {obj_id: (r.best_mask_logits > 0) for obj_id, r in results.items()}
 ```
 
-Please refer to the examples in [image_predictor_example.ipynb](./notebooks/image_predictor_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/image_predictor_example.ipynb)) for static image use cases.
+`frame` is a `(C, H, W)` float tensor in `[0, 1]` with `H, W` matching `video_hw`, so frames can be read lazily from any decoder (OpenCV, PyAV, a live camera) without materializing the whole clip.
 
-SAM 2 also supports automatic mask generation on images just like SAM. Please see [automatic_mask_generator_example.ipynb](./notebooks/automatic_mask_generator_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/automatic_mask_generator_example.ipynb)) for automatic mask generation in images.
+### Custom memory bank
 
-### Video prediction
+The memory bank is a pluggable component. Two implementations ship in the box:
 
-For promptable segmentation and tracking in videos, we provide a video predictor with APIs for example to add prompts and propagate masklets throughout a video. SAM 2 supports video inference on multiple objects and uses an inference state to keep track of the interactions in each video.
+| Class | Strategy |
+|---|---|
+| `SAM2ObjectMemoryBank` | Default. Unbounded store, faithful to the original SAM 2 paper (no forgetting). |
+| `SAM2ForgetfulObjectMemoryBank` | Sliding window. Conditional (prompted) memories are kept forever; non-conditional memories outside `[frame - window, frame + window]` are pruned. |
+
+```python
+from sam2.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
+from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+
+bank = SAM2ForgetfulObjectMemoryBank(memory_window_size=7)
+state = SAM2GenericVideoPredictorState.create(video_hw=(height, width), memory_bank=bank)
+```
+
+Write your own policy by subclassing the abstract base
+[`ObjectMemoryBank`](sam2/modeling/memory.py) (or `SAM2ObjectMemoryBank`) and overriding
+`try_add_memories`, `select_memories`, and `prune_memories` — for example, to cap memory
+count, score-based eviction, or temporal striding.
+
+### ONNX / TensorRT inference
+
+Run the model with ONNX Runtime instead of PyTorch — for both images and video — via the same generic predictor. This path is **checkpoint-free**: all weights (including the small "glue" tensors) are baked into the export artifacts, so no `.pt` checkpoint is needed at runtime.
+
+**1. Export the graphs** (one-time, device-agnostic, CPU is fine):
+
+```bash
+# Single model — fp32 + mixed-fp16 graphs into outputs/onnx/<model>/...
+pixi run -e onnx-export export-onnx-sam2-base-plus
+
+# Or all models / variants at once
+pixi run -e onnx-export export-onnx
+```
+
+This writes the 5 neural-network blocks (image encoder, prompt encoder, mask decoder, memory attention, memory encoder) as ONNX graphs at opset 18, plus a `weights.npz`. You can also call the exporter directly:
+
+```bash
+pixi run -e onnx-export python tools/export_onnx.py \
+    --config configs/sam2.1/sam2.1_hiera_b+.yaml \
+    --ckpt checkpoints/sam2.1_hiera_base_plus.pt \
+    --out-dir onnx_sam2 --opset 18        # add --fp16 for a mixed-precision graph
+```
+
+**2. Run inference.** Build the ONNX-backed predictor and feed frames exactly like the PyTorch streaming API:
 
 ```python
 import torch
-from sam2.build_sam import build_sam2_video_predictor
+from sam2.build_sam import build_sam2_generic_video_predictor_onnx
+from sam2.onnx.trt_options import TensorRTOptions
 
-checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-predictor = build_sam2_video_predictor(model_cfg, checkpoint)
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(<your_video>)
-
-    # add new prompts and instantly get the output on the same frame
-    frame_idx, object_ids, masks = predictor.add_new_points_or_box(state, <your_prompts>):
-
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
-        ...
+predictor = build_sam2_generic_video_predictor_onnx(
+    "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    onnx_dir="onnx_sam2",          # extracted dir, a .zip, or an http(s) URL to one
+    device="cuda",
+    use_trt=True,                  # TensorRT EP; set False for the CUDA EP
+    trt_opts=TensorRTOptions(),    # engine cache / workspace tuning
+)
 ```
 
-Please refer to the examples in [video_predictor_example.ipynb](./notebooks/video_predictor_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/video_predictor_example.ipynb)) for details on how to add click or box prompts, make refinements, and track multiple objects in videos.
+For image-only inference, use `build_sam2_generic_image_predictor_onnx` with the same arguments.
 
-## Load from 🤗 Hugging Face
+Notes:
+- `onnx_dir` accepts an extracted export directory, a `.zip` of one (e.g. a release artifact), or an `http(s)` URL (downloaded and cached; override with `SAM2_ONNX_CACHE`).
+- Execution provider tiers map to pixi environments: `onnx` (CPU), `onnx-gpu-cu12` / `onnx-gpu-cu13` (CUDA EP), and `onnx-tensorrt-cu12` / `onnx-tensorrt-cu13` (TensorRT EP + CUDA fallback). The CPU and GPU ONNX runtimes conflict, so each tier is its own environment.
+- Precision is owned by the exported graph: the TensorRT EP builds a strongly-typed network, so for fp16 export a mixed-precision graph with `--fp16` rather than toggling a runtime flag.
 
-Alternatively, models can also be loaded from [Hugging Face](https://huggingface.co/models?search=facebook/sam2) (requires `pip install huggingface_hub`).
+---
 
-For image prediction:
+## EfficientTAM
+
+[EfficientTAM](https://github.com/yformer/EfficientTAM) (Efficient Track Anything) is integrated as a first-class model (`sam2.modeling.efficienttam_base.EfficientTAMBase`) with a plain ViT image encoder. It uses the **same build and predictor APIs** as SAM 2 — point a builder at an EfficientTAM config and checkpoint:
 
 ```python
-import torch
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+from sam2.build_sam import build_sam2_generic_video_predictor
 
-predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    predictor.set_image(<your_image>)
-    masks, _, _ = predictor.predict(<input_prompts>)
+predictor = build_sam2_generic_video_predictor(
+    "configs/efficienttam/efficienttam_ti.yaml",
+    "./checkpoints/efficienttam_ti.pt",
+)
 ```
 
-For video prediction:
+Available configs live in [`sam2/configs/efficienttam/`](sam2/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
 
-```python
-import torch
-from sam2.sam2_video_predictor import SAM2VideoPredictor
-
-predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large")
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(<your_video>)
-
-    # add new prompts and instantly get the output on the same frame
-    frame_idx, object_ids, masks = predictor.add_new_points_or_box(state, <your_prompts>):
-
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
-        ...
-```
-
-## Model Description
-
-### SAM 2.1 checkpoints
-
-The table below shows the improved SAM 2.1 checkpoints released on September 29, 2024.
-|      **Model**       | **Size (M)** |    **Speed (FPS)**     | **SA-V test (J&F)** | **MOSE val (J&F)** | **LVOS v2 (J&F)** |
-| :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :---------------: |
-|   sam2.1_hiera_tiny <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_t.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt))    |     38.9     |          91.2          |        76.5         |        71.8        |       77.3        |
-|   sam2.1_hiera_small <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_s.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt))   |      46      |          84.8          |        76.6         |        73.5        |       78.3        |
-| sam2.1_hiera_base_plus <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_b+.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)) |     80.8     |        64.1          |        78.2         |        73.7        |       78.2        |
-|   sam2.1_hiera_large <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_l.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt))   |    224.4     |          39.5          |        79.5         |        74.6        |       80.6        |
-
-### SAM 2 checkpoints
-
-The previous SAM 2 checkpoints released on July 29, 2024 can be found as follows:
-
-|      **Model**       | **Size (M)** |    **Speed (FPS)**     | **SA-V test (J&F)** | **MOSE val (J&F)** | **LVOS v2 (J&F)** |
-| :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :---------------: |
-|   sam2_hiera_tiny <br /> ([config](sam2/configs/sam2/sam2_hiera_t.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt))   |     38.9     |          91.5          |        75.0         |        70.9        |       75.3        |
-|   sam2_hiera_small <br /> ([config](sam2/configs/sam2/sam2_hiera_s.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt))   |      46      |          85.6          |        74.9         |        71.5        |       76.4        |
-| sam2_hiera_base_plus <br /> ([config](sam2/configs/sam2/sam2_hiera_b+.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_base_plus.pt)) |     80.8     |     64.8    |        74.7         |        72.8        |       75.8        |
-|   sam2_hiera_large <br /> ([config](sam2/configs/sam2/sam2_hiera_l.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt))   |    224.4     | 39.7 |        76.0         |        74.6        |       79.8        |
-
-Speed measured on an A100 with `torch 2.5.1, cuda 12.4`. See `benchmark.py` for an example on benchmarking (compiling all the model components). Compiling only the image encoder can be more flexible and also provide (a smaller) speed-up (set `compile_image_encoder: True` in the config).
-## Segment Anything Video Dataset
-
-See [sav_dataset/README.md](sav_dataset/README.md) for details.
-
-## Training SAM 2
-
-You can train or fine-tune SAM 2 on custom datasets of images, videos, or both. Please check the training [README](training/README.md) on how to get started.
-
-## Web demo for SAM 2
-
-We have released the frontend + backend code for the SAM 2 web demo (a locally deployable version similar to https://sam2.metademolab.com/demo). Please see the web demo [README](demo/README.md) for details.
+---
 
 ## License
 
-The SAM 2 model checkpoints, SAM 2 demo code (front-end and back-end), and SAM 2 training code are licensed under [Apache 2.0](./LICENSE), however the [Inter Font](https://github.com/rsms/inter?tab=OFL-1.1-1-ov-file) and [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) used in the SAM 2 demo code are made available under the [SIL Open Font License, version 1.1](https://openfontlicense.org/open-font-license-official-text/).
+The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0](./LICENSE). This fork is distributed under the same license. EfficientTAM is integrated from its [upstream repository](https://github.com/yformer/EfficientTAM); see that project for its license and terms. Third-party code includes a GPU connected-components algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) ([license](./LICENSE_cctorch)).
 
-## Contributing
+---
 
-See [contributing](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
+## Citation
 
-## Contributors
-
-The SAM 2 project was made possible with the help of many contributors (alphabetical):
-
-Karen Bergan, Daniel Bolya, Alex Bosenberg, Kai Brown, Vispi Cassod, Christopher Chedeau, Ida Cheng, Luc Dahlin, Shoubhik Debnath, Rene Martinez Doehner, Grant Gardner, Sahir Gomez, Rishi Godugu, Baishan Guo, Caleb Ho, Andrew Huang, Somya Jain, Bob Kamma, Amanda Kallet, Jake Kinney, Alexander Kirillov, Shiva Koduvayur, Devansh Kukreja, Robert Kuo, Aohan Lin, Parth Malani, Jitendra Malik, Mallika Malhotra, Miguel Martin, Alexander Miller, Sasha Mitts, William Ngan, George Orlin, Joelle Pineau, Kate Saenko, Rodrick Shepard, Azita Shokrpour, David Soofian, Jonathan Torres, Jenny Truong, Sagar Vaze, Meng Wang, Claudette Ward, Pengchuan Zhang.
-
-Third-party code: we use a GPU-based connected component algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) (with its license in [`LICENSE_cctorch`](./LICENSE_cctorch)) as an optional post-processing step for the mask predictions.
-
-## Citing SAM 2
-
-If you use SAM 2 or the SA-V dataset in your research, please use the following BibTeX entry.
+This fork builds directly on [SAM 2](https://github.com/facebookresearch/sam2). If you use it in your research, please cite the original SAM 2 paper:
 
 ```bibtex
 @article{ravi2024sam2,
@@ -219,6 +293,17 @@ If you use SAM 2 or the SA-V dataset in your research, please use the following 
   author={Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and R{\"a}dle, Roman and Rolland, Chloe and Gustafson, Laura and Mintun, Eric and Pan, Junting and Alwala, Kalyan Vasudev and Carion, Nicolas and Wu, Chao-Yuan and Girshick, Ross and Doll{\'a}r, Piotr and Feichtenhofer, Christoph},
   journal={arXiv preprint arXiv:2408.00714},
   url={https://arxiv.org/abs/2408.00714},
+  year={2024}
+}
+```
+
+If you use the EfficientTAM models, please also cite [EfficientTAM](https://github.com/yformer/EfficientTAM):
+
+```bibtex
+@article{xiong2024efficienttam,
+  title={Efficient Track Anything},
+  author={Yunyang Xiong, Chong Zhou, Xiaoyu Xiang, Lemeng Wu, Chenchen Zhu, Zechun Liu, Saksham Suri, Balakrishnan Varadarajan, Ramya Akula, Forrest Iandola, Raghuraman Krishnamoorthi, Bilge Soran, Vikas Chandra},
+  journal={preprint arXiv:2411.18933},
   year={2024}
 }
 ```
