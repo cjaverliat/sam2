@@ -22,6 +22,16 @@ Run from the repo root:
         --config configs/sam2.1/sam2.1_hiera_b+.yaml \
         --ckpt checkpoints/sam2.1_hiera_base_plus.pt \
         --out-dir onnx_sam2
+
+Two artifacts, one per runtime (both opset 18):
+  * fp32 (default) -> the TensorRT path. Let TensorRT convert + per-layer auto-tune from
+    the fp32 graph: TensorRTOptions(fp16_enable=True) or (bf16_enable=True) on Ampere+.
+    This weakly-typed path fuses freely (it matches the torch baseline even on Turing);
+    bf16 keeps fp32 range and is Ampere's native precision. For a deployment engine use
+    builder_optimization_level=5 (built once, cached).
+  * --fp16 -> a mixed-precision copy for the CUDA/CPU EP, which can't convert precision
+    at runtime. Do NOT feed this baked-fp16 graph to the TensorRT precision flags (the
+    weights are already fp16; the baked cast-islands also block fusion).
 """
 
 import argparse
@@ -51,21 +61,6 @@ from sam2.onnx import memory_encoder_onnx as menc
 from sam2.onnx import prompt_encoder_onnx as penc
 
 Dim = torch.export.Dim
-
-
-# Op types always kept in fp32 during the mixed-precision conversion:
-#  - LayerNormalization: variance accumulation overflows / loses precision in fp16
-#    (and it sits *between* attention blocks, so keeping it fp32 doesn't block MHA
-#    fusion).
-#  - Identity: Identity nodes that feed a graph output get mis-typed by the fp16
-#    converter, so the keep_io_types fp32 output cast is left as fp16 and ORT rejects
-#    the model; keeping Identity fp32 makes the passthrough type match.
-# Softmax is NOT here: it is kept fp16 by default so attention stays a contiguous
-# fp16 QK->Softmax->V pattern that TensorRT can fuse into a flash/MHA kernel (Ampere+).
-# --fp16-keep-softmax-fp32 adds it back (conservative; prevents that fusion).
-# DEFAULT_OP_BLOCK_LIST also keeps Resize/Range/etc. (their non-data inputs must stay
-# fp32), so it must be extended, not replaced.
-_FP16_SENSITIVE_OPS = ["LayerNormalization", "Identity"]
 
 
 def _force_fp32_io(model) -> None:
@@ -105,18 +100,17 @@ def _force_fp32_io(model) -> None:
             tt.elem_type = F32
 
 
-def _to_mixed_fp16(path: Path, keep_softmax_fp32: bool = False) -> None:
-    """Rewrite a saved fp32 ONNX graph in place as mixed precision: fp16 weights and
-    compute, with the sensitive ops in ``_FP16_SENSITIVE_OPS`` (+ Softmax when
-    ``keep_softmax_fp32``) and the graph IO kept fp32 so the runtime feeds/reads fp32
-    tensors unchanged. Shape inference stays on so the converter can type its casts;
-    ``_force_fp32_io`` then repairs any fp16 boundary the converter left behind."""
+def _to_mixed_fp16(path: Path) -> None:
+    """Rewrite a saved fp32 ONNX graph in place as mixed precision for the CUDA/CPU EP
+    (which can't convert precision at runtime; the TensorRT path keeps fp32 and uses
+    trt_fp16/bf16_enable). fp16 weights/compute, graph IO kept fp32, with LayerNorm
+    (variance) and Identity (converter correctness) held fp32. Shape inference stays on
+    so the converter types its casts; ``_force_fp32_io`` then repairs any fp16 boundary
+    the converter left behind."""
     import onnx
     from onnxconverter_common import float16
 
-    block = list(float16.DEFAULT_OP_BLOCK_LIST) + _FP16_SENSITIVE_OPS
-    if keep_softmax_fp32:
-        block.append("Softmax")
+    block = list(float16.DEFAULT_OP_BLOCK_LIST) + ["LayerNormalization", "Identity"]
     model16 = float16.convert_float_to_float16(
         onnx.load(str(path)),
         keep_io_types=True,
@@ -130,7 +124,7 @@ def _to_mixed_fp16(path: Path, keep_softmax_fp32: bool = False) -> None:
 
 def _export(
     module: nn.Module, args, input_names, output_names, dynamic_shapes, path, opset,
-    fp16=False, fp16_keep_softmax=False,
+    fp16=False,
 ):
     module = module.eval()
     onnx_program = torch.onnx.export(
@@ -145,7 +139,7 @@ def _export(
     onnx_program.save(str(path))
     print(f"  saved {path.name}")
     if fp16:
-        _to_mixed_fp16(path, keep_softmax_fp32=fp16_keep_softmax)
+        _to_mixed_fp16(path)
     return onnx_program
 
 
@@ -276,17 +270,10 @@ def main():
     p.add_argument("--no-parity", action="store_true", help="skip torch vs ORT check")
     p.add_argument(
         "--fp16", action="store_true",
-        help="export the two heavy transformer blocks (image encoder, memory attention) "
-             "as mixed precision: fp16 compute with LayerNorm/Softmax and graph IO kept "
-             "fp32. The prompt encoder (Fourier positional features), mask decoder "
-             "(small; precision-sensitive logits/scores) and memory encoder (recurrently "
-             "reused) stay fp32. Needs onnxconverter-common.",
-    )
-    p.add_argument(
-        "--fp16-keep-softmax-fp32", action="store_true",
-        help="keep attention Softmax in fp32 (conservative). Default keeps Softmax fp16 "
-             "so TensorRT can fuse a flash/MHA kernel on Ampere+; set this for the "
-             "conservative path (no MHA fusion).",
+        help="also write a mixed-precision (fp16) copy of the heavy blocks (image encoder, "
+             "memory attention) for the CUDA/CPU EP, which can't convert precision at "
+             "runtime. Graph IO stays fp32; LayerNorm + Identity stay fp32. Needs "
+             "onnxconverter-common. (For TensorRT, keep fp32 and use trt_fp16/bf16_enable.)",
     )
     p.add_argument(
         "--max-cond-frames", type=int, default=16,
@@ -300,9 +287,6 @@ def main():
     )
     args = p.parse_args()
 
-    # --fp16 is opset-agnostic: the runtime TensorRT EP builds a strongly-typed network
-    # (no precision flag), so it always runs the graph at the graph's own precision.
-    # Baking fp16 in is therefore the only way to get fp16 on TensorRT, at any opset.
     set_export_opset(args.opset)
     if args.opset >= 23:
         warnings.warn(
@@ -377,7 +361,6 @@ def main():
         out / ienc.FILENAME,
         args.opset,
         fp16=args.fp16,
-        fp16_keep_softmax=args.fp16_keep_softmax_fp32,
     )
 
     # high-res projected features (as encode_image does) for the decoder example
@@ -476,7 +459,6 @@ def main():
         },
         out / mattn.FILENAME, args.opset,
         fp16=args.fp16,
-        fp16_keep_softmax=args.fp16_keep_softmax_fp32,
     )
 
     # ---------- memory encoder ----------
