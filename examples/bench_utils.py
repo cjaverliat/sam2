@@ -40,11 +40,12 @@ def summarize(times_ms):
 
 
 def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=200,
-                        desc="bench"):
+                        desc="bench", memory_bank=None):
     """Prompt frame 0 with a single point, propagate, time each frame, print stats.
 
     The first ``warmup_frames`` propagation frames are discarded (engine/cache settle).
-    ``max_frames=0`` runs the whole video.
+    ``max_frames=0`` runs the whole video. ``memory_bank`` overrides the default
+    (infinite) bank — pass a ``SAM2ForgetfulObjectMemoryBank`` for bounded memory.
     """
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
@@ -53,7 +54,7 @@ def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=20
     orig_hw = (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
 
-    state = SAM2GenericVideoPredictorState.create(orig_hw)
+    state = SAM2GenericVideoPredictorState.create(orig_hw, memory_bank)
     warmup(predictor, state, device)
 
     prompt = SAM2Prompt(
