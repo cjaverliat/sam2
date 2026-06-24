@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 _TRT_DLLS_PRELOADED = False
 
 
+def _ort_version() -> tuple[int, ...]:
+    """onnxruntime version as a comparable int tuple, e.g. (1, 22, 0)."""
+    parts = []
+    for tok in ort.__version__.split("."):
+        if not tok.isdigit():  # stop at suffixes like '1.23.0rc1'
+            break
+        parts.append(int(tok))
+    return tuple(parts)
+
+
 def _preload_trt_dlls() -> None:
     """Make ORT's TensorRT EP loadable under the Windows pip layout.
 
@@ -134,9 +144,17 @@ class OrtBlock:
                 )
                 if trt_opts.timing_cache_enable:
                     timing_dir.mkdir(parents=True, exist_ok=True)
-                # fp16 is applied per-block: only the fp16-safe blocks get it, because
-                # fp16 error compounds through the recurrent memory loop and destroys the
-                # masklet if every block runs fp16. bf16 (fp32 range) is safe everywhere.
+                # trt_bf16_enable is only a valid TRT EP option from ORT 1.23 on. Older
+                # ORT rejects the unknown key and silently drops the TRT *and* CUDA EPs,
+                # falling back to CPU — a 10x-slower run that looks like it worked. Fail
+                # loud instead.
+                if trt_opts.bf16_enable and _ort_version() < (1, 23):
+                    raise RuntimeError(
+                        f"TRT bf16 (bf16_enable) needs onnxruntime >= 1.23, but this "
+                        f"environment has onnxruntime {ort.__version__}. Older ORT "
+                        f"rejects trt_bf16_enable and silently falls back to CPU. Use "
+                        f"the onnx-tensorrt-cu13 environment (ORT >= 1.23), or fp16."
+                    )
                 fp16 = trt_opts.fp16_enable and onnx_path.stem in trt_opts.fp16_safe_blocks
                 if trt_opts.fp16_enable:
                     if fp16:
@@ -154,12 +172,9 @@ class OrtBlock:
                 trt = {
                     "device_id": device_id,
                     "user_compute_stream": stream,
-                    # Precision: with both flags off the EP builds a STRONGLY-typed
-                    # network and takes precision from the graph (use a mixed-fp16
-                    # export). Enabling fp16/bf16 builds a WEAKLY-typed network and lets
-                    # TRT auto-convert + per-layer tune from an fp32 graph — only valid
-                    # for the decomposed opset-18 export (native opset-23 ops require a
-                    # strongly-typed network). See TensorRTOptions.
+                    # Precision: both flags off = fp32. fp16/bf16 build a weakly-typed
+                    # network and let TRT auto-convert + per-layer tune from the fp32
+                    # opset-18 export. See TensorRTOptions.
                     "trt_fp16_enable": fp16,
                     "trt_bf16_enable": trt_opts.bf16_enable,
                     "trt_cuda_graph_enable": trt_opts.cuda_graph_enable,
