@@ -102,10 +102,11 @@ def _minor_pin(name, ver):
 
 
 def get_install_requires(torch, cpu=False):
-    """Runtime deps. For a CUDA wheel, pin torch (and torchvision) to the exact
-    minor it was built against (ABI lock) so a mismatched torch errors at install.
-    The CPU wheel is pure-Python -> keep torch loose (works with any torch)."""
-    if torch is None or cpu:
+    """Runtime deps. A DISTRIBUTED CUDA wheel pins torch (and torchvision) to the
+    exact minor it was built against (ABI lock) so a mismatched torch errors at
+    install. The editable/workspace build and the CPU wheel keep torch loose: the
+    pixi environment (or the user) owns the torch version. See _DIST_WHEEL_BUILD."""
+    if torch is None or cpu or not _DIST_WHEEL_BUILD:
         return BASE_DEPS + ["torch>=2.5.1", "torchvision>=0.20.1"]
     reqs = BASE_DEPS + [_minor_pin("torch", torch.__version__)]
     try:
@@ -267,6 +268,17 @@ _BUILD_COMMANDS = {
 }
 _is_building = not _BUILD_COMMANDS.isdisjoint(sys.argv)
 
+# The local version label (+cuXXXtorchYY) and the exact torch pin in
+# install_requires are for DISTRIBUTED wheels only: they let an external
+# `pip install sam2-...+cu128torch28` refuse a mismatched torch. The in-workspace
+# editable build (pixi `sam2 = { path = ".", editable = true }`) must NOT carry
+# them — every pixi environment already pins torch via its cuNNN feature, so baking
+# `torch==2.12.*` into the editable metadata makes sam2 unsatisfiable in any env on
+# a different torch line and non-deterministic across solve-groups. Only a real
+# wheel build (`bdist_wheel` / `build`) is a distribution; editable_wheel / develop
+# / egg_info / dist_info are workspace steps that keep torch loose + no label.
+_DIST_WHEEL_BUILD = "bdist_wheel" in sys.argv or "build" in sys.argv
+
 try:
     import torch  # noqa: F401
 except ImportError:
@@ -304,7 +316,9 @@ if torch is None:
     # Metadata-only: plain version, no extension, loose deps.
     pass
 elif is_cpu_build:
-    local_label = "cpu"
+    # Label only on a distributed wheel; the editable workspace build stays plain
+    # so its metadata matches the solve-time metadata across all environments.
+    local_label = "cpu" if _DIST_WHEEL_BUILD else None
     # No extension, no download command: a pure-Python build needs no toolchain
     # and is instant, so source-build is always the right fallback.
 else:
@@ -312,7 +326,10 @@ else:
     from torch.utils.cpp_extension import BuildExtension
     from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
 
-    local_label = get_local_label(torch)
+    # Label only on a distributed wheel (it selects the prebuilt release asset and
+    # ABI-tags the wheel). The editable workspace build stays plain so its metadata
+    # is identical to the solve-time metadata and across every torch line.
+    local_label = get_local_label(torch) if _DIST_WHEEL_BUILD else None
 
     def _extensions_or_degrade():
         """Configure the _C extension, degrading to none on a recoverable build
