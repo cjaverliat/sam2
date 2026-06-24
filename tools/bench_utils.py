@@ -13,9 +13,36 @@ import cv2
 import torch
 from tqdm import tqdm
 
-from frame_utils import read_frame, warmup
+from sam2.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
+from sam2.modeling.sam2_memory import SAM2ObjectMemoryBank
 from sam2.modeling.sam2_prompt import SAM2Prompt
 from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+
+
+def read_frame(cap, device):
+    ret, frame = cap.read()
+    if not ret:
+        return None
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame = torch.as_tensor(frame).permute(2, 0, 1).to(device)
+    return frame / 255.0
+
+
+def warmup(predictor, video_state, device):
+    """Pay one-time CUDA/cuDNN init cost up front. Empty prompts return early
+    without writing memory, so state stays clean."""
+    dummy = torch.zeros(3, *video_state.video_hw, device=device)
+    predictor.forward(
+        state=video_state, frame=dummy, frame_idx=0, prompts=[], create_memory=False
+    )
+
+
+def build_memory_bank(memory_window, bank_device):
+    device = torch.device(bank_device)
+    if memory_window > 0:
+        return SAM2ForgetfulObjectMemoryBank(
+            memory_window_size=memory_window, storage_device=device)
+    return SAM2ObjectMemoryBank(storage_device=device)
 
 
 def sync(device):
@@ -40,11 +67,12 @@ def summarize(times_ms):
 
 
 def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=200,
-                        desc="bench"):
+                        desc="bench", memory_bank=None):
     """Prompt frame 0 with a single point, propagate, time each frame, print stats.
 
     The first ``warmup_frames`` propagation frames are discarded (engine/cache settle).
-    ``max_frames=0`` runs the whole video.
+    ``max_frames=0`` runs the whole video. ``memory_bank`` overrides the default
+    (infinite) bank — pass a ``SAM2ForgetfulObjectMemoryBank`` for bounded memory.
     """
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
@@ -53,7 +81,7 @@ def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=20
     orig_hw = (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
 
-    state = SAM2GenericVideoPredictorState.create(orig_hw)
+    state = SAM2GenericVideoPredictorState.create(orig_hw, memory_bank)
     warmup(predictor, state, device)
 
     prompt = SAM2Prompt(

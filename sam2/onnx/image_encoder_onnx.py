@@ -35,22 +35,41 @@ class ImageEncoderOnnx(torch.nn.Module):
     ):
         super().__init__()
         self.num_levels = num_levels
+        self._all_output_names = output_names(num_levels)
         self.block = OrtBlock(
             Path(onnx_dir) / FILENAME,
             INPUT_NAMES,
-            output_names(num_levels),
+            self._all_output_names,
             device,
             use_trt,
             trt_opts,
         )
+        # The pos levels (vision_pos_enc) are sinusoidal position encodings over the
+        # feature grid: they depend only on the input resolution, not the frame
+        # content, so they are identical for every frame at a given size (the export
+        # even constant-folds them). Returning them from the graph each frame is pure
+        # waste — those 3 tensors total ~87 MiB and cost ~22 ms/frame to re-serve,
+        # more than the encoder compute itself. Compute them once, cache, and skip
+        # binding them on later frames (keyed by H,W so a resolution change rebuilds).
+        self._pos_cache: list[torch.Tensor] | None = None
+        self._pos_cache_hw: tuple[int, int] | None = None
 
     def forward(self, sample: torch.Tensor) -> dict:
-        outs = self.block.run({"image": sample})
-        vision_features = outs[0]
-        fpn = outs[1 : 1 + self.num_levels]
-        pos = outs[1 + self.num_levels :]
+        n = self.num_levels
+        hw = (int(sample.shape[-2]), int(sample.shape[-1]))
+        if self._pos_cache is None or self._pos_cache_hw != hw:
+            # First frame at this resolution: request all outputs and cache the pos
+            # levels (cloned off the reused ORT output buffers).
+            self.block.output_names = self._all_output_names
+            outs = self.block.run({"image": sample})
+            self._pos_cache = [p.clone() for p in outs[1 + n :]]
+            self._pos_cache_hw = hw
+            # Later frames skip the constant pos outputs entirely.
+            self.block.output_names = self._all_output_names[: 1 + n]
+        else:
+            outs = self.block.run({"image": sample})
         return {
-            "vision_features": vision_features,
-            "backbone_fpn": list(fpn),
-            "vision_pos_enc": list(pos),
+            "vision_features": outs[0],
+            "backbone_fpn": list(outs[1 : 1 + n]),
+            "vision_pos_enc": list(self._pos_cache),
         }

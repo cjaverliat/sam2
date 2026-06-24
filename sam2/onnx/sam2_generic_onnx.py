@@ -176,6 +176,20 @@ def attach_onnx_blocks(
     device = torch.device(device)
     manifest = json.loads((onnx_dir / "manifest.json").read_text())
 
+    # A mixed-precision export is for the CUDA/CPU EP only: its baked fp16 weights + cast
+    # islands can't build a TensorRT engine (memory_attention dies with TRT error 10,
+    # "could not find any implementation for node"). Reject loud here instead of after
+    # a multi-minute build.
+    if use_trt and manifest["precision"] == "mixed-precision":
+        raise RuntimeError(
+            f"{onnx_dir} is a mixed-precision export; it is for the CUDA/CPU EP only and "
+            f"cannot be used with TensorRT — its baked fp16 weights and cast islands "
+            f"block the strongly-typed TRT build (memory_attention fails with 'could not "
+            f"find any implementation for node'). For TensorRT use the fp32 export with "
+            f"TensorRTOptions(bf16_enable=True), or fp16_enable=True (applied to the 2 "
+            f"heavy blocks only); or pass use_trt=False to run this export on the CUDA EP."
+        )
+
     # Swap the 5 heavy blocks for their ONNX-backed nn.Module wrappers. Plain setattr
     # works now that the wrappers are nn.Modules; the meta params they replace carry no
     # storage, so nothing real is freed.

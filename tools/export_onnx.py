@@ -24,14 +24,21 @@ Run from the repo root:
         --out-dir onnx_sam2
 
 Two artifacts, one per runtime (both opset 18):
-  * fp32 (default) -> the TensorRT path. Let TensorRT convert + per-layer auto-tune from
-    the fp32 graph: TensorRTOptions(fp16_enable=True) or (bf16_enable=True) on Ampere+.
-    This weakly-typed path fuses freely (it matches the torch baseline even on Turing);
-    bf16 keeps fp32 range and is Ampere's native precision. For a deployment engine use
+  * fp32 (default) -> the TensorRT path. This is the ONLY export TensorRT should use.
+    Recommended: run it as-is (fp32), or with TensorRTOptions(bf16_enable=True) on
+    Ampere+ — bf16 keeps fp32 range, is Ampere's native precision, and is safe for all
+    blocks. fp16_enable=True is also allowed, but TensorRT then applies fp16 ONLY to the
+    two heavy blocks (image encoder, memory attention); the other blocks are held at fp32
+    because fp16 error compounds through the recurrent memory loop and destroys the
+    masklet. OrtBlock logs, per block, whether fp16 was applied or held. TensorRT
+    converts + per-layer auto-tunes from this weakly-typed fp32 graph and fuses freely
+    (matches the torch baseline even on Turing). For a deployment engine use
     builder_optimization_level=5 (built once, cached).
-  * --fp16 -> a mixed-precision copy for the CUDA/CPU EP, which can't convert precision
-    at runtime. Do NOT feed this baked-fp16 graph to the TensorRT precision flags (the
-    weights are already fp16; the baked cast-islands also block fusion).
+  * --mixed-precision -> a baked mixed-precision copy for the CUDA / CPU EP ONLY (those
+    EPs can't convert precision at runtime). The two heavy blocks run fp16, the rest stay
+    fp32. Do NOT feed this to TensorRT: the weights are already fp16 and the baked
+    cast-islands block fusion / break the strongly-typed build (the runtime guard in
+    sam2.onnx.sam2_generic_onnx rejects it).
 """
 
 import argparse
@@ -100,7 +107,7 @@ def _force_fp32_io(model) -> None:
             tt.elem_type = F32
 
 
-def _to_mixed_fp16(path: Path) -> None:
+def _to_mixed_precision(path: Path) -> None:
     """Rewrite a saved fp32 ONNX graph in place as mixed precision for the CUDA/CPU EP
     (which can't convert precision at runtime; the TensorRT path keeps fp32 and uses
     trt_fp16/bf16_enable). fp16 weights/compute, graph IO kept fp32, with LayerNorm
@@ -119,12 +126,12 @@ def _to_mixed_fp16(path: Path) -> None:
     )
     _force_fp32_io(model16)
     onnx.save(model16, str(path))
-    print(f"  -> mixed fp16 {path.name}")
+    print(f"  -> mixed-precision {path.name}")
 
 
 def _export(
     module: nn.Module, args, input_names, output_names, dynamic_shapes, path, opset,
-    fp16=False,
+    mixed_precision=False,
 ):
     module = module.eval()
     onnx_program = torch.onnx.export(
@@ -138,14 +145,14 @@ def _export(
     )
     onnx_program.save(str(path))
     print(f"  saved {path.name}")
-    if fp16:
-        _to_mixed_fp16(path)
+    if mixed_precision:
+        _to_mixed_precision(path)
     return onnx_program
 
 
 def _parity(onnx_path, feeds: dict, torch_outs, names):
-    """torch (fp32 reference) vs ONNX Runtime (CPU) on identical inputs. For a mixed
-    fp16 graph this is exactly the mixed-precision-vs-fp32 check: the torch outputs are
+    """torch (fp32 reference) vs ONNX Runtime (CPU) on identical inputs. For a
+    mixed-precision graph this is exactly the mixed-precision-vs-fp32 check: the torch outputs are
     the fp32 reference and the ORT outputs come from the converted graph. Reports the
     worst absolute and relative deviation across outputs."""
     import onnxruntime as ort
@@ -269,11 +276,13 @@ def main():
     p.add_argument("--opset", type=int, default=18)
     p.add_argument("--no-parity", action="store_true", help="skip torch vs ORT check")
     p.add_argument(
-        "--fp16", action="store_true",
-        help="also write a mixed-precision (fp16) copy of the heavy blocks (image encoder, "
-             "memory attention) for the CUDA/CPU EP, which can't convert precision at "
-             "runtime. Graph IO stays fp32; LayerNorm + Identity stay fp32. Needs "
-             "onnxconverter-common. (For TensorRT, keep fp32 and use trt_fp16/bf16_enable.)",
+        "--mixed-precision", action="store_true",
+        help="write a baked mixed-precision copy (fp16 on the heavy blocks: image "
+             "encoder, memory attention) for the CUDA/CPU EP ONLY — those EPs can't "
+             "convert precision at runtime. Graph IO stays fp32; LayerNorm + Identity "
+             "stay fp32. Needs onnxconverter-common. NOT for TensorRT: for TensorRT use "
+             "the fp32 export with bf16_enable (or fp16_enable, applied to the 2 heavy "
+             "blocks only).",
     )
     p.add_argument(
         "--max-cond-frames", type=int, default=16,
@@ -369,7 +378,7 @@ def main():
         {"image": None},
         out / ienc.FILENAME,
         args.opset,
-        fp16=args.fp16,
+        mixed_precision=args.mixed_precision,
     )
 
     # high-res projected features (as encode_image does) for the decoder example
@@ -473,7 +482,7 @@ def main():
             "mpos_norope": {0: plen},
         },
         out / mattn.FILENAME, args.opset,
-        fp16=args.fp16,
+        mixed_precision=args.mixed_precision,
     )
 
     # ---------- memory encoder ----------
@@ -496,6 +505,10 @@ def main():
         "sam_image_embedding_size": G,
         "mask_input_size": list(mask_in),
         "config": args.config,
+        # "mixed-precision" = baked graph for the CUDA/CPU EP only; the runtime guard in
+        # sam2.onnx.sam2_generic_onnx reads this to reject it on TensorRT. "fp32" is the
+        # TRT-ready graph (use bf16_enable, or fp16_enable on the 2 heavy blocks).
+        "precision": "mixed-precision" if args.mixed_precision else "fp32",
         # Memory-attention TRT profile bounds. MemoryAttentionOnnx builds one engine
         # over [1 .. *_max_tokens]; the runtime is NOT capped to profile_max_cond_frames
         # (it keeps the model's max_cond_frames_in_attn) — over-profile lengths just

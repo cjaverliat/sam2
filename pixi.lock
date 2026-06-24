@@ -7,8 +7,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -146,8 +144,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -418,8 +414,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -690,8 +684,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -962,8 +954,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -1234,8 +1224,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -1506,8 +1494,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -1778,8 +1764,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -2054,8 +2038,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -2330,8 +2312,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -2606,8 +2586,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -2885,8 +2863,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -3164,8 +3140,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -3443,8 +3417,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -3716,8 +3688,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -4066,8 +4036,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -4379,8 +4347,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -4849,8 +4815,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -5138,8 +5102,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -5293,8 +5255,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -5584,8 +5544,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -5874,8 +5832,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -6171,8 +6127,6 @@ environments:
     - url: https://conda.anaconda.org/nvidia/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -16004,8 +15958,8 @@ packages:
   requires_python: '>=3.11'
 - pypi: ./
   name: sam2
-  version: 1.0.7
-  sha256: b8b011aacf5b94639681c5a31eeb13696f300f34529e1eb8f15e7959e02e997c
+  version: 1.1.2
+  sha256: ac08b3de58690a30579de008886b97ad5493a8f0844f32db0efece00f9120e5f
   requires_dist:
   - numpy>=1.24.4
   - tqdm>=4.66.1
@@ -16056,6 +16010,7 @@ packages:
   - tensordict>=0.6.0 ; extra == 'dev'
   - submitit>=1.5.1 ; extra == 'dev'
   requires_python: '>=3.10.0'
+  editable: true
 - pypi: https://files.pythonhosted.org/packages/73/c3/cec6a3cbaadfdcc02bd6ff02f3abfe09eaa7f4d4e0a525a1e3a3f4bce49c/scikit_image-0.26.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
   name: scikit-image
   version: 0.26.0

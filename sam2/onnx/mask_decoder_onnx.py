@@ -30,17 +30,15 @@ class MaskDecoderOnnx(torch.nn.Module):
         onnx_dir: str | Path,
         use_high_res: bool,
         device: torch.device,
-        conv_s0: torch.nn.Module | None = None,
-        conv_s1: torch.nn.Module | None = None,
         use_trt: bool = True,
         trt_opts: TensorRTOptions | None = None,
     ):
         super().__init__()
         self.use_high_res = use_high_res
-        # Projection is baked into the image-encoder graph; keep identities so the
-        # orchestration's conv_s0/conv_s1 calls are harmless no-ops.
-        self.conv_s0 = conv_s0 if conv_s0 is not None else torch.nn.Identity()
-        self.conv_s1 = conv_s1 if conv_s1 is not None else torch.nn.Identity()
+        # Projection is baked into the image-encoder graph; identities keep the
+        # orchestration's conv_s0/conv_s1 calls as harmless no-ops.
+        self.conv_s0 = torch.nn.Identity()
+        self.conv_s1 = torch.nn.Identity()
         inputs = BASE_INPUTS + (HR_INPUTS if use_high_res else [])
         self.blocks = {
             mm: OrtBlock(

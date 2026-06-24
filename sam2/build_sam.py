@@ -201,9 +201,8 @@ def build_sam2_generic_image_predictor_onnx(
     allocated), the 5 heavy blocks are swapped for their ONNX wrappers, and the small
     glue is materialized from ``weights.npz`` — so no real weights are ever
     built-then-discarded. ``use_half`` only affects the torch glue; the ONNX sessions own
-    their own precision via the exported graph (the TensorRT EP builds a strongly-typed
-    network, so for fp16 export a mixed-fp16 graph with ``tools/export_onnx.py
-    --fp16``). No ``vos_optimized`` knob — ONNX/TRT is already the optimized path."""
+    their own precision via the exported graph + ``trt_opts``. No ``vos_optimized`` knob
+    — ONNX/TRT is already the optimized path."""
     from sam2.onnx.sam2_generic_onnx import attach_onnx_blocks
 
     model = _meta_build_generic(
@@ -243,10 +242,9 @@ def build_sam2_generic_video_predictor_onnx(
     :func:`build_sam2_generic_image_predictor_onnx`: the skeleton is meta-built (no
     weights allocated), the 5 blocks are swapped and the glue materialized from
     ``weights.npz``, ``use_half`` only touches the torch glue, and ``trt_opts`` tunes
-    the TensorRT engine build (cache, workspace, ...). Precision
-    is owned by the exported graph — the EP builds a strongly-typed network, so use a
-    mixed-fp16 export (``tools/export_onnx.py --fp16``) for fp16. No ``vos_optimized``
-    knob — ONNX/TRT is already the optimized path."""
+    the TensorRT engine build (cache, workspace, ...). Precision is owned by the exported
+    graph + ``trt_opts``. No ``vos_optimized`` knob — ONNX/TRT is already the optimized
+    path."""
     from sam2.onnx.sam2_generic_onnx import attach_onnx_blocks
 
     model = _meta_build_generic(

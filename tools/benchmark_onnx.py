@@ -9,12 +9,13 @@ Run from the repo root:
     pixi run python tools/export_onnx.py \
         --config configs/sam2.1/sam2.1_hiera_b+.yaml \
         --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir onnx_sam2
-    pixi run python examples/benchmark_onnx.py --onnx-dir onnx_sam2 \
+    pixi run python tools/benchmark_onnx.py --onnx-dir onnx_sam2 \
         --model-cfg configs/sam2.1/sam2.1_hiera_b+.yaml
 
-Precision: point --onnx-dir at a mixed-fp16 export for fp16 (CUDA EP or strongly-typed
-TRT). For the weakly-typed TRT auto-tune path, point it at the fp32 export and pass
---trt-fp16 / --trt-bf16 (decomposed opset-18 export only).
+Precision: for TensorRT point --onnx-dir at the fp32 opset-18 export and pass
+--trt-bf16 (Ampere+, recommended) or --trt-fp16 (applied to the 2 heavy blocks only).
+For the CUDA EP, point it at a mixed-precision export (--no-trt). The mixed-precision
+export is CUDA/CPU-only and is rejected on TensorRT.
 """
 
 import argparse
@@ -24,7 +25,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import torch
 
-from bench_utils import run_video_benchmark
+from bench_utils import build_memory_bank, run_video_benchmark
 from sam2.build_sam import build_sam2_generic_video_predictor_onnx
 from sam2.onnx.trt_options import TensorRTOptions
 
@@ -32,12 +33,17 @@ from sam2.onnx.trt_options import TensorRTOptions
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--video", default="notebooks/videos/bedroom.mp4")
-    p.add_argument("--onnx-dir", default="outputs/onnx/sam2.1_hiera_base_plus/opset18-fp16")
     p.add_argument("--model-cfg", default="configs/sam2.1/sam2.1_hiera_b+.yaml")
-    p.add_argument("--no-trt", action="store_true", help="CUDA EP instead of TensorRT")
     p.add_argument("--warmup-frames", type=int, default=5,
                    help="propagation frames discarded before timing (engine/cache settle)")
     p.add_argument("--max-frames", type=int, default=200, help="stop after N frames (0=all)")
+    p.add_argument("--memory-window", type=int, default=7,
+                   help="forgetful memory window in frames (0=infinite bank)")
+    p.add_argument("--bank-device", default="cuda", choices=["cuda", "cpu"],
+                   help="device the memory bank stores memories on")
+    # ONNX/TensorRT predictor build
+    p.add_argument("--onnx-dir", default="outputs/onnx/sam2.1_hiera_base_plus/opset18")
+    p.add_argument("--no-trt", action="store_true", help="CUDA EP instead of TensorRT")
     p.add_argument("--builder-opt-level", type=int, default=None,
                    help="TRT builder optimization level 0-5 (lower=faster build)")
     p.add_argument("--trt-cache-dir", default=None,
@@ -72,8 +78,11 @@ def main():
         use_trt=not args.no_trt, trt_opts=TensorRTOptions(**trt_kwargs),
         apply_postprocessing=True,
     )
+
+    memory_bank = build_memory_bank(args.memory_window, args.bank_device)
+
     run_video_benchmark(predictor, args.video, device, args.warmup_frames,
-                        args.max_frames, desc="ONNX")
+                        args.max_frames, desc="ONNX", memory_bank=memory_bank)
 
 
 if __name__ == "__main__":
