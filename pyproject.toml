@@ -43,7 +43,7 @@ onnx = [
     "onnx>=1.17.0",
     "onnxscript>=0.2.0",
     "onnxruntime>=1.17",
-    # mixed-precision fp16 export (tools/export_onnx.py --fp16).
+    # mixed-precision export (tools/export_onnx.py --mixed-precision).
     "onnxconverter-common>=1.14.0",
 ]
 # CUDA-12 tiers: onnxruntime-gpu >= 1.23 ships only CUDA 13 wheels, so cap to the
@@ -358,8 +358,8 @@ depends-on = [
 # ---------------------------------------------------------------------------
 # ONNX export tasks. One task per model: it downloads the checkpoint (via
 # `depends-on`) and exports the 5 SAM2 blocks twice at opset 18 (decomposed RoPE/SDPA;
-# the native opset-23 ops break on the ORT TensorRT EP) — fp32 and mixed fp16 — into
-# outputs/onnx/<model>/{opset18,opset18-fp16}. Export needs the
+# the native opset-23 ops break on the ORT TensorRT EP) — fp32 and mixed-precision — into
+# outputs/onnx/<model>/{opset18,opset18-mixed-precision}. Export needs the
 # dynamo exporter (onnxscript), so
 # run these in an onnx env, e.g.:
 #     pixi run -e onnx-export export-onnx            # all variants
@@ -369,52 +369,52 @@ depends-on = [
 
 # --- SAM 2.1 ---
 [tool.pixi.tasks.export-onnx-sam2-tiny]
-cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_t.yaml --ckpt checkpoints/sam2.1_hiera_tiny.pt --out-dir outputs/onnx/sam2.1_hiera_tiny/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_t.yaml --ckpt checkpoints/sam2.1_hiera_tiny.pt --out-dir outputs/onnx/sam2.1_hiera_tiny/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_t.yaml --ckpt checkpoints/sam2.1_hiera_tiny.pt --out-dir outputs/onnx/sam2.1_hiera_tiny/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_t.yaml --ckpt checkpoints/sam2.1_hiera_tiny.pt --out-dir outputs/onnx/sam2.1_hiera_tiny/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-sam2-tiny"]
 
 [tool.pixi.tasks.export-onnx-sam2-small]
-cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --out-dir outputs/onnx/sam2.1_hiera_small/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --out-dir outputs/onnx/sam2.1_hiera_small/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --out-dir outputs/onnx/sam2.1_hiera_small/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --out-dir outputs/onnx/sam2.1_hiera_small/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-sam2-small"]
 
 [tool.pixi.tasks.export-onnx-sam2-base-plus]
-cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_b+.yaml --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir outputs/onnx/sam2.1_hiera_base_plus/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_b+.yaml --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir outputs/onnx/sam2.1_hiera_base_plus/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_b+.yaml --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir outputs/onnx/sam2.1_hiera_base_plus/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_b+.yaml --ckpt checkpoints/sam2.1_hiera_base_plus.pt --out-dir outputs/onnx/sam2.1_hiera_base_plus/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-sam2-base-plus"]
 
 [tool.pixi.tasks.export-onnx-sam2-large]
-cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_l.yaml --ckpt checkpoints/sam2.1_hiera_large.pt --out-dir outputs/onnx/sam2.1_hiera_large/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_l.yaml --ckpt checkpoints/sam2.1_hiera_large.pt --out-dir outputs/onnx/sam2.1_hiera_large/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_l.yaml --ckpt checkpoints/sam2.1_hiera_large.pt --out-dir outputs/onnx/sam2.1_hiera_large/opset18 --opset 18 && python tools/export_onnx.py --config configs/sam2.1/sam2.1_hiera_l.yaml --ckpt checkpoints/sam2.1_hiera_large.pt --out-dir outputs/onnx/sam2.1_hiera_large/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-sam2-large"]
 
 # --- EfficientTAM ---
 [tool.pixi.tasks.export-onnx-efficienttam-s]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s.yaml --ckpt checkpoints/efficienttam_s.pt --out-dir outputs/onnx/efficienttam_s/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s.yaml --ckpt checkpoints/efficienttam_s.pt --out-dir outputs/onnx/efficienttam_s/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s.yaml --ckpt checkpoints/efficienttam_s.pt --out-dir outputs/onnx/efficienttam_s/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s.yaml --ckpt checkpoints/efficienttam_s.pt --out-dir outputs/onnx/efficienttam_s/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-s"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-s-512x512]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_512x512.yaml --ckpt checkpoints/efficienttam_s_512x512.pt --out-dir outputs/onnx/efficienttam_s_512x512/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_512x512.yaml --ckpt checkpoints/efficienttam_s_512x512.pt --out-dir outputs/onnx/efficienttam_s_512x512/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_512x512.yaml --ckpt checkpoints/efficienttam_s_512x512.pt --out-dir outputs/onnx/efficienttam_s_512x512/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_512x512.yaml --ckpt checkpoints/efficienttam_s_512x512.pt --out-dir outputs/onnx/efficienttam_s_512x512/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-s-512x512"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-s-1]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_1.yaml --ckpt checkpoints/efficienttam_s_1.pt --out-dir outputs/onnx/efficienttam_s_1/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_1.yaml --ckpt checkpoints/efficienttam_s_1.pt --out-dir outputs/onnx/efficienttam_s_1/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_1.yaml --ckpt checkpoints/efficienttam_s_1.pt --out-dir outputs/onnx/efficienttam_s_1/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_1.yaml --ckpt checkpoints/efficienttam_s_1.pt --out-dir outputs/onnx/efficienttam_s_1/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-s-1"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-s-2]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_2.yaml --ckpt checkpoints/efficienttam_s_2.pt --out-dir outputs/onnx/efficienttam_s_2/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_2.yaml --ckpt checkpoints/efficienttam_s_2.pt --out-dir outputs/onnx/efficienttam_s_2/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_2.yaml --ckpt checkpoints/efficienttam_s_2.pt --out-dir outputs/onnx/efficienttam_s_2/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_s_2.yaml --ckpt checkpoints/efficienttam_s_2.pt --out-dir outputs/onnx/efficienttam_s_2/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-s-2"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-ti]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti.yaml --ckpt checkpoints/efficienttam_ti.pt --out-dir outputs/onnx/efficienttam_ti/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti.yaml --ckpt checkpoints/efficienttam_ti.pt --out-dir outputs/onnx/efficienttam_ti/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti.yaml --ckpt checkpoints/efficienttam_ti.pt --out-dir outputs/onnx/efficienttam_ti/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti.yaml --ckpt checkpoints/efficienttam_ti.pt --out-dir outputs/onnx/efficienttam_ti/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-ti"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-ti-512x512]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_512x512.yaml --ckpt checkpoints/efficienttam_ti_512x512.pt --out-dir outputs/onnx/efficienttam_ti_512x512/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_512x512.yaml --ckpt checkpoints/efficienttam_ti_512x512.pt --out-dir outputs/onnx/efficienttam_ti_512x512/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_512x512.yaml --ckpt checkpoints/efficienttam_ti_512x512.pt --out-dir outputs/onnx/efficienttam_ti_512x512/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_512x512.yaml --ckpt checkpoints/efficienttam_ti_512x512.pt --out-dir outputs/onnx/efficienttam_ti_512x512/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-ti-512x512"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-ti-1]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_1.yaml --ckpt checkpoints/efficienttam_ti_1.pt --out-dir outputs/onnx/efficienttam_ti_1/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_1.yaml --ckpt checkpoints/efficienttam_ti_1.pt --out-dir outputs/onnx/efficienttam_ti_1/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_1.yaml --ckpt checkpoints/efficienttam_ti_1.pt --out-dir outputs/onnx/efficienttam_ti_1/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_1.yaml --ckpt checkpoints/efficienttam_ti_1.pt --out-dir outputs/onnx/efficienttam_ti_1/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-ti-1"]
 
 [tool.pixi.tasks.export-onnx-efficienttam-ti-2]
-cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_2.yaml --ckpt checkpoints/efficienttam_ti_2.pt --out-dir outputs/onnx/efficienttam_ti_2/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_2.yaml --ckpt checkpoints/efficienttam_ti_2.pt --out-dir outputs/onnx/efficienttam_ti_2/opset18-fp16 --opset 18 --fp16"
+cmd = "python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_2.yaml --ckpt checkpoints/efficienttam_ti_2.pt --out-dir outputs/onnx/efficienttam_ti_2/opset18 --opset 18 && python tools/export_onnx.py --config configs/efficienttam/efficienttam_ti_2.yaml --ckpt checkpoints/efficienttam_ti_2.pt --out-dir outputs/onnx/efficienttam_ti_2/opset18-mixed-precision --opset 18 --mixed-precision"
 depends-on = ["download-efficienttam-ti-2"]
 
 # --- all variants ---

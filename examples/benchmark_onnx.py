@@ -12,9 +12,10 @@ Run from the repo root:
     pixi run python examples/benchmark_onnx.py --onnx-dir onnx_sam2 \
         --model-cfg configs/sam2.1/sam2.1_hiera_b+.yaml
 
-Precision: point --onnx-dir at a mixed-fp16 export for fp16 (CUDA EP or strongly-typed
-TRT). For the weakly-typed TRT auto-tune path, point it at the fp32 export and pass
---trt-fp16 / --trt-bf16 (decomposed opset-18 export only).
+Precision: for TensorRT point --onnx-dir at the fp32 opset-18 export and pass
+--trt-bf16 (Ampere+, recommended) or --trt-fp16 (applied to the 2 heavy blocks only).
+For the CUDA EP, point it at a mixed-precision export (--no-trt). The mixed-precision
+export is CUDA/CPU-only and is rejected on TensorRT.
 """
 
 import argparse
@@ -32,7 +33,7 @@ from sam2.onnx.trt_options import TensorRTOptions
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--video", default="notebooks/videos/bedroom.mp4")
-    p.add_argument("--onnx-dir", default="outputs/onnx/sam2.1_hiera_base_plus/opset18-fp16")
+    p.add_argument("--onnx-dir", default="outputs/onnx/sam2.1_hiera_base_plus/opset18")
     p.add_argument("--model-cfg", default="configs/sam2.1/sam2.1_hiera_b+.yaml")
     p.add_argument("--no-trt", action="store_true", help="CUDA EP instead of TensorRT")
     p.add_argument("--warmup-frames", type=int, default=5,

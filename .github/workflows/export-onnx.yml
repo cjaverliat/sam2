@@ -55,9 +55,9 @@ jobs:
           environments: onnx-export
 
       # Downloads the checkpoint (task `depends-on`) and exports opset 18 fp32 + opset 18
-      # mixed fp16 into outputs/onnx/<model>/{opset18,opset18-fp16}. opset 18 is fully
-      # decomposed; the native opset-23 ops break on the ORT TensorRT EP.
-      - name: Export ONNX (opset 18 fp32 + fp16)
+      # mixed-precision into outputs/onnx/<model>/{opset18,opset18-mixed-precision}. opset
+      # 18 is fully decomposed; the native opset-23 ops break on the ORT TensorRT EP.
+      - name: Export ONNX (opset 18 fp32 + mixed-precision)
         run: pixi run -e onnx-export ${{ matrix.task }}
 
       # One zip per variant, .onnx files (+ manifest.json, .npy) at the zip root — no
@@ -65,7 +65,7 @@ jobs:
       - name: Zip (one per variant)
         run: |
           (cd outputs/onnx/${{ matrix.model }}/opset18 && zip -r "$GITHUB_WORKSPACE/${{ matrix.model }}-opset18.zip" .)
-          (cd outputs/onnx/${{ matrix.model }}/opset18-fp16 && zip -r "$GITHUB_WORKSPACE/${{ matrix.model }}-opset18-fp16.zip" .)
+          (cd outputs/onnx/${{ matrix.model }}/opset18-mixed-precision && zip -r "$GITHUB_WORKSPACE/${{ matrix.model }}-opset18-mixed-precision.zip" .)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -99,14 +99,15 @@ jobs:
 
           - **`<model>-opset18.zip`** — decomposed RoPE (rotate-half) + SDPA primitives, fp32.
             Portable: runs on **onnxruntime >= 1.17** (CPU / CUDA / TensorRT EP), CUDA 11/12/13.
-          - **`<model>-opset18-fp16.zip`** — same graphs converted to mixed precision for the
-            CUDA/CPU EP (which can't convert precision at runtime). Only the two heavy blocks
-            (image encoder, memory attention) run fp16; the prompt encoder, mask decoder and
-            memory encoder stay fp32. Not because those blocks are individually fp16-unsafe
-            (each is — mask IoU 1.0), but because running ALL blocks fp16 compounds in the
-            recurrent memory loop and loses the masklet (mask IoU ~0); 2-block fp16 is safe.
-            For full-precision-speed everywhere, use the fp32 zip on TensorRT with bf16
-            (bf16's fp32 range survives all-blocks; Ampere+).
+          - **`<model>-opset18-mixed-precision.zip`** — same graphs baked to mixed precision
+            for the **CUDA / CPU EP only** (those EPs can't convert precision at runtime).
+            Only the two heavy blocks (image encoder, memory attention) run fp16; the prompt
+            encoder, mask decoder and memory encoder stay fp32 — not because those blocks are
+            individually fp16-unsafe (each is — mask IoU 1.0), but because running ALL blocks
+            fp16 compounds in the recurrent memory loop and loses the masklet (mask IoU ~0).
+            **Do not use this zip on TensorRT** (the baked fp16 + cast islands break the
+            engine build). For TensorRT use the fp32 zip with bf16 (fp32 range, safe on all
+            blocks; Ampere+) or fp16 (applied to the 2 heavy blocks only).
           EOF
 
       - uses: softprops/action-gh-release@v2

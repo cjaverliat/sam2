@@ -63,8 +63,7 @@ def main():
 
     # Build the ONNX/TRT-backed video predictor in one call. No checkpoint needed:
     # all weights are baked into the export artifacts under --onnx-dir.
-    # No fp16 flag: strongly-typed TRT network takes precision from the graph (use a
-    # mixed-fp16 export for fp16).
+    # Default fp32 TRT; set bf16_enable for full-speed on Ampere+.
     trt_opts = TensorRTOptions()
     predictor = build_sam2_generic_video_predictor_onnx(
         args.model_cfg, args.onnx_dir, device=device,

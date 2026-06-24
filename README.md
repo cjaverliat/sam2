@@ -219,7 +219,7 @@ Run the model with ONNX Runtime instead of PyTorch — for both images and video
 **1. Export the graphs** (one-time, device-agnostic, CPU is fine):
 
 ```bash
-# Single model — fp32 + mixed-fp16 graphs into outputs/onnx/<model>/...
+# Single model — fp32 + mixed-precision graphs into outputs/onnx/<model>/...
 pixi run -e onnx-export export-onnx-sam2-base-plus
 
 # Or all models / variants at once
@@ -232,7 +232,7 @@ This writes the 5 neural-network blocks (image encoder, prompt encoder, mask dec
 pixi run -e onnx-export python tools/export_onnx.py \
     --config configs/sam2.1/sam2.1_hiera_b+.yaml \
     --ckpt checkpoints/sam2.1_hiera_base_plus.pt \
-    --out-dir onnx_sam2 --opset 18        # add --fp16 for a mixed-precision graph
+    --out-dir onnx_sam2 --opset 18        # add --mixed-precision for a CUDA/CPU-EP graph
 ```
 
 **2. Run inference.** Build the ONNX-backed predictor and feed frames exactly like the PyTorch streaming API:
@@ -256,7 +256,9 @@ For image-only inference, use `build_sam2_generic_image_predictor_onnx` with the
 Notes:
 - `onnx_dir` accepts an extracted export directory, a `.zip` of one (e.g. a release artifact), or an `http(s)` URL (downloaded and cached; override with `SAM2_ONNX_CACHE`).
 - Execution provider tiers map to pixi environments: `onnx` (CPU), `onnx-gpu-cu12` / `onnx-gpu-cu13` (CUDA EP), and `onnx-tensorrt-cu12` / `onnx-tensorrt-cu13` (TensorRT EP + CUDA fallback). The CPU and GPU ONNX runtimes conflict, so each tier is its own environment.
-- Precision is owned by the exported graph: the TensorRT EP builds a strongly-typed network, so for fp16 export a mixed-precision graph with `--fp16` rather than toggling a runtime flag.
+- Precision:
+  - **TensorRT** — use the **fp32** export. Run it as fp32, or set `TensorRTOptions(bf16_enable=True)` on Ampere+ (recommended: fp32 range, safe on all blocks). `fp16_enable=True` is allowed but TensorRT applies fp16 only to the 2 heavy blocks (image encoder, memory attention); the rest stay fp32, since fp16 error compounds through the recurrent memory loop and destroys the masklet. Each block logs whether fp16 was applied.
+  - **CUDA / CPU EP** — these EPs can't convert precision at runtime, so use a **mixed-precision** export (`--mixed-precision`), which bakes fp16 into the 2 heavy blocks. It is **CUDA/CPU-only and rejected on TensorRT**.
 
 ---
 
