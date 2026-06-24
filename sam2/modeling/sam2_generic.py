@@ -26,9 +26,13 @@ def _half_inference(method):
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         half = self._use_half and self.device.type == "cuda"
-        bf16 = half and torch.cuda.get_device_capability(self.device)[0] >= 8
+        dtype = self._half_dtype
+        if dtype is None:
+            dtype = (torch.bfloat16
+                     if torch.cuda.get_device_capability(self.device)[0] >= 8
+                     else torch.float16)
         with torch.inference_mode(not self.training), torch.autocast(
-                "cuda", dtype=torch.bfloat16 if bf16 else torch.float16, enabled=half
+                "cuda", dtype=dtype, enabled=half
         ):
             return method(self, *args, **kwargs)
 
@@ -79,6 +83,7 @@ class SAM2Generic(SAM2Base):
         self._empty_prompt_embeddings = None
 
         self._use_half = use_half
+        self._half_dtype = None
 
     @property
     @_half_inference
