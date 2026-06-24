@@ -27,6 +27,7 @@ This fork keeps the original SAM 2 models and weights bit-for-bit, and adds:
   - [Custom memory bank](#custom-memory-bank)
   - [ONNX / TensorRT inference](#onnx--tensorrt-inference)
 - [EfficientTAM](#efficienttam)
+- [Benchmarks](#benchmarks)
 - [License](#license)
 - [Citation](#citation)
 
@@ -276,6 +277,52 @@ predictor = build_sam2_generic_video_predictor(
 ```
 
 Available configs live in [`sam2/configs/efficienttam/`](sam2/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
+
+---
+
+## Benchmarks
+
+Per-frame **streaming** throughput of `SAM2GenericVideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
+
+**Hardware / stack:** NVIDIA RTX 3080 Ti (12 GB, sm86). PyTorch rows: torch 2.11.0+cu128. ONNX-TRT rows: TensorRT 10.16.1 + onnxruntime-gpu 1.27.0 (CUDA 13). Video: `notebooks/videos/bedroom.mp4` (960×540), single object.
+
+Throughput (FPS, higher is better; **bold** = fastest per row):
+
+| Model | Res | torch bf16 | torch fp16 | ONNX-TRT fp16 | ONNX-TRT bf16 |
+|---|---|--:|--:|--:|--:|
+| SAM 2.1 tiny | 1024 | 19.3 | 19.7 | **26.1** | 19.7 |
+| SAM 2.1 small | 1024 | 18.3 | 19.1 | **30.9** | 18.4 |
+| SAM 2.1 base+ | 1024 | 13.8 | 15.8 | **30.2** | 20.2 |
+| SAM 2.1 large | 1024 | 9.0 | 9.9 | **14.3** | 12.6 |
+| EfficientTAM-Ti | 1024 | 24.1 | 24.2 | **45.8** | 23.2 |
+| EfficientTAM-Ti/1 | 1024 | 28.4 | 29.8 | **33.5** | 30.6 |
+| EfficientTAM-Ti/2 | 1024 | 30.6 | 31.7 | **63.1** | 32.0 |
+| EfficientTAM-Ti 512² | 512 | 45.2 | 46.0 | **117.2** | 95.1 |
+| EfficientTAM-S | 1024 | 19.9 | 21.6 | **42.8** | 26.2 |
+| EfficientTAM-S/1 | 1024 | 22.3 | 25.9 | **43.9** | 20.7 |
+| EfficientTAM-S/2 | 1024 | 26.6 | 27.4 | **53.1** | 38.4 |
+| EfficientTAM-S 512² | 512 | 46.2 | 46.6 | 76.9 | **77.5** |
+
+Notes:
+- **ONNX-TRT fp16 is fastest almost everywhere** (≈1.5–2.6× over torch bf16). TRT fp16 applies to the 2 heavy blocks (image encoder, memory attention); the rest stay fp32.
+- **bf16 < fp16 on this GPU**: TensorRT's bf16 autotune is less optimized than fp16 here, and torch fp16 ≈ bf16 (Ampere). On newer GPUs the ordering can differ.
+- Numbers are **streaming** (per-frame decode + transforms + mask postprocess included), so they sit below encoder-only / offline throughput.
+- `_2` = efficient memory (2×2 pooled cross-attention); `512²` halves input resolution. Both trade accuracy for speed — see [EfficientTAM](#efficienttam).
+
+Reproduce (any model / config / checkpoint):
+
+```bash
+# PyTorch (default env) — --precision {auto,bf16,fp16,fp32}
+pixi run python tools/benchmark_torch.py \
+    --model-cfg configs/efficienttam/efficienttam_s_2.yaml \
+    --checkpoint checkpoints/efficienttam_s_2.pt --precision fp16
+
+# ONNX + TensorRT — export once, then benchmark (--trt-fp16 / --trt-bf16)
+pixi run -e onnx-export export-onnx-efficienttam-s-2
+pixi run -e onnx-tensorrt-cu13 python tools/benchmark_onnx.py \
+    --onnx-dir outputs/onnx/efficienttam_s_2/opset18 \
+    --model-cfg configs/efficienttam/efficienttam_s_2.yaml --trt-fp16
+```
 
 ---
 
