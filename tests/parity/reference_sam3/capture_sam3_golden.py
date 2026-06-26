@@ -18,10 +18,10 @@ Determinism mirrors ``tests/parity/run_pipelines.py::_determinism`` (seed 0, det
 algorithms, cuDNN deterministic, TF32 OFF) so the capture is reproducible and the later
 vendored re-implementation -- run under the same regime -- matches within tolerance.
 
-Precision: fp32 is attempted first (highest reproducibility, per the harness convention);
-if the 848M model OOMs on the local 12 GB GPU, the section is retried under bf16 autocast
-(the precision the official demo itself uses). The mode actually used is recorded in each
-fixture (``precision_mode``) and in ``scenario.json`` so downstream parity runs match it.
+Precision: every section runs under bf16 autocast. Pure fp32 is not a supported upstream
+inference mode — ``sam3/perflib/fused.py::addmm_act`` hardcodes ``.to(bfloat16)`` — so
+autocast is the only viable regime, not a fallback. The mode is recorded in each fixture
+(``precision_mode``) and in ``scenario.json`` so downstream parity runs match it.
 
 Scenario (see ``scenario.json`` / ``README.md`` for the authoritative record):
   * IMAGE -- this repo's ``notebooks/images/truck.jpg`` resized to 384x512, phrase "truck"
@@ -57,8 +57,9 @@ def determinism():
     torch.use_deterministic_algorithms(True, warn_only=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    # NOTE: sam3.model_builder calls _setup_tf32() at import time (enables TF32); we
-    # disable it here, AFTER import, so the capture is TF32-off like run_pipelines.
+    # NOTE: sam3.model_builder calls _setup_tf32() at import time (enables TF32). This
+    # pre-disables TF32 before the import fires; capture_image/capture_video re-disable
+    # it again immediately after their local ``from sam3...`` import to close the window.
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
 
@@ -92,6 +93,10 @@ def _load_rgb(path, hw):
 def capture_image(args):
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
+    # Re-disable TF32 after the import: model_builder._setup_tf32() runs at import time
+    # and re-enables TF32 -- mirror the sam3.1 path's post-build re-assert.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
     model = build_sam3_image_model(
         bpe_path=args.bpe_path,
@@ -208,6 +213,10 @@ def capture_image(args):
 # ======================================================================================
 def capture_video(args):
     from sam3.model_builder import build_sam3_video_model
+    # Re-disable TF32 after the import: model_builder._setup_tf32() runs at import time
+    # and re-enables TF32 -- mirror the sam3.1 path's post-build re-assert.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
     model = build_sam3_video_model(
         checkpoint_path=args.checkpoint,
@@ -791,7 +800,7 @@ def main():
     else:
         _run_sam31(args, out_dir, scenario)
 
-    (out_dir / "scenario.json").write_text(json.dumps(scenario, indent=2))
+    (out_dir / "scenario.json").write_text(json.dumps(scenario, indent=2) + "\n")
     print("wrote", out_dir / "scenario.json")
     print(json.dumps(scenario, indent=2))
 
