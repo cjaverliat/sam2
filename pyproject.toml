@@ -9,7 +9,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sam2"
+name = "sam"
 # version + dependencies are set in setup.py: each prebuilt wheel pins torch to
 # the exact minor it was compiled against (ABI lock), so a mismatched torch fails
 # at install instead of crashing on import.
@@ -103,13 +103,13 @@ dev = [
 
 # version (incl. +cuXXXtorchYY local label) and ext_modules are set in setup.py.
 [tool.setuptools.packages.find]
-include = ["sam2*"]
+include = ["sam*"]
 exclude = ["notebooks*", "demo*", "tools*", "training*", "sav_dataset*"]
 
 [tool.setuptools.package-data]
 # Hydra configs + CUDA sources (the latter for the JIT source-build fallback in
 # sam2/utils/misc.py when no _C extension is present).
-sam2 = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
+sam = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
 
 # Windows: the sam2 native extension is built with nvcc + MSVC cl.exe, which conda
 # cannot ship. Before running any pixi command that builds/installs sam2 (e.g.
@@ -169,10 +169,10 @@ activation = { env = { SAM2_BUILD_CUDA = "0" } }
 # Build sam2 against the already-installed cuXXX torch (and the env's Python),
 # not a fresh CPU torch pulled from default PyPI in an isolated build env.
 # The isolated build torch lacks c10/cuda/impl/cuda_cmake_macros.h (CUDA-build-only).
-no-build-isolation = ["sam2"]
+no-build-isolation = ["sam"]
 
 [tool.pixi.pypi-dependencies]
-sam2 = { path = ".", editable = true }
+sam = { path = ".", editable = true }
 
 # --- Per-CUDA toolchains -----------------------------------------------------
 # One feature per supported CUDA version: each pins the toolkit (cuda-version +

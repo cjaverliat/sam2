@@ -17563,9 +17563,9 @@ packages:
   sha256: cef8ac28d26f4dda3533060c20fbf80a325458fa9fd23ea72a73cdfa8e978838
   requires_python: '>=3.11'
 - pypi: ./
-  name: sam2
+  name: sam
   version: 1.2.0
-  sha256: c812b66b435b458b79c0b1533112c383176c909da249c6199878634a5934a216
+  sha256: 39325e063781e68e5b53e8a6f1edfb0eeaf1c68f485fc99d6e4dc55e4b00e026
   requires_dist:
   - numpy>=1.24.4
   - tqdm>=4.66.1
