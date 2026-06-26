@@ -1,0 +1,123 @@
+{
+  "upstream_commit": "5dd401d1c5c1d5c3eedff06d41b77af824517619",
+  "determinism": "seed=0, deterministic, TF32 off",
+  "image": {
+    "source": "notebooks/images/truck.jpg",
+    "resize_hw": [
+      384,
+      512
+    ],
+    "phrase": "truck",
+    "confidence_threshold": 0.5,
+    "num_detections": 1,
+    "precision_mode": "bf16_autocast",
+    "enc_levels": 3,
+    "enc_shapes": [
+      [
+        1,
+        256,
+        288,
+        288
+      ],
+      [
+        1,
+        256,
+        144,
+        144
+      ],
+      [
+        1,
+        256,
+        72,
+        72
+      ]
+    ],
+    "enc_feat_lastlevel_shape": [
+      1,
+      256,
+      72,
+      72
+    ],
+    "text_emb_shape": [
+      32,
+      1,
+      256
+    ],
+    "pyramid_file": "image_encoder_pyramid.npz (NOT committed; regenerate via capture)"
+  },
+  "video": {
+    "source": "sam3_reference/assets/videos/0001 (upstream dance clip)",
+    "resize_hw": [
+      288,
+      512
+    ],
+    "num_frames": 4,
+    "phrase": "person",
+    "precision_mode": "bf16_autocast",
+    "per_frame": {
+      "0": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      },
+      "1": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      },
+      "2": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      },
+      "3": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      }
+    },
+    "trk_f1_present": true,
+    "trk_f1_shape": [
+      4,
+      3,
+      288,
+      288
+    ]
+  }
+}

@@ -13,6 +13,12 @@ demo/backend/checkpoints/*.pt
 .idea/
 *.onnx
 
+# SAM 3 reference golden: the full high-res encoder pyramid (~38 MB at the model's
+# fixed 1008 internal resolution) is too large to commit; it is regenerable via
+# tests/parity/reference_sam3/capture_sam3_golden.py. The small image.npz / video.npz
+# golden fixtures ARE committed.
+tests/parity/fixtures/sam3/image_encoder_pyramid.npz
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

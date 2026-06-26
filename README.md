@@ -328,12 +328,13 @@ pixi run -e onnx-tensorrt-cu13 python tools/benchmark_onnx.py \
 
 ## License
 
-The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0](./LICENSE). This fork is distributed under the same license. EfficientTAM is integrated from its [upstream repository](https://github.com/yformer/EfficientTAM); see that project for its license and terms. Third-party code includes a GPU connected-components algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) ([license](./LICENSE_cctorch)).
+The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0](./LICENSE). This fork is distributed under the same license. EfficientTAM is integrated from its [upstream repository](https://github.com/yformer/EfficientTAM); see that project for its license and terms. Third-party code includes a GPU connected-components algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) ([license](./LICENSE_cctorch)). SAM 3 components (and code derived from or importing them) are released by Meta AI under the [SAM License](./LICENSE_sam) — using them binds you to that license's terms (e.g. acceptable-use and trade-control restrictions); the permissive Apache-2.0 / BSD-3 parts remain independently usable. SAM 3 weights are gated and never vendored.
 
 | Component | License |
 |---|---|
 | SAM 2 | Apache-2.0 |
 | EfficientTAM | Apache-2.0 |
+| SAM 3 (+ derivatives) | SAM License |
 | CUDA connected-components ext (`csrc`) | BSD-3-Clause |
 | This fork's code | Apache-2.0 |
 
