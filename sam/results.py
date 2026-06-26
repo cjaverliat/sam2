@@ -149,3 +149,4 @@ class Sam3DetectionResult:
             presence=self.presence,
             instance_ids=self.instance_ids.to(device),
         )
+

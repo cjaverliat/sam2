@@ -1357,6 +1357,22 @@ HF_SAM3P1_MODEL_ID_TO_CONFIG = {
 }
 
 
+def build_sam3_multiplex_hf(model_id, **kwargs):
+    """Build a SAM 3.1 multiplex IMAGE predictor from a HuggingFace model id (downloads weights).
+
+    The hydra config is OURS (``configs/sam3/sam3.1.yaml``); only the gated
+    ``sam3.1_multiplex.pt`` is pulled from HF. Mirrors :func:`build_sam3_hf` for the SAM 3.1
+    image path; the video counterpart is :func:`build_sam3_multiplex_video_predictor_hf`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_SAM3P1_MODEL_ID_TO_CONFIG.get(
+        model_id, ("configs/sam3/sam3.1.yaml", "sam3.1_multiplex.pt")
+    )
+    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
+    return build_sam3_multiplex(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+
+
 def build_sam3_multiplex_video_predictor_hf(model_id, **kwargs):
     """Build a SAM 3.1 multiplex video predictor from a HuggingFace model id (downloads weights).
 

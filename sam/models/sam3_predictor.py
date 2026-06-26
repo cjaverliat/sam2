@@ -102,8 +102,9 @@ class Sam3Predictor(nn.Module):
     def encode_exemplars(self, exemplars) -> Optional[torch.Tensor]:
         """Embed optional reference geometry (deferred — base text-only path).
 
-        The base per-object detector runs the text-only geometry cls path (Task 4); full
-        exemplar / geometry-prompt encoding is a later task, so this returns ``None``.
+        The base per-object detector runs the text-only geometry cls path; full
+        exemplar / geometry-prompt encoding is deferred to the streaming task, so this
+        returns ``None``.
         """
         return None
 
@@ -868,8 +869,14 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         state: Sam3VideoPredictorState,
         frame_idx: int,
         frame,
-        geometry_prompts: list[GeometryPrompt] = [],
+        geometry_prompts: list[GeometryPrompt] | None = None,
     ) -> dict[int, MaskletResult]:
+        geometry_prompts = geometry_prompts or []
+        if geometry_prompts:
+            raise NotImplementedError(
+                "multiplex (sam3.1) video predictor does not support geometry prompts yet; "
+                "use the base build_sam3_video_predictor for click/box prompting"
+            )
         device = self.device
         H, W = state.video_hw
         state.num_frames_processed += 1
@@ -979,6 +986,12 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         the obj-index -> obj_id map, registers the ids on the bank (lifecycle), and stores the
         cond-frame output in ``output_dict``.
         """
+        if state.mux_state is not None:
+            raise NotImplementedError(
+                "multiplex (sam3.1): mid-stream new-instance spawn is unsupported "
+                "(num_buckets is fixed from the first concept frame); all instances "
+                "must appear on the seed frame"
+            )
         device = self.device
         new_ids = [oid for oid, _ in new_objects]
         mux_state = self.tracker.multiplex_controller.get_state(

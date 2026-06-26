@@ -77,7 +77,6 @@ def test_encoder_parity(image_fixture):
     )
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 def test_text_parity(image_fixture):
     """The SAM 3 text encoder's output matches the golden ``text_emb`` within atol=1e-2.
 
@@ -114,7 +113,6 @@ def test_text_parity(image_fixture):
     )
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 def _mask_iou(a, b):
     """IoU of two binary masks (numpy arrays, any integer/bool dtype)."""
     a = a.astype(bool)
@@ -233,7 +231,6 @@ def test_detector_parity(image_fixture):
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 def test_sam3_image_parity(image_fixture):
     """End-to-end image concept-prediction parity through the REAL builder/config/predictor.
 
@@ -295,7 +292,6 @@ def test_sam3_image_parity(image_fixture):
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 @pytest.fixture(scope="module")
 def video_fixture():
     f = FIXTURES / "video.npz"
@@ -440,7 +436,6 @@ def test_tracker_step_parity(video_fixture):
         assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 def test_sam3_video_parity(video_fixture):
     """End-to-end STREAMING video parity through ``build_sam3_video_predictor``.
 
@@ -532,7 +527,6 @@ def test_sam3_video_parity(video_fixture):
         )
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 def test_sam3_video_constant_vram(video_fixture):
     """Peak CUDA memory stays ~flat as the streamed clip grows (the fork's headline property).
 
@@ -562,12 +556,13 @@ def test_sam3_video_constant_vram(video_fixture):
     state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
     predictor.set_concept(state, ConceptPrompt(phrase))
 
+    WARM_FRAME = 9  # > forgetful window (7): the non-conditional store is full and steady here
     mem_after_warm = None
     for f_idx in range(N_LONG):
         frame = base_frames[f_idx % base_frames.shape[0]]
         predictor.forward(state, f_idx, frame)
         torch.cuda.synchronize()
-        if f_idx == 4:  # after the forgetful window (size 7) starts bounding storage
+        if f_idx == WARM_FRAME:  # after the forgetful window has FILLED (steady-state working set)
             torch.cuda.reset_peak_memory_stats()
             mem_after_warm = torch.cuda.max_memory_allocated()
 
@@ -575,17 +570,15 @@ def test_sam3_video_constant_vram(video_fixture):
     mem_after_long = torch.cuda.max_memory_allocated()
 
     assert mem_after_warm is not None and mem_after_warm > 0
-    # Peak VRAM from frame 5..15 must not balloon vs the post-warmup peak: the forgetful bank
-    # bounds per-object memory, so the per-frame working set is ~constant. Allow 25% slack for
-    # transient allocator fragmentation / object-count jitter as the looped clip jumps.
+    # From the window-full frame on, the per-frame working set is bounded (<= window non-cond
+    # frames + the cond frames), so peak VRAM must not balloon. Allow 25% allocator slack.
     growth = (mem_after_long - mem_after_warm) / mem_after_warm
     assert growth <= 0.25, (
-        f"peak VRAM grew {growth:.1%} from frame 4 ({mem_after_warm/1e6:.1f} MB) to "
+        f"peak VRAM grew {growth:.1%} from frame {WARM_FRAME} ({mem_after_warm/1e6:.1f} MB) to "
         f"frame {N_LONG-1} ({mem_after_long/1e6:.1f} MB) -- not constant-VRAM"
     )
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 # --- SAM 3.1 multiplex tracker (M1) ---------------------------------------------------
 CKPT_MUX = Path(__file__).parents[2] / "checkpoints" / "sam3.1_multiplex.pt"
 
@@ -771,7 +764,6 @@ def test_sam3p1_tracker_step_parity(video_sam31_fixture):
         assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 # --- SAM 3.1 multiplex detector + image predictor (M2) --------------------------------
 @pytest.fixture(scope="module")
 def image_sam31_fixture():
@@ -855,7 +847,6 @@ def test_sam3p1_image_parity(image_sam31_fixture):
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 # --- SAM 3.1 multiplex streaming video predictor (M3) ---------------------------------
 def test_sam3p1_video_parity(video_sam31_fixture):
     """End-to-end SAM 3.1 MULTIPLEX streaming video parity through the real builder.
@@ -945,7 +936,6 @@ def test_sam3p1_video_parity(video_sam31_fixture):
         )
 
 
-# SPDX-License-Identifier: LicenseRef-SAM
 def test_sam3p1_video_constant_vram(video_sam31_fixture):
     """Peak CUDA memory stays ~flat as the streamed clip grows (the multiplex fork property).
 

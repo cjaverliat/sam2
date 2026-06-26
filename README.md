@@ -337,6 +337,8 @@ Per-object memory is managed by the internal `ForgetfulObjectMemoryBank` (non-co
 
 SAM 3.1 packs all tracked objects into one joint forward via `build_sam3_multiplex` (image) and `build_sam3_multiplex_video_predictor` (video). The calling API is **identical** to base SAM 3; mux/demux is internal to the tracker.
 
+**Scope:** the multiplex video predictor supports concept-seeded multi-object tracking with a fixed bucket set — all instances must be detected on the seed frame and co-tracked thereafter. Mid-stream instance spawn and geometry prompts (`GeometryPrompt`) are not yet supported; use the base SAM 3 (`build_sam3_video_predictor`) for those use-cases. VRAM stays bounded because the joint bucket-space spatial memory is threaded internally (not via the per-object `ObjectMemoryBank`) and non-conditional frames outside the 7-frame forgetful window are pruned.
+
 ```python
 from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor
 from sam.prompts import ConceptPrompt

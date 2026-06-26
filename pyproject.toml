@@ -14,10 +14,10 @@ name = "sam"
 # the exact minor it was compiled against (ABI lock), so a mismatched torch fails
 # at install instead of crashing on import.
 dynamic = ["version", "dependencies"]
-description = "SAM 2: Segment Anything in Images and Videos"
+description = "SAM 2 / SAM 3 unified inference package"
 readme = "README.md"
 requires-python = ">=3.10.0"
-license = {text = "Apache 2.0"}
+license = {file = "LICENSE"}
 authors = [
     {name = "Meta AI", email = "segment-anything@meta.com"},
 ]

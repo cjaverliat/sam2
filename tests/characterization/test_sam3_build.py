@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from sam.prompts import ConceptPrompt
+from sam.prompts import ConceptPrompt, GeometryPrompt
 from sam.models.sam3_predictor import (
     Sam3VideoPredictor,
     Sam3VideoPredictorState,
@@ -267,7 +267,6 @@ from sam.build_sam import (  # noqa: E402
 )
 from sam.models.sam3_predictor import (  # noqa: E402
     Sam3Predictor,
-    Sam3VideoPredictor,
     Sam3MultiplexPredictor,
     Sam3MultiplexVideoPredictor,
 )
@@ -319,3 +318,28 @@ def test_build_sam3_multiplex_video_predictor_instantiates():
         "configs/sam3/sam3.1.yaml", ckpt_path=None, device="cpu", mode="eval"
     )
     assert isinstance(model, Sam3MultiplexVideoPredictor)
+
+
+# ---------------------------------------------------------------------------
+# Priority-1 guard: multiplex video predictor must reject geometry prompts.
+# CPU-only, no checkpoint.  The check fires at the very top of forward(),
+# before self.device, so a no-parameter stub is sufficient.
+# ---------------------------------------------------------------------------
+
+def test_sam3p1_video_rejects_geometry_prompts():
+    """Sam3MultiplexVideoPredictor.forward must raise NotImplementedError for geometry prompts.
+
+    The multiplex predictor does not support GeometryPrompt (click/box/mask prompting);
+    users should use the base build_sam3_video_predictor for that. The error must be raised
+    loudly (not silently dropped like the base class routes them) and BEFORE any computation,
+    so no checkpoint or GPU is required.
+    """
+    from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor, Sam3VideoPredictorState
+
+    # Instantiate with no weights (the check precedes self.device / any tensor ops).
+    pred = Sam3MultiplexVideoPredictor()
+    state = Sam3VideoPredictorState(video_hw=(288, 512))
+    gp = GeometryPrompt(obj_id=0, boxes=torch.tensor([[0.0, 0.0, 100.0, 100.0]]))
+
+    with pytest.raises(NotImplementedError, match="geometry prompts"):
+        pred.forward(state, frame_idx=0, frame=None, geometry_prompts=[gp])
