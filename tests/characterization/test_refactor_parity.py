@@ -5,9 +5,7 @@ Freezes a deterministic block output (CPU, fp32, fixed seed) for EfficientTAM-ti
 so the rename can be proven behavior-preserving. Capture once with CAPTURE_GOLDEN=1,
 then this test compares against the committed fixture. Skips if the checkpoint is absent.
 
-During the refactor this file is renamed like any other (`sam2`->`sam`,
-`build_sam2_video_predictor`->`build_sam2_legacy_video_predictor`); the .npy fixture
-is the invariant.
+The .npy fixture is the invariant across refactor steps.
 """
 import os
 from pathlib import Path

@@ -72,7 +72,7 @@ HF_MODEL_ID_TO_FILENAMES = {
 }
 
 
-def build_sam2_legacy(
+def build_sam2(
     config_file,
     ckpt_path=None,
     device="cuda",
@@ -81,41 +81,17 @@ def build_sam2_legacy(
     apply_postprocessing=True,
     **kwargs,
 ):
-    # Load the YAML directly rather than via Hydra's compose, because Hydra's
-    # package-based config store mis-interprets dots in directory names
-    # (e.g. "sam2.1/" becomes "sam2" → "1" instead of a flat directory path),
-    # causing the model config to be nested under the wrong key.
-    import re as _re
-    from pathlib import Path as _Path
-    config_path = _Path(sam.__file__).parent / config_file
-    cfg = OmegaConf.load(config_path)
 
     if apply_postprocessing:
-        # Dynamically fall back to multi-mask if the single mask is not stable
-        OmegaConf.update(cfg, "model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability", True, merge=True)
-        OmegaConf.update(cfg, "model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta", 0.05, merge=True)
-        OmegaConf.update(cfg, "model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh", 0.98, merge=True)
-
-    for override in hydra_overrides_extra:
-        # Parse Hydra-style override: [++/+/~]key.path=value
-        m = _re.match(r'^[+~]*([^=]+)=(.*)$', override)
-        if not m:
-            continue
-        key, raw_val = m.group(1), m.group(2)
-        if raw_val.lower() == "true":
-            val = True
-        elif raw_val.lower() == "false":
-            val = False
-        else:
-            try:
-                val = int(raw_val)
-            except ValueError:
-                try:
-                    val = float(raw_val)
-                except ValueError:
-                    val = raw_val
-        OmegaConf.update(cfg, key, val, merge=True)
-
+        hydra_overrides_extra = hydra_overrides_extra.copy()
+        hydra_overrides_extra += [
+            # dynamically fall back to multi-mask if the single mask is not stable
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta=0.05",
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
+        ]
+    # Read config and init model
+    cfg = compose(config_name=config_file, overrides=hydra_overrides_extra)
     OmegaConf.resolve(cfg)
     model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path)
@@ -125,7 +101,7 @@ def build_sam2_legacy(
     return model
 
 
-def build_sam2(
+def build_sam2_predictor(
     config_file,
     ckpt_path=None,
     device="cuda",
@@ -340,50 +316,6 @@ def build_sam2_video_predictor(
     return model
 
 
-def build_sam2_legacy_video_predictor(
-    config_file,
-    ckpt_path=None,
-    device="cuda",
-    mode="eval",
-    hydra_overrides_extra=[],
-    apply_postprocessing=True,
-    vos_optimized=False,
-    **kwargs,
-):
-    hydra_overrides = [
-        "++model._target_=sam.models.legacy_video_predictor.Sam2LegacyVideoPredictor",
-    ]
-    if vos_optimized:
-        hydra_overrides = [
-            "++model._target_=sam.models.legacy_video_predictor.Sam2LegacyVideoPredictorVOS",
-            "++model.compile_image_encoder=True",  # Let sam2_base handle this
-        ]
-
-    if apply_postprocessing:
-        hydra_overrides_extra = hydra_overrides_extra.copy()
-        hydra_overrides_extra += [
-            # dynamically fall back to multi-mask if the single mask is not stable
-            "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
-            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta=0.05",
-            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
-            # the sigmoid mask logits on interacted frames with clicks in the memory encoder so that the encoded masks are exactly as what users see from clicking
-            "++model.binarize_mask_from_pts_for_mem_enc=true",
-            # fill small holes in the low-res masks up to `fill_hole_area` (before resizing them to the original video resolution)
-            "++model.fill_hole_area=8",
-        ]
-    hydra_overrides.extend(hydra_overrides_extra)
-
-    # Read config and init model
-    cfg = compose(config_name=config_file, overrides=hydra_overrides)
-    OmegaConf.resolve(cfg)
-    model = instantiate(cfg.model, _recursive_=True)
-    _load_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
-
-
 def _hf_download(model_id):
     from huggingface_hub import hf_hub_download
 
@@ -392,16 +324,10 @@ def _hf_download(model_id):
     return config_name, ckpt_path
 
 
-def build_sam2_legacy_hf(model_id, **kwargs):
+def build_sam2_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
-    return build_sam2_legacy(config_file=config_name, ckpt_path=ckpt_path, **kwargs)
+    return build_sam2(config_file=config_name, ckpt_path=ckpt_path, **kwargs)
 
-
-def build_sam2_legacy_video_predictor_hf(model_id, **kwargs):
-    config_name, ckpt_path = _hf_download(model_id)
-    return build_sam2_legacy_video_predictor(
-        config_file=config_name, ckpt_path=ckpt_path, **kwargs
-    )
 
 def build_sam2_video_predictor_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
@@ -409,9 +335,9 @@ def build_sam2_video_predictor_hf(model_id, **kwargs):
         config_file=config_name, ckpt_path=ckpt_path, **kwargs
     )
 
-def build_sam2_hf(model_id, **kwargs):
+def build_sam2_predictor_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
-    return build_sam2(
+    return build_sam2_predictor(
         config_file=config_name, ckpt_path=ckpt_path, **kwargs
     )
 

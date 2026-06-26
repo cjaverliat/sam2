@@ -160,9 +160,9 @@ class Sam2AutomaticMaskGenerator:
         Returns:
           (Sam2AutomaticMaskGenerator): The loaded model.
         """
-        from sam.build_sam import build_sam2_hf
+        from sam.build_sam import build_sam2_predictor_hf
 
-        sam_model = build_sam2_hf(model_id, **kwargs)
+        sam_model = build_sam2_predictor_hf(model_id, **kwargs)
         return cls(sam_model, **kwargs)
 
     @property
