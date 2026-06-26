@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 

@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 # ONNX / TensorRT drop-in replacements for the 5 SAM2 neural-network blocks.
 #
 # Each wrapper in this package mirrors the forward() signature of the torch

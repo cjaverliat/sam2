@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 """ONNX-export-aware drop-ins for rotary embedding and attention.
 
 Both modules run normally in eager mode and only matter while a graph is captured for
