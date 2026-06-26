@@ -341,6 +341,93 @@ def build_sam2_predictor_hf(model_id, **kwargs):
     )
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3 (Perception Encoder) -------------------------------------------------------
+# Minimal direct-construction builder for the SAM 3 vision encoder (Phase 1, Task 2).
+# Full hydra configs for SAM 3 arrive in a later task; this stub builds JUST the PE vision
+# trunk + Simple-FPN neck and strict-loads the encoder subtree from a local sam3.pt, which
+# is enough to parity-check the encoder against the captured golden. The config mirrors
+# sam3/model_builder.py::_create_vit_backbone / _create_vit_neck (the SAM 3 image model).
+
+
+def build_sam3_vision_encoder(ckpt_path=None, device="cuda"):
+    """Build the SAM 3 Perception-Encoder vision encoder and (optionally) load weights.
+
+    Args:
+        ckpt_path: path to a local ``sam3.pt``. The encoder subtree
+            (``detector.backbone.vision_backbone.{trunk,convs}.*``) is loaded with
+            ``strict=True``; the unused SAM 2 dual-neck (``sam2_convs.*``) and the language
+            tower are filtered out. If ``None`` the model is returned with init weights.
+        device: device to move the model to.
+
+    Returns:
+        A ``Sam3VisionEncoder`` in eval mode. ``forward(image)`` takes the preprocessed
+        (B, 3, 1008, 1008) tensor and returns ``(features, pos)`` pyramids.
+    """
+    from sam.modeling.encoders.necks import Sam3DualViTDetNeck
+    from sam.modeling.encoders.pe_vitdet import ViT
+    from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+
+    trunk = ViT(
+        img_size=1008,
+        pretrain_img_size=336,
+        patch_size=14,
+        embed_dim=1024,
+        depth=32,
+        num_heads=16,
+        mlp_ratio=4.625,
+        norm_layer="LayerNorm",
+        drop_path_rate=0.1,
+        qkv_bias=True,
+        use_abs_pos=True,
+        tile_abs_pos=True,
+        global_att_blocks=(7, 15, 23, 31),
+        use_rope=True,
+        use_interp_rope=True,
+        window_size=24,
+        pretrain_use_cls_token=True,
+        retain_cls_token=False,
+        ln_pre=True,
+        ln_post=False,
+        return_interm_layers=False,
+        bias_patch_embed=False,
+    )
+    position_encoding = PositionEmbeddingSine(
+        num_pos_feats=256,
+        normalize=True,
+        scale=None,
+        temperature=10000,
+        warmup_cache=False,
+    )
+    neck = Sam3DualViTDetNeck(
+        trunk=trunk,
+        position_encoding=position_encoding,
+        d_model=256,
+        scale_factors=[4.0, 2.0, 1.0, 0.5],
+        add_sam2_neck=False,
+    )
+    encoder = Sam3VisionEncoder(vision_backbone=neck, scalp=1)
+
+    if ckpt_path is not None:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            ckpt = ckpt["model"]
+        sub_prefix = "detector.backbone.vision_backbone."
+        skip_prefix = "detector.backbone.vision_backbone.sam2_convs."
+        sub = {
+            k[len("detector.backbone."):]: v
+            for k, v in ckpt.items()
+            if k.startswith(sub_prefix) and not k.startswith(skip_prefix)
+        }
+        encoder.load_state_dict(sub, strict=True)
+
+    encoder = encoder.to(device)
+    encoder.eval()
+    return encoder
+
+
+# SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
         sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)["model"]
