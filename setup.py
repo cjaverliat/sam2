@@ -80,7 +80,7 @@ def _point_cuda_home_at_conda():
 
 
 def get_package_version():
-    text = (THIS_DIR / "sam2" / "version.py").read_text()
+    text = (THIS_DIR / "sam" / "version.py").read_text()
     return re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text).group(1)
 
 

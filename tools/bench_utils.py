@@ -13,10 +13,10 @@ import cv2
 import torch
 from tqdm import tqdm
 
-from sam2.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
-from sam2.modeling.sam2_memory import SAM2ObjectMemoryBank
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
+from sam.modeling.sam2_memory import SAM2ObjectMemoryBank
+from sam.modeling.sam2_prompt import SAM2Prompt
+from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
 
 
 def read_frame(cap, device):

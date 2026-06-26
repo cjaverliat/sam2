@@ -20,7 +20,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import torch
 
 from bench_utils import build_memory_bank, run_video_benchmark
-from sam2.build_sam import build_sam2_generic_video_predictor
+from sam.build_sam import build_sam2_generic_video_predictor
 
 
 def main():

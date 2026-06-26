@@ -34,10 +34,10 @@ import matplotlib.pyplot as plt
 import torch
 from tqdm import tqdm
 
-from sam2.build_sam import build_sam2_generic_video_predictor_onnx
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.onnx.trt_options import TensorRTOptions
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.build_sam import build_sam2_generic_video_predictor_onnx
+from sam.modeling.sam2_prompt import SAM2Prompt
+from sam.onnx.trt_options import TensorRTOptions
+from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
 
 # Reuse the plotting / IO helpers from the torch example (same directory).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -15,7 +15,7 @@ overrides the model target and the block shapes are read off the built model.
 
 Exports at opset 18 (default): attention and RoPE are fully decomposed. The native
 opset-23 ONNX Attention / RotaryEmbedding ops are avoided because they break on the ONNX
-Runtime TensorRT EP (see sam2.modeling.sam.onnx_compat).
+Runtime TensorRT EP (see sam.modeling.sam.onnx_compat).
 
 Run from the repo root:
     pixi run python tools/export_onnx.py \
@@ -38,7 +38,7 @@ Two artifacts, one per runtime (both opset 18):
     EPs can't convert precision at runtime). The two heavy blocks run fp16, the rest stay
     fp32. Do NOT feed this to TensorRT: the weights are already fp16 and the baked
     cast-islands block fusion / break the strongly-typed build (the runtime guard in
-    sam2.onnx.sam2_generic_onnx rejects it).
+    sam.onnx.sam2_generic_onnx rejects it).
 """
 
 import argparse
@@ -59,13 +59,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from sam2.build_sam import build_sam2_generic
-from sam2.modeling.sam.onnx_compat import set_export_opset
-from sam2.onnx import image_encoder_onnx as ienc
-from sam2.onnx import mask_decoder_onnx as mdec
-from sam2.onnx import memory_attention_onnx as mattn
-from sam2.onnx import memory_encoder_onnx as menc
-from sam2.onnx import prompt_encoder_onnx as penc
+from sam.build_sam import build_sam2_generic
+from sam.modeling.sam.onnx_compat import set_export_opset
+from sam.onnx import image_encoder_onnx as ienc
+from sam.onnx import mask_decoder_onnx as mdec
+from sam.onnx import memory_attention_onnx as mattn
+from sam.onnx import memory_encoder_onnx as menc
+from sam.onnx import prompt_encoder_onnx as penc
 
 Dim = torch.export.Dim
 
@@ -271,7 +271,7 @@ def main():
     p.add_argument("--out-dir", required=True)
     # opset 18: decomposed attention/RoPE. The native opset-23 ONNX Attention/
     # RotaryEmbedding ops break on the ORT TensorRT EP (Attention -> CUDA fallback /
-    # ~25-way fragmentation; dynamic RoPE -> myelin build crash). See sam2.modeling.sam.
+    # ~25-way fragmentation; dynamic RoPE -> myelin build crash). See sam.modeling.sam.
     # onnx_compat. Keep 18 unless TensorRT+ORT fix opset-23 fused-op support.
     p.add_argument("--opset", type=int, default=18)
     p.add_argument("--no-parity", action="store_true", help="skip torch vs ORT check")
@@ -506,7 +506,7 @@ def main():
         "mask_input_size": list(mask_in),
         "config": args.config,
         # "mixed-precision" = baked graph for the CUDA/CPU EP only; the runtime guard in
-        # sam2.onnx.sam2_generic_onnx reads this to reject it on TensorRT. "fp32" is the
+        # sam.onnx.sam2_generic_onnx reads this to reject it on TensorRT. "fp32" is the
         # TRT-ready graph (use bf16_enable, or fp16_enable on the 2 heavy blocks).
         "precision": "mixed-precision" if args.mixed_precision else "fp32",
         # Memory-attention TRT profile bounds. MemoryAttentionOnnx builds one engine

@@ -31,9 +31,9 @@ import torch
 from tqdm import tqdm
 
 from frame_utils import read_frame, warmup
-from sam2.build_sam import build_sam2_generic_video_predictor
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.build_sam import build_sam2_generic_video_predictor
+from sam.modeling.sam2_prompt import SAM2Prompt
+from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
 
 
 def select_device() -> torch.device:

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from sam2.build_sam import build_sam2_generic_video_predictor
+from sam.build_sam import build_sam2_generic_video_predictor
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"
