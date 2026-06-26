@@ -15,8 +15,8 @@ from omegaconf import OmegaConf
 
 import sam
 
-from sam.modeling.sam2_generic import SAM2Generic
-from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictor
+from sam.models.sam2_predictor import SAM2Generic
+from sam.models.sam2_predictor import SAM2GenericVideoPredictor
 
 # Check if the user is running Python from the parent directory of the sam2 repo
 # (i.e. the directory where this repo is cloned into) -- this is not supported since
@@ -111,7 +111,7 @@ def build_sam2_generic(
     use_half=False,
 ) -> SAM2Generic:
     hydra_overrides = [
-        "++model._target_=sam.sam2_generic_video_predictor.SAM2Generic",
+        "++model._target_=sam.models.sam2_predictor.SAM2Generic",
         f"++model.use_half={use_half}",
     ]
     if apply_postprocessing:
@@ -208,7 +208,7 @@ def build_sam2_generic_image_predictor_onnx(
 
     model = _meta_build_generic(
         config_file,
-        "sam.sam2_generic_video_predictor.SAM2Generic",
+        "sam.models.sam2_predictor.SAM2Generic",
         use_half=use_half,
         apply_postprocessing=apply_postprocessing,
         hydra_overrides_extra=hydra_overrides_extra,
@@ -250,7 +250,7 @@ def build_sam2_generic_video_predictor_onnx(
 
     model = _meta_build_generic(
         config_file,
-        "sam.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
+        "sam.models.sam2_predictor.SAM2GenericVideoPredictor",
         use_half=use_half,
         apply_postprocessing=apply_postprocessing,
         hydra_overrides_extra=hydra_overrides_extra,
@@ -273,7 +273,7 @@ def build_sam2_generic_video_predictor(
     **kwargs,
 ) -> SAM2GenericVideoPredictor:
     hydra_overrides = [
-        "++model._target_=sam.sam2_generic_video_predictor.SAM2GenericVideoPredictor",
+        "++model._target_=sam.models.sam2_predictor.SAM2GenericVideoPredictor",
         f"++model.use_half={use_half}",
     ]
 
@@ -281,7 +281,7 @@ def build_sam2_generic_video_predictor(
         # VOS always compiles the image encoder; don't append compile_image_encoder
         # again below to avoid a duplicate hydra override.
         hydra_overrides = [
-            "++model._target_=sam.sam2_generic_video_predictor.SAM2GenericVideoPredictorVOS",
+            "++model._target_=sam.models.sam2_predictor.SAM2GenericVideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
             f"++model.use_half={use_half}",
         ]
@@ -327,11 +327,11 @@ def build_sam2_video_predictor(
     **kwargs,
 ):
     hydra_overrides = [
-        "++model._target_=sam.sam2_video_predictor.SAM2VideoPredictor",
+        "++model._target_=sam.models.legacy_video_predictor.SAM2VideoPredictor",
     ]
     if vos_optimized:
         hydra_overrides = [
-            "++model._target_=sam.sam2_video_predictor.SAM2VideoPredictorVOS",
+            "++model._target_=sam.models.legacy_video_predictor.SAM2VideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
         ]
 

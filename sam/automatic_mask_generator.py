@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
 
-from sam.modeling.sam2_generic import SAM2Generic
+from sam.models.sam2_predictor import SAM2Generic
 from sam.utils.amg import (
     area_from_rle,
     batch_iterator,

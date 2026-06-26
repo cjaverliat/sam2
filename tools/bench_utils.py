@@ -16,7 +16,7 @@ from tqdm import tqdm
 from sam.modeling.memory.forgetful import SAM2ForgetfulObjectMemoryBank
 from sam.modeling.memory.banks import SAM2ObjectMemoryBank
 from sam.prompts import SAM2Prompt
-from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
 
 
 def read_frame(cap, device):
