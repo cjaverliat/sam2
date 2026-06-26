@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from sam.modeling.backbones.utils import (
+from sam.modeling.encoders.utils import (
     get_abs_pos,
     PatchEmbed,
     window_partition,

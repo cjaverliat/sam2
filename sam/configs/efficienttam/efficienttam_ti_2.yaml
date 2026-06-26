@@ -4,10 +4,10 @@
 model:
   _target_: sam.modeling.efficienttam_base.EfficientTAMBase
   image_encoder:
-    _target_: sam.modeling.backbones.image_encoder.ImageEncoder
+    _target_: sam.modeling.encoders.image_encoder.ImageEncoder
     scalp: 0
     trunk:
-      _target_: sam.modeling.backbones.vitdet.ViT
+      _target_: sam.modeling.encoders.vitdet.ViT
       patch_size: 16
       embed_dim: 192
       depth: 12
@@ -19,7 +19,7 @@ model:
       window_size: 14
       window_block_indexes: [0, 1, 3, 4, 6, 7, 9, 10]
     neck:
-      _target_: sam.modeling.backbones.image_encoder.ViTDetNeck
+      _target_: sam.modeling.encoders.image_encoder.ViTDetNeck
       position_encoding:
         _target_: sam.modeling.position_encoding.PositionEmbeddingSine
         num_pos_feats: 256

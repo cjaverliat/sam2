@@ -64,15 +64,15 @@ trainer:
   model:
     _target_: training.model.sam2.SAM2Train
     image_encoder:
-      _target_: sam.modeling.backbones.image_encoder.ImageEncoder
+      _target_: sam.modeling.encoders.image_encoder.ImageEncoder
       scalp: 1
       trunk:
-        _target_: sam.modeling.backbones.hieradet.Hiera
+        _target_: sam.modeling.encoders.hiera.Hiera
         embed_dim: 112
         num_heads: 2
         drop_path_rate: 0.1
       neck:
-        _target_: sam.modeling.backbones.image_encoder.FpnNeck
+        _target_: sam.modeling.encoders.image_encoder.FpnNeck
         position_encoding:
           _target_: sam.modeling.position_encoding.PositionEmbeddingSine
           num_pos_feats: 256
