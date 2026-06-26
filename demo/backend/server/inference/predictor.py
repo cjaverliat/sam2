@@ -86,7 +86,6 @@ class InferenceAPI:
 
         self.device = device
         raise NotImplementedError("SAM2 demo backend pending rework for the streaming predictor")
-        self.inference_lock = Lock()
 
     def autocast_context(self):
         if self.device.type == "cuda":

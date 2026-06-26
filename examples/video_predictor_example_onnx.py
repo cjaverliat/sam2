@@ -37,7 +37,7 @@ from tqdm import tqdm
 from sam.build_sam import build_sam2_video_predictor_onnx
 from sam.prompts import GeometryPrompt
 from sam.onnx.trt_options import TensorRTOptions
-from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 # Reuse the plotting / IO helpers from the torch example (same directory).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -78,7 +78,7 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     orig_hw = (height, width)
 
-    video_state = SAM2GenericVideoPredictorState.create(orig_hw)
+    video_state = Sam2VideoPredictorState.create(orig_hw)
     warmup(predictor, video_state, device)
 
     ann_frame_idx = 0

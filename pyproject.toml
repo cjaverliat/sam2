@@ -108,11 +108,11 @@ exclude = ["notebooks*", "demo*", "tools*", "training*", "sav_dataset*"]
 
 [tool.setuptools.package-data]
 # Hydra configs + CUDA sources (the latter for the JIT source-build fallback in
-# sam2/utils/misc.py when no _C extension is present).
+# sam/utils/misc.py when no _C extension is present).
 sam = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
 
-# Windows: the sam2 native extension is built with nvcc + MSVC cl.exe, which conda
-# cannot ship. Before running any pixi command that builds/installs sam2 (e.g.
+# Windows: the sam native extension is built with nvcc + MSVC cl.exe, which conda
+# cannot ship. Before running any pixi command that builds/installs sam (e.g.
 # `pixi run`, `pixi install`, `pixi shell`), source the MSVC environment first so
 # cl.exe is on PATH, e.g. in a cmd shell:
 #     "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
@@ -136,7 +136,7 @@ numpy = ">=1.24.4"
 # "OMP: Error #15". OpenBLAS avoids MKL, leaving a single OMP. (linux-64 already
 # defaults to OpenBLAS.)
 libblas = { build = "*openblas" }
-# Build backend deps: present in-env because sam2 builds with --no-build-isolation
+# Build backend deps: present in-env because sam builds with --no-build-isolation
 # (needs the env's torch, not an isolated CPU torch).
 setuptools = ">=61,<82"   # torch wheels cap setuptools <82 (pkg_resources use)
 wheel = "*"
@@ -166,7 +166,7 @@ pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.p
 activation = { env = { SAM2_BUILD_CUDA = "0" } }
 
 [tool.pixi.pypi-options]
-# Build sam2 against the already-installed cuXXX torch (and the env's Python),
+# Build sam against the already-installed cuXXX torch (and the env's Python),
 # not a fresh CPU torch pulled from default PyPI in an isolated build env.
 # The isolated build torch lacks c10/cuda/impl/cuda_cmake_macros.h (CUDA-build-only).
 no-build-isolation = ["sam"]

@@ -33,7 +33,7 @@ from tqdm import tqdm
 from frame_utils import read_frame, warmup
 from sam.build_sam import build_sam2_video_predictor
 from sam.prompts import GeometryPrompt
-from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 
 def select_device() -> torch.device:
@@ -129,7 +129,7 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     orig_hw = (height, width)
 
-    video_state = SAM2GenericVideoPredictorState.create(orig_hw)
+    video_state = Sam2VideoPredictorState.create(orig_hw)
 
     # Move the one-time GPU init off the first prompted frame.
     warmup(predictor, video_state, device)

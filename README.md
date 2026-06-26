@@ -83,7 +83,7 @@ git clone https://github.com/cjaverliat/sam2.git && cd sam2
 # Default environment: CUDA 12.8 torch + compiled CUDA kernels
 pixi shell           # drop into the environment
 # or run a single command:
-pixi run python -c "import sam2; print(sam2.__version__)"
+pixi run python -c "import sam; print(sam.__version__)"
 ```
 
 Available environments include `default` (CUDA 12.8 torch), `notebooks`, `dev`, and the ONNX tiers described in [ONNX / TensorRT inference](#onnx--tensorrt-inference).
@@ -126,9 +126,9 @@ Encode the image once, then prompt it (see [`notebooks/image_predictor_example.i
 import numpy as np
 import torch
 from PIL import Image
-from sam2.build_sam import build_sam2_generic
+from sam.build_sam import build_sam2_predictor
 
-model = build_sam2_generic(
+model = build_sam2_predictor(
     "configs/sam2.1/sam2.1_hiera_l.yaml",
     "./checkpoints/sam2.1_hiera_large.pt",
     device="cuda",
@@ -162,21 +162,21 @@ Build the predictor once, create a lightweight state, then call `forward()` per 
 
 ```python
 import torch
-from sam2.build_sam import build_sam2_generic_video_predictor
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.build_sam import build_sam2_video_predictor
+from sam.prompts import GeometryPrompt
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 checkpoint = "./checkpoints/sam2.1_hiera_base_plus.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 device = torch.device("cuda")
 
-predictor = build_sam2_generic_video_predictor(model_cfg, checkpoint, device=device)
+predictor = build_sam2_video_predictor(model_cfg, checkpoint, device=device)
 
 # State holds only (H, W) and the memory bank — not the frames.
-state = SAM2GenericVideoPredictorState.create(video_hw=(height, width))
+state = Sam2VideoPredictorState.create(video_hw=(height, width))
 
 # Frame 0: add a prompt for object id 1
-prompt = SAM2Prompt(
+prompt = GeometryPrompt(
     obj_id=1,
     points_coords=torch.tensor([[210, 350]], dtype=torch.float32, device=device),
     points_labels=torch.tensor([1], device=device),
@@ -197,19 +197,19 @@ The memory bank is a pluggable component. Two implementations ship in the box:
 
 | Class | Strategy |
 |---|---|
-| `SAM2ObjectMemoryBank` | Default. Unbounded store, faithful to the original SAM 2 paper (no forgetting). |
-| `SAM2ForgetfulObjectMemoryBank` | Sliding window. Conditional (prompted) memories are kept forever; non-conditional memories outside `[frame - window, frame + window]` are pruned. |
+| `Sam2ObjectMemoryBank` | Default. Unbounded store, faithful to the original SAM 2 paper (no forgetting). |
+| `ForgetfulObjectMemoryBank` | Sliding window. Conditional (prompted) memories are kept forever; non-conditional memories outside `[frame - window, frame + window]` are pruned. |
 
 ```python
-from sam2.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
-bank = SAM2ForgetfulObjectMemoryBank(memory_window_size=7)
-state = SAM2GenericVideoPredictorState.create(video_hw=(height, width), memory_bank=bank)
+bank = ForgetfulObjectMemoryBank(memory_window_size=7)
+state = Sam2VideoPredictorState.create(video_hw=(height, width), memory_bank=bank)
 ```
 
 Write your own policy by subclassing the abstract base
-[`ObjectMemoryBank`](sam2/modeling/memory.py) (or `SAM2ObjectMemoryBank`) and overriding
+[`ObjectMemoryBank`](sam/modeling/memory/bank.py) (or `Sam2ObjectMemoryBank`) and overriding
 `try_add_memories`, `select_memories`, and `prune_memories` — for example, to cap memory
 count, score-based eviction, or temporal striding.
 
@@ -240,10 +240,10 @@ pixi run -e onnx-export python tools/export_onnx.py \
 
 ```python
 import torch
-from sam2.build_sam import build_sam2_generic_video_predictor_onnx
-from sam2.onnx.trt_options import TensorRTOptions
+from sam.build_sam import build_sam2_video_predictor_onnx
+from sam.onnx.trt_options import TensorRTOptions
 
-predictor = build_sam2_generic_video_predictor_onnx(
+predictor = build_sam2_video_predictor_onnx(
     "configs/sam2.1/sam2.1_hiera_b+.yaml",
     onnx_dir="onnx_sam2",          # extracted dir, a .zip, or an http(s) URL to one
     device="cuda",
@@ -252,7 +252,7 @@ predictor = build_sam2_generic_video_predictor_onnx(
 )
 ```
 
-For image-only inference, use `build_sam2_generic_image_predictor_onnx` with the same arguments.
+For image-only inference, use `build_sam2_image_predictor_onnx` with the same arguments.
 
 Notes:
 - `onnx_dir` accepts an extracted export directory, a `.zip` of one (e.g. a release artifact), or an `http(s)` URL (downloaded and cached; override with `SAM2_ONNX_CACHE`).
@@ -265,24 +265,24 @@ Notes:
 
 ## EfficientTAM
 
-[EfficientTAM](https://github.com/yformer/EfficientTAM) (Efficient Track Anything) is integrated as a first-class model (`sam2.modeling.efficienttam_base.EfficientTAMBase`) with a plain ViT image encoder. It uses the **same build and predictor APIs** as SAM 2 — point a builder at an EfficientTAM config and checkpoint:
+[EfficientTAM](https://github.com/yformer/EfficientTAM) (Efficient Track Anything) is integrated as a first-class model (`sam.modeling.efficienttam_base.EfficientTAMBase`) with a plain ViT image encoder. It uses the **same build and predictor APIs** as SAM 2 — point a builder at an EfficientTAM config and checkpoint:
 
 ```python
-from sam2.build_sam import build_sam2_generic_video_predictor
+from sam.build_sam import build_sam2_video_predictor
 
-predictor = build_sam2_generic_video_predictor(
+predictor = build_sam2_video_predictor(
     "configs/efficienttam/efficienttam_ti.yaml",
     "./checkpoints/efficienttam_ti.pt",
 )
 ```
 
-Available configs live in [`sam2/configs/efficienttam/`](sam2/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
+Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
 
 ---
 
 ## Benchmarks
 
-Per-frame **streaming** throughput of `SAM2GenericVideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
+Per-frame **streaming** throughput of `Sam2VideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
 
 **Hardware / stack:** NVIDIA RTX 3080 Ti (12 GB, sm86). PyTorch rows: torch 2.11.0+cu128. ONNX-TRT rows: TensorRT 10.16.1 + onnxruntime-gpu 1.27.0 (CUDA 13). Video: `notebooks/videos/bedroom.mp4` (960×540), single object.
 
