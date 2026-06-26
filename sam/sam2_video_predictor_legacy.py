@@ -12,11 +12,11 @@ import torch
 
 from tqdm import tqdm
 
-from sam.modeling.tracking.tracker_base import NO_OBJ_SCORE, SAM2Base
+from sam.modeling.tracking.tracker_base import NO_OBJ_SCORE, SamTrackerBase
 from sam.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
 
 
-class SAM2VideoPredictor(SAM2Base):
+class Sam2LegacyVideoPredictor(SamTrackerBase):
     """The predictor class to handle user interactions and manage inference states."""
 
     def __init__(
@@ -112,7 +112,7 @@ class SAM2VideoPredictor(SAM2Base):
         return inference_state
 
     @classmethod
-    def from_pretrained(cls, model_id: str, **kwargs) -> "SAM2VideoPredictor":
+    def from_pretrained(cls, model_id: str, **kwargs) -> "Sam2LegacyVideoPredictor":
         """
         Load a pretrained model from the Hugging Face hub.
 
@@ -121,11 +121,11 @@ class SAM2VideoPredictor(SAM2Base):
           **kwargs: Additional arguments to pass to the model constructor.
 
         Returns:
-          (SAM2VideoPredictor): The loaded model.
+          (Sam2LegacyVideoPredictor): The loaded model.
         """
-        from sam.build_sam import build_sam2_video_predictor_hf
+        from sam.build_sam import build_sam2_legacy_video_predictor_hf
 
-        sam_model = build_sam2_video_predictor_hf(model_id, **kwargs)
+        sam_model = build_sam2_legacy_video_predictor_hf(model_id, **kwargs)
         return sam_model
 
     def _obj_id_to_idx(self, inference_state, obj_id):

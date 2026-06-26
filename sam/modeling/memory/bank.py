@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 
 from abc import ABC, abstractmethod
-from sam.prompts import SAM2Prompt
-from sam.results import SAM2Result
+from sam.prompts import GeometryPrompt
+from sam.results import MaskletResult
 
 class ObjectMemory:
 
@@ -89,8 +89,8 @@ class ObjectMemoryBank(ABC):
         obj_ids: list[int],
         memory_embeddings: torch.Tensor,
         memory_pos_embeddings: torch.Tensor,
-        results: SAM2Result,
-        prompts: list[SAM2Prompt],
+        results: MaskletResult,
+        prompts: list[GeometryPrompt],
     ) -> list[tuple[bool, ObjectMemory]]:
         """
         Try to add memories to the memory bank.
@@ -100,7 +100,7 @@ class ObjectMemoryBank(ABC):
             obj_ids: The object IDs of shape (B,).
             memory_embeddings: The memory embeddings of shape (B, N, H, W).
             memory_pos_embeddings: The memory positional embeddings of shape (B, N, H, W).
-            results: The SAM2Result for all the objects. Expected to have batch size B.
+            results: The MaskletResult for all the objects. Expected to have batch size B.
             prompts: The list of prompts. Can be of any length between 0 and B.
 
         Returns:

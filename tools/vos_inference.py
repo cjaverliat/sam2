@@ -11,7 +11,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 from PIL import Image
-from sam.build_sam import build_sam2_video_predictor
+from sam.build_sam import build_sam2_legacy_video_predictor
 
 
 # the PNG palette for DAVIS 2017 dataset
@@ -445,7 +445,7 @@ def main():
     hydra_overrides_extra = [
         "++model.non_overlap_masks=" + ("false" if args.per_obj_png_file else "true")
     ]
-    predictor = build_sam2_video_predictor(
+    predictor = build_sam2_legacy_video_predictor(
         config_file=args.sam2_cfg,
         ckpt_path=args.sam2_checkpoint,
         apply_postprocessing=args.apply_postprocessing,

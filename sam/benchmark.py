@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from sam.build_sam import build_sam2_video_predictor
+from sam.build_sam import build_sam2_legacy_video_predictor
 
 # Only cuda supported
 assert torch.cuda.is_available()
@@ -29,7 +29,7 @@ sam2_checkpoint = "checkpoints/sam2.1_hiera_base_plus.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 
 # Build video predictor with vos_optimized=True setting
-predictor = build_sam2_video_predictor(
+predictor = build_sam2_legacy_video_predictor(
     model_cfg, sam2_checkpoint, device=device, vos_optimized=True
 )
 

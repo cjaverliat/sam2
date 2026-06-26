@@ -10,7 +10,7 @@ Produces, in --out-dir:
     weights.npz                  (prompt.dense_pe, prompt.no_mask_embed, param.*)
     manifest.json                (num_levels, use_high_res, image_size, dims)
 
-Works for both default SAM2 (Hiera) and EfficientTAM (ViT) configs — build_sam2_generic
+Works for both default SAM2 (Hiera) and EfficientTAM (ViT) configs — build_sam2
 overrides the model target and the block shapes are read off the built model.
 
 Exports at opset 18 (default): attention and RoPE are fully decomposed. The native
@@ -59,7 +59,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from sam.build_sam import build_sam2_generic
+from sam.build_sam import build_sam2
 from sam.modeling.decoders.onnx_compat import set_export_opset
 from sam.onnx import image_encoder_onnx as ienc
 from sam.onnx import mask_decoder_onnx as mdec
@@ -315,7 +315,7 @@ def main():
 
     # Runtime conditional-memory cap is left at the config value (typically -1 =
     # unbounded); --max-cond-frames only sizes the TensorRT profile below.
-    model = build_sam2_generic(
+    model = build_sam2(
         args.config, args.ckpt, device="cpu", use_half=False
     ).eval()
 

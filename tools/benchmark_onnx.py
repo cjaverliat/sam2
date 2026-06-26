@@ -26,7 +26,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import torch
 
 from bench_utils import build_memory_bank, run_video_benchmark
-from sam.build_sam import build_sam2_generic_video_predictor_onnx
+from sam.build_sam import build_sam2_video_predictor_onnx
 from sam.onnx.trt_options import TensorRTOptions
 
 
@@ -73,7 +73,7 @@ def main():
     trt_kwargs["bf16_enable"] = args.trt_bf16
     trt_kwargs["cuda_graph_enable"] = args.trt_cuda_graph
 
-    predictor = build_sam2_generic_video_predictor_onnx(
+    predictor = build_sam2_video_predictor_onnx(
         args.model_cfg, args.onnx_dir, device=device,
         use_trt=not args.no_trt, trt_opts=TensorRTOptions(**trt_kwargs),
         apply_postprocessing=True,

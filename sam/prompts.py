@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 
 
-class SAM2Prompt:
+class GeometryPrompt:
     def __init__(
         self,
         obj_id: int,
@@ -49,7 +49,7 @@ class SAM2Prompt:
         self.masks_logits = masks_logits
         self.is_normalized = is_normalized
 
-    def to(self, device: torch.device) -> SAM2Prompt:
+    def to(self, device: torch.device) -> GeometryPrompt:
         points_coords = (
             self.points_coords.to(device) if self.points_coords is not None else None
         )
@@ -60,7 +60,7 @@ class SAM2Prompt:
         masks_logits = (
             self.masks_logits.to(device) if self.masks_logits is not None else None
         )
-        return SAM2Prompt(
+        return GeometryPrompt(
             obj_id=self.obj_id,
             points_coords=points_coords,
             points_labels=points_labels,
@@ -69,8 +69,8 @@ class SAM2Prompt:
             is_normalized=self.is_normalized,
         )
 
-    def clone(self) -> SAM2Prompt:
-        return SAM2Prompt(
+    def clone(self) -> GeometryPrompt:
+        return GeometryPrompt(
             obj_id=self.obj_id,
             points_coords=self.points_coords.clone() if self.points_coords is not None else None,
             points_labels=self.points_labels.clone() if self.points_labels is not None else None,

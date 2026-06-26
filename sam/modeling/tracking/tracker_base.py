@@ -20,7 +20,7 @@ from sam.modeling.utils import get_1d_sine_pe, MLP, select_closest_cond_frames
 NO_OBJ_SCORE = -1024.0
 
 
-class SAM2Base(torch.nn.Module):
+class SamTrackerBase(torch.nn.Module):
     def __init__(
         self,
         image_encoder,
@@ -201,7 +201,7 @@ class SAM2Base(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError(
-            "Please use the corresponding methods in SAM2VideoPredictor for inference or SAM2Train for training/fine-tuning"
+            "Please use the corresponding methods in Sam2LegacyVideoPredictor for inference or SAM2Train for training/fine-tuning"
             "See notebooks/video_predictor_example.ipynb for an inference example."
         )
 

@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from sam.modeling.memory.forgetful import SAM2ForgetfulObjectMemoryBank
 from sam.modeling.memory.banks import SAM2ObjectMemoryBank
-from sam.prompts import SAM2Prompt
+from sam.prompts import GeometryPrompt
 from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
 
 
@@ -84,7 +84,7 @@ def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=20
     state = SAM2GenericVideoPredictorState.create(orig_hw, memory_bank)
     warmup(predictor, state, device)
 
-    prompt = SAM2Prompt(
+    prompt = GeometryPrompt(
         obj_id=1,
         points_coords=torch.tensor([[210, 350]], dtype=torch.float32, device=device),
         points_labels=torch.tensor([1], device=device),

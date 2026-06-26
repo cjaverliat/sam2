@@ -20,7 +20,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import torch
 
 from bench_utils import build_memory_bank, run_video_benchmark
-from sam.build_sam import build_sam2_generic_video_predictor
+from sam.build_sam import build_sam2_video_predictor
 
 
 def main():
@@ -56,7 +56,7 @@ def main():
     if args.cudnn_benchmark and device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    predictor = build_sam2_generic_video_predictor(
+    predictor = build_sam2_video_predictor(
         args.model_cfg, args.checkpoint, device=device, use_half=args.precision != "fp32",
         vos_optimized=args.compile, apply_postprocessing=True,
     )

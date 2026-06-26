@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
 
-from sam.models.sam2_predictor import SAM2Generic
+from sam.models.sam2_predictor import Sam2Predictor
 from sam.utils.amg import (
     area_from_rle,
     batch_iterator,
@@ -36,7 +36,7 @@ from sam.utils.amg import (
 class SAM2AutomaticMaskGenerator:
     def __init__(
         self,
-        model: SAM2Generic,
+        model: Sam2Predictor,
         points_per_side: Optional[int] = 32,
         points_per_batch: int = 64,
         pred_iou_thresh: float = 0.8,
@@ -160,9 +160,9 @@ class SAM2AutomaticMaskGenerator:
         Returns:
           (SAM2AutomaticMaskGenerator): The loaded model.
         """
-        from sam.build_sam import build_sam2_generic_hf
+        from sam.build_sam import build_sam2_hf
 
-        sam_model = build_sam2_generic_hf(model_id, **kwargs)
+        sam_model = build_sam2_hf(model_id, **kwargs)
         return cls(sam_model, **kwargs)
 
     @property

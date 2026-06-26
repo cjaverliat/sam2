@@ -34,8 +34,8 @@ import matplotlib.pyplot as plt
 import torch
 from tqdm import tqdm
 
-from sam.build_sam import build_sam2_generic_video_predictor_onnx
-from sam.prompts import SAM2Prompt
+from sam.build_sam import build_sam2_video_predictor_onnx
+from sam.prompts import GeometryPrompt
 from sam.onnx.trt_options import TensorRTOptions
 from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
 
@@ -65,7 +65,7 @@ def main():
     # all weights are baked into the export artifacts under --onnx-dir.
     # Default fp32 TRT; set bf16_enable for full-speed on Ampere+.
     trt_opts = TensorRTOptions()
-    predictor = build_sam2_generic_video_predictor_onnx(
+    predictor = build_sam2_video_predictor_onnx(
         args.model_cfg, args.onnx_dir, device=device,
         use_trt=not args.no_trt, trt_opts=trt_opts, apply_postprocessing=True,
     )
@@ -85,7 +85,7 @@ def main():
     ann_obj_id = 1
     points = torch.tensor([[210, 350], [250, 220]], dtype=torch.float32, device=device)
     labels = torch.tensor([1, 1], device=device)
-    prompt = SAM2Prompt(obj_id=ann_obj_id, points_coords=points, points_labels=labels)
+    prompt = GeometryPrompt(obj_id=ann_obj_id, points_coords=points, points_labels=labels)
 
     initial_frame = read_frame(cap, device)
     results = predictor.forward(

@@ -2,19 +2,19 @@
 import functools
 
 import torch
-from sam.modeling.tracking.tracker_base import SAM2Base
+from sam.modeling.tracking.tracker_base import SamTrackerBase
 from sam.utils.transforms import SAM2Transforms
 
 from sam.modeling.utils import get_1d_sine_pe
-from sam.results import SAM2Result
+from sam.results import MaskletResult
 from sam.modeling.memory.bank import ObjectMemory
 import numpy as np
 from dataclasses import dataclass, field
 from sam.modeling.memory.banks import ObjectMemoryBank, SAM2ObjectMemoryBank
-from sam.prompts import SAM2Prompt
+from sam.prompts import GeometryPrompt
 
 def _half_inference(method):
-    """Run a SAM2Generic compute method under the fastest half precision for this
+    """Run a Sam2Predictor compute method under the fastest half precision for this
     GPU (when ``self._use_half``), in inference_mode unless the module is training.
 
     Lets callers invoke the methods directly instead of wrapping every call in
@@ -43,7 +43,7 @@ def _half_inference(method):
     return wrapper
 
 
-class SAM2Generic(SAM2Base):
+class Sam2Predictor(SamTrackerBase):
 
     def __init__(
             self,
@@ -55,7 +55,7 @@ class SAM2Generic(SAM2Base):
             **kwargs,
     ) -> None:
         """
-        SAM2Generic is a class that extends SAM2Base to provide easier APIs for generic segmentation tasks.
+        Sam2Predictor is a class that extends SamTrackerBase to provide easier APIs for generic segmentation tasks.
 
         Arguments:
           mask_threshold (float): The threshold to use when converting mask logits
@@ -597,7 +597,7 @@ class SAM2Generic(SAM2Base):
             img_embeddings: list[torch.Tensor],
             prompt_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
             multimask_output: bool = True,
-    ) -> SAM2Result:
+    ) -> MaskletResult:
 
         low_res_img_embeddings = img_embeddings[-1]
         high_res_img_embeddings = img_embeddings[:-1]
@@ -687,7 +687,7 @@ class SAM2Generic(SAM2Base):
             obj_ptr = obj_ptr.clone()
             obj_scores_logits = obj_scores_logits.clone()
 
-        return SAM2Result(
+        return MaskletResult(
             masks_logits=masks_logits,
             ious=ious,
             obj_ptrs=obj_ptr,
@@ -717,9 +717,9 @@ class SAM2GenericVideoPredictorState:
         )
 
 
-class SAM2GenericVideoPredictor(SAM2Generic):
+class Sam2VideoPredictor(Sam2Predictor):
     """
-    SAM2GenericVideoPredictor provides a handy video prediction interface.
+    Sam2VideoPredictor provides a handy video prediction interface.
 
     Note: works in a forward-only manner.
     """
@@ -728,11 +728,11 @@ class SAM2GenericVideoPredictor(SAM2Generic):
         state: SAM2GenericVideoPredictorState,
         frame_idx: int,
         frame: torch.Tensor,
-        prompts: list[SAM2Prompt] = [],
+        prompts: list[GeometryPrompt] = [],
         multimask_output: bool = True,
         reverse_tracking: bool = False,
         create_memory: bool = True,
-    ) -> dict[int, SAM2Result]:
+    ) -> dict[int, MaskletResult]:
         assert frame is not None, "Frame cannot be None"
         assert frame.shape in [
             (1, *state.video_hw),
@@ -758,11 +758,11 @@ class SAM2GenericVideoPredictor(SAM2Generic):
         frame_idx: int,
         img_embeddings: list[torch.Tensor],
         img_pos_embeddings: list[torch.Tensor],
-        prompts: list[SAM2Prompt] = [],
+        prompts: list[GeometryPrompt] = [],
         multimask_output: bool = True,
         reverse_tracking: bool = False,
         create_memory: bool = True,
-    ) -> dict[int, SAM2Result]:
+    ) -> dict[int, MaskletResult]:
 
         assert prompts is None or np.unique([p.obj_id for p in prompts]).size == len(
             prompts
@@ -772,11 +772,11 @@ class SAM2GenericVideoPredictor(SAM2Generic):
         all_obj_ids = state.memory_bank.known_obj_ids | set([p.obj_id for p in prompts])
         n_objs = len(all_obj_ids)
 
-        prompts_dicts: dict[int, SAM2Prompt] = {
+        prompts_dicts: dict[int, GeometryPrompt] = {
             prompt.obj_id: prompt for prompt in prompts
         }
 
-        results: list[SAM2Result] = []
+        results: list[MaskletResult] = []
 
         for obj_id in all_obj_ids:
             prompt = prompts_dicts.get(obj_id, None)
@@ -876,7 +876,7 @@ class SAM2GenericVideoPredictor(SAM2Generic):
         if len(results) == 0:
             return {}
 
-        batched_results = SAM2Result.cat(results)
+        batched_results = MaskletResult.cat(results)
 
         if create_memory:
             is_prompt = torch.tensor(
@@ -908,7 +908,7 @@ class SAM2GenericVideoPredictor(SAM2Generic):
 
         return {obj_id: result for obj_id, result in zip(all_obj_ids, batched_results)}
 
-class SAM2GenericVideoPredictorVOS(SAM2GenericVideoPredictor):
+class SAM2GenericVideoPredictorVOS(Sam2VideoPredictor):
     """Optimized for the VOS setting"""
 
     def __init__(self, *args, **kwargs):
@@ -951,13 +951,13 @@ class SAM2GenericVideoPredictorVOS(SAM2GenericVideoPredictor):
         frame_idx: int,
         img_embeddings: list[torch.Tensor],
         img_pos_embeddings: list[torch.Tensor],
-        prompts: list[SAM2Prompt] = [],
+        prompts: list[GeometryPrompt] = [],
         multimask_output: bool = True,
         reverse_tracking: bool = False,
         create_memory: bool = True,
-    ) -> dict[int, SAM2Result]:
+    ) -> dict[int, MaskletResult]:
         """
-        Identical to the corresponding method in the parent (SAM2GenericVideoPredictor), but cloning the backbone features and pos encoding to enable compilation.
+        Identical to the corresponding method in the parent (Sam2VideoPredictor), but cloning the backbone features and pos encoding to enable compilation.
         """
 
         # Clone to help torch.compile

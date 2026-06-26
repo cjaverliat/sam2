@@ -21,7 +21,7 @@ class PromptEncoderOnnx(torch.nn.Module):
     — ``get_dense_pe()`` and the no-mask (``no_mask_embed``) dense embedding — are
     loaded as constant tensors from the ``weights.npz`` dict dumped by
     tools/export_onnx.py (keys ``prompt.dense_pe`` / ``prompt.no_mask_embed``).
-    Scalar shapes come from ``manifest.json``. Boxes are not used on the SAM2Generic
+    Scalar shapes come from ``manifest.json``. Boxes are not used on the Sam2Predictor
     path (always ``boxes=None``).
 
     An ``nn.Module`` (the baked tensors are plain attributes, not parameters) so it

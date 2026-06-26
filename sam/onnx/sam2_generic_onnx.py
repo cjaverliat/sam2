@@ -155,12 +155,12 @@ def attach_onnx_blocks(
     use_trt: bool = True,
     trt_opts: TensorRTOptions | None = None,
 ) -> torch.nn.Module:
-    """Turn a *meta-built* SAM2Generic / SAM2GenericVideoPredictor into a runnable
+    """Turn a *meta-built* Sam2Predictor / Sam2VideoPredictor into a runnable
     ONNX/TensorRT model: replace its 5 heavy blocks with ONNX-backed ``nn.Module``
     wrappers and materialize the orchestration glue from ``weights.npz``.
 
     The model is expected to be instantiated under ``torch.device("meta")`` (see
-    :func:`sam.build_sam.build_sam2_generic_video_predictor_onnx`): no real weights
+    :func:`sam.build_sam.build_sam2_video_predictor_onnx`): no real weights
     are ever allocated, so nothing is built-then-discarded. The 5 blocks are swapped
     with plain ``setattr`` (the wrappers are ``nn.Module``\\ s), then the glue params
     are given real storage on ``device`` via :func:`_load_glue`.

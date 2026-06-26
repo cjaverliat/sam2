@@ -9,7 +9,7 @@ import logging
 import numpy as np
 import torch
 import torch.distributed
-from sam.modeling.tracking.tracker_base import SAM2Base
+from sam.modeling.tracking.tracker_base import SamTrackerBase
 from sam.modeling.utils import (
     get_1d_sine_pe,
     get_next_point,
@@ -22,7 +22,7 @@ from sam.utils.misc import concat_points
 from training.utils.data_utils import BatchedVideoDatapoint
 
 
-class SAM2Train(SAM2Base):
+class SAM2Train(SamTrackerBase):
     def __init__(
         self,
         image_encoder,

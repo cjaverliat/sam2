@@ -31,8 +31,8 @@ import torch
 from tqdm import tqdm
 
 from frame_utils import read_frame, warmup
-from sam.build_sam import build_sam2_generic_video_predictor
-from sam.prompts import SAM2Prompt
+from sam.build_sam import build_sam2_video_predictor
+from sam.prompts import GeometryPrompt
 from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
 
 
@@ -116,7 +116,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     device = select_device()
 
-    predictor = build_sam2_generic_video_predictor(
+    predictor = build_sam2_video_predictor(
         args.model_cfg, args.checkpoint, device=device,
         vos_optimized=False, apply_postprocessing=True,
     )
@@ -142,7 +142,7 @@ def main():
     points = torch.tensor([[210, 350], [250, 220]], dtype=torch.float32, device=device)
     labels = torch.tensor([1, 1], device=device)
 
-    prompt = SAM2Prompt(
+    prompt = GeometryPrompt(
         obj_id=ann_obj_id, points_coords=points, points_labels=labels
     )
 

@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from PIL.Image import Image
 
-from sam.modeling.tracking.tracker_base import SAM2Base
+from sam.modeling.tracking.tracker_base import SamTrackerBase
 
 from sam.utils.transforms import SAM2Transforms
 
@@ -21,7 +21,7 @@ from sam.utils.transforms import SAM2Transforms
 class SAM2ImagePredictor:
     def __init__(
         self,
-        sam_model: SAM2Base,
+        sam_model: SamTrackerBase,
         mask_threshold=0.0,
         max_hole_area=0.0,
         max_sprinkle_area=0.0,
@@ -78,9 +78,9 @@ class SAM2ImagePredictor:
         Returns:
           (SAM2ImagePredictor): The loaded model.
         """
-        from sam.build_sam import build_sam2_hf
+        from sam.build_sam import build_sam2_legacy_hf
 
-        sam_model = build_sam2_hf(model_id, **kwargs)
+        sam_model = build_sam2_legacy_hf(model_id, **kwargs)
         return cls(sam_model, **kwargs)
 
     @torch.no_grad()

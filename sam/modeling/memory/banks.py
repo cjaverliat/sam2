@@ -8,8 +8,8 @@ from sam.modeling.memory.bank import (
     ObjectMemory,
     ObjectMemorySelection,
 )
-from sam.results import SAM2Result
-from sam.prompts import SAM2Prompt
+from sam.results import MaskletResult
+from sam.prompts import GeometryPrompt
 
 import bisect
 
@@ -52,8 +52,8 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             obj_ids: list[int],
             memory_embeddings: torch.Tensor,
             memory_pos_embeddings: torch.Tensor,
-            results: SAM2Result,
-            prompts: list[SAM2Prompt],
+            results: MaskletResult,
+            prompts: list[GeometryPrompt],
     ) -> list[tuple[bool, ObjectMemory]]:
         n_objs = len(obj_ids)
         assert len(set(obj_ids)) == len(

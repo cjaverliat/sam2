@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 
 
-class SAM2Result:
+class MaskletResult:
     def __init__(
         self,
         masks_logits: torch.Tensor,
@@ -40,16 +40,16 @@ class SAM2Result:
         self.obj_ptrs = obj_ptrs
         self.obj_score_logits = obj_scores_logits
 
-    def to(self, device: torch.device) -> SAM2Result:
-        return SAM2Result(
+    def to(self, device: torch.device) -> MaskletResult:
+        return MaskletResult(
             masks_logits=self.masks_logits.to(device),
             ious=self.ious.to(device),
             obj_ptrs=self.obj_ptrs.to(device),
             obj_scores_logits=self.obj_score_logits.to(device),
         )
 
-    def clone(self) -> SAM2Result:
-        return SAM2Result(
+    def clone(self) -> MaskletResult:
+        return MaskletResult(
             masks_logits=self.masks_logits.clone(),
             ious=self.ious.clone(),
             obj_ptrs=self.obj_ptrs.clone(),
@@ -57,16 +57,16 @@ class SAM2Result:
         )
 
     @staticmethod
-    def cat(results: list[SAM2Result]) -> SAM2Result:
-        return SAM2Result(
+    def cat(results: list[MaskletResult]) -> MaskletResult:
+        return MaskletResult(
             masks_logits=torch.cat([r.masks_logits for r in results], dim=0),
             ious=torch.cat([r.ious for r in results], dim=0),
             obj_ptrs=torch.cat([r.obj_ptrs for r in results], dim=0),
             obj_scores_logits=torch.cat([r.obj_score_logits for r in results], dim=0),
         )
 
-    def __getitem__(self, idx: int) -> SAM2Result:
-        return SAM2Result(
+    def __getitem__(self, idx: int) -> MaskletResult:
+        return MaskletResult(
             masks_logits=self.masks_logits[idx].unsqueeze(0),
             ious=self.ious[idx].unsqueeze(0),
             obj_ptrs=self.obj_ptrs[idx].unsqueeze(0),

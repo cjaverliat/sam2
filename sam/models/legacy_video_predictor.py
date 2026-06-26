@@ -13,11 +13,11 @@ import torch.nn.functional as F
 
 from tqdm import tqdm
 
-from sam.modeling.tracking.tracker_base import NO_OBJ_SCORE, SAM2Base
+from sam.modeling.tracking.tracker_base import NO_OBJ_SCORE, SamTrackerBase
 from sam.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
 
 
-class SAM2VideoPredictor(SAM2Base):
+class Sam2LegacyVideoPredictor(SamTrackerBase):
     """The predictor class to handle user interactions and manage inference states."""
 
     def __init__(
@@ -100,7 +100,7 @@ class SAM2VideoPredictor(SAM2Base):
         return inference_state
 
     @classmethod
-    def from_pretrained(cls, model_id: str, **kwargs) -> "SAM2VideoPredictor":
+    def from_pretrained(cls, model_id: str, **kwargs) -> "Sam2LegacyVideoPredictor":
         """
         Load a pretrained model from the Hugging Face hub.
 
@@ -109,11 +109,11 @@ class SAM2VideoPredictor(SAM2Base):
           **kwargs: Additional arguments to pass to the model constructor.
 
         Returns:
-          (SAM2VideoPredictor): The loaded model.
+          (Sam2LegacyVideoPredictor): The loaded model.
         """
-        from sam.build_sam import build_sam2_video_predictor_hf
+        from sam.build_sam import build_sam2_legacy_video_predictor_hf
 
-        sam_model = build_sam2_video_predictor_hf(model_id, **kwargs)
+        sam_model = build_sam2_legacy_video_predictor_hf(model_id, **kwargs)
         return sam_model
 
     def _obj_id_to_idx(self, inference_state, obj_id):
@@ -974,7 +974,7 @@ class SAM2VideoPredictor(SAM2Base):
                 non_cond_frame_outputs.pop(t, None)
 
 
-class SAM2VideoPredictorVOS(SAM2VideoPredictor):
+class SAM2VideoPredictorVOS(Sam2LegacyVideoPredictor):
     """Optimized for the VOS setting"""
 
     def __init__(self, *args, **kwargs):
@@ -1013,7 +1013,7 @@ class SAM2VideoPredictorVOS(SAM2VideoPredictor):
 
     def forward_image(self, img_batch: torch.Tensor):
         """
-        Identical to the corresponding method in the parent (SAM2VideoPredictor), but
+        Identical to the corresponding method in the parent (Sam2LegacyVideoPredictor), but
         cloning the backbone features and pos encoding to enable compilation.
         """
         backbone_out = self.image_encoder(img_batch)
@@ -1043,7 +1043,7 @@ class SAM2VideoPredictorVOS(SAM2VideoPredictor):
         multimask_output=False,
     ):
         """
-        Identical to the corresponding method in the parent (SAM2VideoPredictor), but
+        Identical to the corresponding method in the parent (Sam2LegacyVideoPredictor), but
         cloning the outputs of prompt_encoder and mask_decoder to enable compilation.
         """
         B = backbone_features.size(0)
@@ -1178,7 +1178,7 @@ class SAM2VideoPredictorVOS(SAM2VideoPredictor):
         is_mask_from_pts,
     ):
         """
-        Identical to the corresponding method in the parent (SAM2VideoPredictor), but
+        Identical to the corresponding method in the parent (Sam2LegacyVideoPredictor), but
         cloning the memories and their pos enc to enable compilation.
         """
         B = current_vision_feats[-1].size(1)  # batch size on this frame

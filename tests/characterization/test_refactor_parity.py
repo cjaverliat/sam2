@@ -6,7 +6,7 @@ so the rename can be proven behavior-preserving. Capture once with CAPTURE_GOLDE
 then this test compares against the committed fixture. Skips if the checkpoint is absent.
 
 During the refactor this file is renamed like any other (`sam2`->`sam`,
-`build_sam2_generic_video_predictor`->`build_sam2_video_predictor`); the .npy fixture
+`build_sam2_video_predictor`->`build_sam2_legacy_video_predictor`); the .npy fixture
 is the invariant.
 """
 import os
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from sam.build_sam import build_sam2_generic_video_predictor
+from sam.build_sam import build_sam2_video_predictor
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -28,7 +28,7 @@ ATOL = RTOL = 1e-4
 @pytest.mark.skipif(not CKPT.is_file(), reason=f"checkpoint absent: {CKPT}")
 def test_image_encode_parity():
     torch.manual_seed(0)
-    model = build_sam2_generic_video_predictor(
+    model = build_sam2_video_predictor(
         CONFIG, str(CKPT), device="cpu", mode="eval", use_half=False
     )
     frame = torch.rand(3, model.image_size, model.image_size)

@@ -15,8 +15,8 @@ from omegaconf import OmegaConf
 
 import sam
 
-from sam.models.sam2_predictor import SAM2Generic
-from sam.models.sam2_predictor import SAM2GenericVideoPredictor
+from sam.models.sam2_predictor import Sam2Predictor
+from sam.models.sam2_predictor import Sam2VideoPredictor
 
 # Check if the user is running Python from the parent directory of the sam2 repo
 # (i.e. the directory where this repo is cloned into) -- this is not supported since
@@ -72,7 +72,7 @@ HF_MODEL_ID_TO_FILENAMES = {
 }
 
 
-def build_sam2(
+def build_sam2_legacy(
     config_file,
     ckpt_path=None,
     device="cuda",
@@ -101,7 +101,7 @@ def build_sam2(
     return model
 
 
-def build_sam2_generic(
+def build_sam2(
     config_file,
     ckpt_path=None,
     device="cuda",
@@ -109,9 +109,9 @@ def build_sam2_generic(
     hydra_overrides_extra=[],
     apply_postprocessing=True,
     use_half=False,
-) -> SAM2Generic:
+) -> Sam2Predictor:
     hydra_overrides = [
-        "++model._target_=sam.models.sam2_predictor.SAM2Generic",
+        "++model._target_=sam.models.sam2_predictor.Sam2Predictor",
         f"++model.use_half={use_half}",
     ]
     if apply_postprocessing:
@@ -146,7 +146,7 @@ def _meta_build_generic(
     apply_postprocessing,
     hydra_overrides_extra,
 ):
-    """Instantiate a SAM2Generic / SAM2GenericVideoPredictor on the ``meta`` device.
+    """Instantiate a Sam2Predictor / Sam2VideoPredictor on the ``meta`` device.
 
     Builds the full orchestration skeleton (so every dim/sub-module is derived from
     the real config) but allocates **no** weights — meta tensors carry shape only.
@@ -178,7 +178,7 @@ def _meta_build_generic(
     return model
 
 
-def build_sam2_generic_image_predictor_onnx(
+def build_sam2_image_predictor_onnx(
     config_file,
     onnx_dir,
     device="cuda",
@@ -187,8 +187,8 @@ def build_sam2_generic_image_predictor_onnx(
     trt_opts=None,
     apply_postprocessing=True,
     hydra_overrides_extra=[],
-) -> SAM2Generic:
-    """Build a SAM2Generic image model and swap its 5 heavy blocks for the ONNX /
+) -> Sam2Predictor:
+    """Build a Sam2Predictor image model and swap its 5 heavy blocks for the ONNX /
     TensorRT wrappers exported by tools/export_onnx.py.
 
     ``onnx_dir`` accepts an extracted export directory, a ``.zip`` of one (e.g. a CI
@@ -208,7 +208,7 @@ def build_sam2_generic_image_predictor_onnx(
 
     model = _meta_build_generic(
         config_file,
-        "sam.models.sam2_predictor.SAM2Generic",
+        "sam.models.sam2_predictor.Sam2Predictor",
         use_half=use_half,
         apply_postprocessing=apply_postprocessing,
         hydra_overrides_extra=hydra_overrides_extra,
@@ -219,10 +219,10 @@ def build_sam2_generic_image_predictor_onnx(
 
 
 # Backwards-compatible alias for the original name.
-build_sam2_generic_onnx = build_sam2_generic_image_predictor_onnx
+build_sam2_onnx = build_sam2_image_predictor_onnx
 
 
-def build_sam2_generic_video_predictor_onnx(
+def build_sam2_video_predictor_onnx(
     config_file,
     onnx_dir,
     device="cuda",
@@ -231,8 +231,8 @@ def build_sam2_generic_video_predictor_onnx(
     trt_opts=None,
     apply_postprocessing=True,
     hydra_overrides_extra=[],
-) -> SAM2GenericVideoPredictor:
-    """Build a SAM2GenericVideoPredictor and swap its 5 heavy blocks for the ONNX /
+) -> Sam2VideoPredictor:
+    """Build a Sam2VideoPredictor and swap its 5 heavy blocks for the ONNX /
     TensorRT wrappers exported by tools/export_onnx.py.
 
     ``onnx_dir`` accepts an extracted export directory, a ``.zip`` of one (e.g. a CI
@@ -240,7 +240,7 @@ def build_sam2_generic_video_predictor_onnx(
     a cache; override the location with ``SAM2_ONNX_CACHE``).
 
     Same checkpoint-free contract as
-    :func:`build_sam2_generic_image_predictor_onnx`: the skeleton is meta-built (no
+    :func:`build_sam2_image_predictor_onnx`: the skeleton is meta-built (no
     weights allocated), the 5 blocks are swapped and the glue materialized from
     ``weights.npz``, ``use_half`` only touches the torch glue, and ``trt_opts`` tunes
     the TensorRT engine build (cache, workspace, ...). Precision is owned by the exported
@@ -250,7 +250,7 @@ def build_sam2_generic_video_predictor_onnx(
 
     model = _meta_build_generic(
         config_file,
-        "sam.models.sam2_predictor.SAM2GenericVideoPredictor",
+        "sam.models.sam2_predictor.Sam2VideoPredictor",
         use_half=use_half,
         apply_postprocessing=apply_postprocessing,
         hydra_overrides_extra=hydra_overrides_extra,
@@ -260,7 +260,7 @@ def build_sam2_generic_video_predictor_onnx(
     )
 
 
-def build_sam2_generic_video_predictor(
+def build_sam2_video_predictor(
     config_file,
     ckpt_path=None,
     device="cuda",
@@ -271,9 +271,9 @@ def build_sam2_generic_video_predictor(
     use_half=False,
     compile_image_encoder=False,
     **kwargs,
-) -> SAM2GenericVideoPredictor:
+) -> Sam2VideoPredictor:
     hydra_overrides = [
-        "++model._target_=sam.models.sam2_predictor.SAM2GenericVideoPredictor",
+        "++model._target_=sam.models.sam2_predictor.Sam2VideoPredictor",
         f"++model.use_half={use_half}",
     ]
 
@@ -316,7 +316,7 @@ def build_sam2_generic_video_predictor(
     return model
 
 
-def build_sam2_video_predictor(
+def build_sam2_legacy_video_predictor(
     config_file,
     ckpt_path=None,
     device="cuda",
@@ -327,7 +327,7 @@ def build_sam2_video_predictor(
     **kwargs,
 ):
     hydra_overrides = [
-        "++model._target_=sam.models.legacy_video_predictor.SAM2VideoPredictor",
+        "++model._target_=sam.models.legacy_video_predictor.Sam2LegacyVideoPredictor",
     ]
     if vos_optimized:
         hydra_overrides = [
@@ -368,10 +368,16 @@ def _hf_download(model_id):
     return config_name, ckpt_path
 
 
-def build_sam2_hf(model_id, **kwargs):
+def build_sam2_legacy_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
-    return build_sam2(config_file=config_name, ckpt_path=ckpt_path, **kwargs)
+    return build_sam2_legacy(config_file=config_name, ckpt_path=ckpt_path, **kwargs)
 
+
+def build_sam2_legacy_video_predictor_hf(model_id, **kwargs):
+    config_name, ckpt_path = _hf_download(model_id)
+    return build_sam2_legacy_video_predictor(
+        config_file=config_name, ckpt_path=ckpt_path, **kwargs
+    )
 
 def build_sam2_video_predictor_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
@@ -379,15 +385,9 @@ def build_sam2_video_predictor_hf(model_id, **kwargs):
         config_file=config_name, ckpt_path=ckpt_path, **kwargs
     )
 
-def build_sam2_generic_video_predictor_hf(model_id, **kwargs):
+def build_sam2_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
-    return build_sam2_generic_video_predictor(
-        config_file=config_name, ckpt_path=ckpt_path, **kwargs
-    )
-
-def build_sam2_generic_hf(model_id, **kwargs):
-    config_name, ckpt_path = _hf_download(model_id)
-    return build_sam2_generic(
+    return build_sam2(
         config_file=config_name, ckpt_path=ckpt_path, **kwargs
     )
 
