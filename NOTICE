@@ -1,0 +1,4 @@
+This project bundles components under multiple licenses:
+- SAM 2, EfficientTAM, and this fork's code: Apache-2.0 (LICENSE_apache2)
+- CUDA connected-components extension (csrc): BSD-3-Clause (LICENSE_cctorch)
+SAM 3 components (added later) are under the SAM License (LICENSE_sam); see README.

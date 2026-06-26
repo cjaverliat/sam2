@@ -1,3 +1,4 @@
+﻿# SPDX-License-Identifier: Apache-2.0
 """ViTDet backbone adapted from Detectron2"""
 
 from functools import partial

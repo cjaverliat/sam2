@@ -330,6 +330,13 @@ pixi run -e onnx-tensorrt-cu13 python tools/benchmark_onnx.py \
 
 The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0](./LICENSE). This fork is distributed under the same license. EfficientTAM is integrated from its [upstream repository](https://github.com/yformer/EfficientTAM); see that project for its license and terms. Third-party code includes a GPU connected-components algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) ([license](./LICENSE_cctorch)).
 
+| Component | License |
+|---|---|
+| SAM 2 | Apache-2.0 |
+| EfficientTAM | Apache-2.0 |
+| CUDA connected-components ext (`csrc`) | BSD-3-Clause |
+| This fork's code | Apache-2.0 |
+
 ---
 
 ## Citation
