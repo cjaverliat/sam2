@@ -13,8 +13,8 @@ import cv2
 import torch
 from tqdm import tqdm
 
-from sam.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
-from sam.modeling.sam2_memory import SAM2ObjectMemoryBank
+from sam.modeling.memory.forgetful import SAM2ForgetfulObjectMemoryBank
+from sam.modeling.memory.banks import SAM2ObjectMemoryBank
 from sam.modeling.sam2_prompt import SAM2Prompt
 from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
 

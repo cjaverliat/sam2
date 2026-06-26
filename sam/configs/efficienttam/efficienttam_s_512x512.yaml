@@ -31,11 +31,11 @@ model:
       neck_norm: LN
 
   memory_attention:
-    _target_: sam.modeling.memory_attention.MemoryAttention
+    _target_: sam.modeling.memory.attention.MemoryAttention
     d_model: 256
     pos_enc_at_input: true
     layer:
-      _target_: sam.modeling.memory_attention.MemoryAttentionLayer
+      _target_: sam.modeling.memory.attention.MemoryAttentionLayer
       activation: relu
       dim_feedforward: 2048
       dropout: 0.1
@@ -64,7 +64,7 @@ model:
     num_layers: 4
 
   memory_encoder:
-      _target_: sam.modeling.memory_encoder.MemoryEncoder
+      _target_: sam.modeling.memory.encoder.MemoryEncoder
       out_dim: 64
       position_encoding:
         _target_: sam.modeling.position_encoding.PositionEmbeddingSine
@@ -73,14 +73,14 @@ model:
         scale: null
         temperature: 10000
       mask_downsampler:
-        _target_: sam.modeling.memory_encoder.MaskDownSampler
+        _target_: sam.modeling.memory.encoder.MaskDownSampler
         kernel_size: 3
         stride: 2
         padding: 1
       fuser:
-        _target_: sam.modeling.memory_encoder.Fuser
+        _target_: sam.modeling.memory.encoder.Fuser
         layer:
-          _target_: sam.modeling.memory_encoder.CXBlock
+          _target_: sam.modeling.memory.encoder.CXBlock
           dim: 256
           kernel_size: 7
           padding: 3

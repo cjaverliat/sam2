@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-from sam.modeling.memory import (
+from sam.modeling.memory.bank import (
     ObjectMemoryBank,
     ObjectMemory,
     ObjectMemorySelection,

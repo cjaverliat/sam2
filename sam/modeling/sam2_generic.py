@@ -7,7 +7,7 @@ from sam.utils.transforms import SAM2Transforms
 
 from sam.modeling.sam2_utils import get_1d_sine_pe
 from sam.modeling.sam2_result import SAM2Result
-from sam.modeling.memory import ObjectMemory
+from sam.modeling.memory.bank import ObjectMemory
 
 
 def _half_inference(method):

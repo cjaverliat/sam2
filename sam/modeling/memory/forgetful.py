@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import torch
 
-from sam.modeling.memory import ObjectMemory
-from sam.modeling.sam2_memory import SAM2ObjectMemoryBank
+from sam.modeling.memory.bank import ObjectMemory
+from sam.modeling.memory.banks import SAM2ObjectMemoryBank
 
 
 class SAM2ForgetfulObjectMemoryBank(SAM2ObjectMemoryBank):

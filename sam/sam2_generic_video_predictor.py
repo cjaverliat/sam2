@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from sam.modeling.sam2_generic import SAM2Generic
 from sam.modeling.sam2_prompt import SAM2Prompt
 from sam.modeling.sam2_result import SAM2Result
-from sam.modeling.sam2_memory import ObjectMemoryBank, SAM2ObjectMemoryBank
+from sam.modeling.memory.banks import ObjectMemoryBank, SAM2ObjectMemoryBank
 
 
 @dataclass
