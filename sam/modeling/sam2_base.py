@@ -11,9 +11,9 @@ import torch.nn.functional as F
 
 from torch.nn.init import trunc_normal_
 
-from sam.modeling.sam.mask_decoder import MaskDecoder
-from sam.modeling.sam.prompt_encoder import PromptEncoder
-from sam.modeling.sam.transformer import TwoWayTransformer
+from sam.modeling.decoders.mask_decoder import MaskDecoder
+from sam.modeling.prompt.prompt_encoder import PromptEncoder
+from sam.modeling.decoders.transformer import TwoWayTransformer
 from sam.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
 
 # a large negative value as a placeholder score for missing objects

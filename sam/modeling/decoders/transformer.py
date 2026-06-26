@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 
 from sam.modeling.position_encoding import compute_axial_cis
-from sam.modeling.sam.onnx_compat import RotaryEmbedding, ScaledDotProductAttention
+from sam.modeling.decoders.onnx_compat import RotaryEmbedding, ScaledDotProductAttention
 from sam.modeling.sam2_utils import MLP, is_exporting
 
 

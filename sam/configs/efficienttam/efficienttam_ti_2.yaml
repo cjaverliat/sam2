@@ -41,7 +41,7 @@ model:
       dropout: 0.1
       pos_enc_at_attn: false
       self_attention:
-        _target_: sam.modeling.sam.transformer.RoPEAttention
+        _target_: sam.modeling.decoders.transformer.RoPEAttention
         rope_theta: 10000.0
         feat_sizes: [64, 64]
         embedding_dim: 256
@@ -52,7 +52,7 @@ model:
       pos_enc_at_cross_attn_keys: true
       pos_enc_at_cross_attn_queries: false
       cross_attention:
-        _target_: sam.modeling.sam.transformer.EfficientRoPEAttention2
+        _target_: sam.modeling.decoders.transformer.EfficientRoPEAttention2
         rope_theta: 10000.0
         feat_sizes: [64, 64]
         rope_k_repeat: True

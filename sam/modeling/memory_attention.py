@@ -10,7 +10,7 @@ from typing import Optional
 import torch
 from torch import nn, Tensor
 
-from sam.modeling.sam.transformer import (
+from sam.modeling.decoders.transformer import (
     EfficientRoPEAttention1,
     EfficientRoPEAttention2,
     RoPEAttention,

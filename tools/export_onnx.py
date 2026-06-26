@@ -15,7 +15,7 @@ overrides the model target and the block shapes are read off the built model.
 
 Exports at opset 18 (default): attention and RoPE are fully decomposed. The native
 opset-23 ONNX Attention / RotaryEmbedding ops are avoided because they break on the ONNX
-Runtime TensorRT EP (see sam.modeling.sam.onnx_compat).
+Runtime TensorRT EP (see sam.modeling.decoders.onnx_compat).
 
 Run from the repo root:
     pixi run python tools/export_onnx.py \
@@ -60,7 +60,7 @@ import torch
 import torch.nn as nn
 
 from sam.build_sam import build_sam2_generic
-from sam.modeling.sam.onnx_compat import set_export_opset
+from sam.modeling.decoders.onnx_compat import set_export_opset
 from sam.onnx import image_encoder_onnx as ienc
 from sam.onnx import mask_decoder_onnx as mdec
 from sam.onnx import memory_attention_onnx as mattn
