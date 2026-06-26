@@ -143,6 +143,7 @@ wheel = "*"
 python-build = "*"   # provides `python -m build` for the build-wheel task
 curl = "*"
 pixi-pycharm = "*"
+huggingface_hub = ">=1.21.0,<2"
 
 # CUDA build toolchain: nvcc + dev libs + ninja (CUDAExtension build / JIT) and,
 # on linux, the g++ host compiler so the extension builds with zero system
@@ -354,6 +355,18 @@ depends-on = [
     "download-efficienttam-ti-1",
     "download-efficienttam-ti-2",
 ]
+
+# --- SAM 3 checkpoints (gated; needs HF access + auth, see tools/download_sam3.py) ---
+# Unlike the curl tasks above, SAM 3 repos are access-gated, so download goes through
+# huggingface_hub (resolves the logged-in account / HF_TOKEN) and fails loud with
+# guidance if access or auth is missing.
+[tool.pixi.tasks.download-sam3]
+cmd = "python tools/download_sam3.py --version sam3 --out-dir checkpoints"
+outputs = ["checkpoints/sam3.pt"]
+
+[tool.pixi.tasks.download-sam3-1]
+cmd = "python tools/download_sam3.py --version sam3.1 --out-dir checkpoints"
+outputs = ["checkpoints/sam3.1_multiplex.pt"]
 
 # ---------------------------------------------------------------------------
 # ONNX export tasks. One task per model: it downloads the checkpoint (via
