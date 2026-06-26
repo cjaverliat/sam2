@@ -36,28 +36,7 @@ def _determinism():
     torch.backends.cudnn.allow_tf32 = False
 
 
-def _preprocess_to_1008(image_rgb, device="cuda"):
-    """Replicate ``Sam3Processor``'s exact preprocessing of a (H,W,3) uint8 image into the
-    (1,3,1008,1008) float tensor the PE backbone consumes: PIL->CHW uint8, resize to
-    1008x1008 (torchvision v2 default bilinear+antialias), scale to [0,1], normalise by
-    mean/std 0.5 -> [-1,1]. (See sam3/model/sam3_image_processor.py::Sam3Processor.)
-
-    Critically, the image is moved to ``device`` BEFORE the transform -- upstream
-    ``set_image`` does ``to_image(image).to(device)`` then ``transform(...)``, so the
-    resize runs on the GPU. A CPU resize differs slightly and the deep ViT amplifies it."""
-    from PIL import Image
-    from torchvision.transforms import v2
-
-    transform = v2.Compose(
-        [
-            v2.ToDtype(torch.uint8, scale=True),
-            v2.Resize(size=(1008, 1008)),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ]
-    )
-    img = v2.functional.to_image(Image.fromarray(image_rgb)).to(device)  # (3,H,W) uint8
-    return transform(img).unsqueeze(0)
+from sam.utils.sam3_transforms import preprocess_to_1008 as _preprocess_to_1008
 
 
 @pytest.fixture(scope="module")

@@ -110,6 +110,7 @@ class Mlp(nn.Module):
             torch.is_grad_enabled()
             or self.fc1.bias is None
             or not (use_gelu or isinstance(self.act, nn.ReLU))
+            or not hasattr(torch.ops.aten, "_addmm_activation")
         ):
             return self.act(self.fc1(x))
         bias = self.fc1.bias.detach().to(torch.bfloat16)
