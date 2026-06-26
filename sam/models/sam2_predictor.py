@@ -3,14 +3,14 @@ import functools
 
 import torch
 from sam.modeling.tracking.tracker_base import SamTrackerBase
-from sam.utils.transforms import SAM2Transforms
+from sam.utils.transforms import Sam2Transforms
 
 from sam.modeling.utils import get_1d_sine_pe
 from sam.results import MaskletResult
 from sam.modeling.memory.bank import ObjectMemory
 import numpy as np
 from dataclasses import dataclass, field
-from sam.modeling.memory.banks import ObjectMemoryBank, SAM2ObjectMemoryBank
+from sam.modeling.memory.banks import ObjectMemoryBank, Sam2ObjectMemoryBank
 from sam.prompts import GeometryPrompt
 
 def _half_inference(method):
@@ -66,7 +66,7 @@ class Sam2Predictor(SamTrackerBase):
             the maximum area of max_sprinkle_area in low_res_masks.
         """
         super().__init__(**kwargs)
-        self._transforms = SAM2Transforms(
+        self._transforms = Sam2Transforms(
             resolution=self.image_size,
             mask_threshold=mask_threshold,
             max_hole_area=fill_hole_area,
@@ -696,9 +696,9 @@ class Sam2Predictor(SamTrackerBase):
 
 
 @dataclass
-class SAM2GenericVideoPredictorState:
+class Sam2VideoPredictorState:
     video_hw: tuple[int, int]
-    memory_bank: ObjectMemoryBank = field(default_factory=SAM2ObjectMemoryBank)
+    memory_bank: ObjectMemoryBank = field(default_factory=Sam2ObjectMemoryBank)
 
     def __post_init__(self):
         if self.memory_bank is None:
@@ -709,10 +709,10 @@ class SAM2GenericVideoPredictorState:
     @staticmethod
     def create(
         video_hw: tuple[int, int], memory_bank: ObjectMemoryBank | None = None
-    ) -> "SAM2GenericVideoPredictorState":
+    ) -> "Sam2VideoPredictorState":
         if memory_bank is None:
-            memory_bank = SAM2ObjectMemoryBank()
-        return SAM2GenericVideoPredictorState(
+            memory_bank = Sam2ObjectMemoryBank()
+        return Sam2VideoPredictorState(
             video_hw=video_hw, memory_bank=memory_bank
         )
 
@@ -725,7 +725,7 @@ class Sam2VideoPredictor(Sam2Predictor):
     """
     def forward(
         self,
-        state: SAM2GenericVideoPredictorState,
+        state: Sam2VideoPredictorState,
         frame_idx: int,
         frame: torch.Tensor,
         prompts: list[GeometryPrompt] = [],
@@ -754,7 +754,7 @@ class Sam2VideoPredictor(Sam2Predictor):
 
     def forward_embeddings(
         self,
-        state: SAM2GenericVideoPredictorState,
+        state: Sam2VideoPredictorState,
         frame_idx: int,
         img_embeddings: list[torch.Tensor],
         img_pos_embeddings: list[torch.Tensor],
@@ -908,7 +908,7 @@ class Sam2VideoPredictor(Sam2Predictor):
 
         return {obj_id: result for obj_id, result in zip(all_obj_ids, batched_results)}
 
-class SAM2GenericVideoPredictorVOS(Sam2VideoPredictor):
+class Sam2VideoPredictorVOS(Sam2VideoPredictor):
     """Optimized for the VOS setting"""
 
     def __init__(self, *args, **kwargs):
@@ -947,7 +947,7 @@ class SAM2GenericVideoPredictorVOS(Sam2VideoPredictor):
         )
 
     def forward_embeddings(self, 
-        state: SAM2GenericVideoPredictorState,
+        state: Sam2VideoPredictorState,
         frame_idx: int,
         img_embeddings: list[torch.Tensor],
         img_pos_embeddings: list[torch.Tensor],

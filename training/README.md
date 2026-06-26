@@ -8,7 +8,7 @@ The code allows users to train and fine-tune SAM 2 on their own datasets (image,
 The training code is organized into the following subfolders:
 
 * `dataset`: This folder contains image and video dataset and dataloader classes as well as their transforms.
-* `model`: This folder contains the main model class (`SAM2Train`) for training/fine-tuning. `SAM2Train` inherits from `SAM2Base` model and provides functions to enable training or fine-tuning SAM 2. It also accepts all training-time parameters used for simulating user prompts (e.g. iterative point sampling).
+* `model`: This folder contains the main model class (`Sam2Train`) for training/fine-tuning. `Sam2Train` inherits from `SamTrackerBase` model and provides functions to enable training or fine-tuning SAM 2. It also accepts all training-time parameters used for simulating user prompts (e.g. iterative point sampling).
 * `utils`: This folder contains training utils such as loggers and distributed training utils.
 * `scripts`: This folder contains the script to extract the frames of SA-V dataset to be used in training.
 * `loss_fns.py`: This file has the main loss class (`MultiStepMultiMasksAndIous`) used for training.

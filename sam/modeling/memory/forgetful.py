@@ -4,10 +4,10 @@ from __future__ import annotations
 import torch
 
 from sam.modeling.memory.bank import ObjectMemory
-from sam.modeling.memory.banks import SAM2ObjectMemoryBank
+from sam.modeling.memory.banks import Sam2ObjectMemoryBank
 
 
-class SAM2ForgetfulObjectMemoryBank(SAM2ObjectMemoryBank):
+class ForgetfulObjectMemoryBank(Sam2ObjectMemoryBank):
     """
     Memory bank with a forgetting strategy:
     - Conditional memories are kept indefinitely.

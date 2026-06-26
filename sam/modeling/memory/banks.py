@@ -14,7 +14,7 @@ from sam.prompts import GeometryPrompt
 import bisect
 
 
-class SAM2ObjectMemoryBank(ObjectMemoryBank):
+class Sam2ObjectMemoryBank(ObjectMemoryBank):
     """
     Default implementation for the memory bank, as per SAM2 original paper.
 
@@ -26,7 +26,7 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             memory_temporal_stride: int = 1,
             storage_device: torch.device = torch.device("cpu"),
     ):
-        super(SAM2ObjectMemoryBank, self).__init__()
+        super(Sam2ObjectMemoryBank, self).__init__()
         # Create the storage for the memories
         # The key is the object ID, the value is a list of memories sorted by frame index.
         self.conditional_memories: dict[int, list[ObjectMemory]] = {}

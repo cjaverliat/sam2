@@ -15,10 +15,10 @@ from PIL.Image import Image
 
 from sam.modeling.tracking.tracker_base import SamTrackerBase
 
-from sam.utils.transforms import SAM2Transforms
+from sam.utils.transforms import Sam2Transforms
 
 
-class SAM2ImagePredictor:
+class Sam2ImagePredictor:
     def __init__(
         self,
         sam_model: SamTrackerBase,
@@ -42,7 +42,7 @@ class SAM2ImagePredictor:
         """
         super().__init__()
         self.model = sam_model
-        self._transforms = SAM2Transforms(
+        self._transforms = Sam2Transforms(
             resolution=self.model.image_size,
             mask_threshold=mask_threshold,
             max_hole_area=max_hole_area,
@@ -67,7 +67,7 @@ class SAM2ImagePredictor:
         ]
 
     @classmethod
-    def from_pretrained(cls, model_id: str, **kwargs) -> "SAM2ImagePredictor":
+    def from_pretrained(cls, model_id: str, **kwargs) -> "Sam2ImagePredictor":
         """
         Load a pretrained model from the Hugging Face hub.
 
@@ -76,7 +76,7 @@ class SAM2ImagePredictor:
           **kwargs: Additional arguments to pass to the model constructor.
 
         Returns:
-          (SAM2ImagePredictor): The loaded model.
+          (Sam2ImagePredictor): The loaded model.
         """
         from sam.build_sam import build_sam2_legacy_hf
 
@@ -348,7 +348,7 @@ class SAM2ImagePredictor:
         """
         Predict masks for the given input prompts, using the currently set image.
         Input prompts are batched torch tensors and are expected to already be
-        transformed to the input frame using SAM2Transforms.
+        transformed to the input frame using Sam2Transforms.
 
         Arguments:
           point_coords (torch.Tensor or None): A BxNx2 array of point prompts to the

@@ -81,17 +81,41 @@ def build_sam2_legacy(
     apply_postprocessing=True,
     **kwargs,
 ):
+    # Load the YAML directly rather than via Hydra's compose, because Hydra's
+    # package-based config store mis-interprets dots in directory names
+    # (e.g. "sam2.1/" becomes "sam2" → "1" instead of a flat directory path),
+    # causing the model config to be nested under the wrong key.
+    import re as _re
+    from pathlib import Path as _Path
+    config_path = _Path(sam.__file__).parent / config_file
+    cfg = OmegaConf.load(config_path)
 
     if apply_postprocessing:
-        hydra_overrides_extra = hydra_overrides_extra.copy()
-        hydra_overrides_extra += [
-            # dynamically fall back to multi-mask if the single mask is not stable
-            "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
-            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta=0.05",
-            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
-        ]
-    # Read config and init model
-    cfg = compose(config_name=config_file, overrides=hydra_overrides_extra)
+        # Dynamically fall back to multi-mask if the single mask is not stable
+        OmegaConf.update(cfg, "model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability", True, merge=True)
+        OmegaConf.update(cfg, "model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta", 0.05, merge=True)
+        OmegaConf.update(cfg, "model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh", 0.98, merge=True)
+
+    for override in hydra_overrides_extra:
+        # Parse Hydra-style override: [++/+/~]key.path=value
+        m = _re.match(r'^[+~]*([^=]+)=(.*)$', override)
+        if not m:
+            continue
+        key, raw_val = m.group(1), m.group(2)
+        if raw_val.lower() == "true":
+            val = True
+        elif raw_val.lower() == "false":
+            val = False
+        else:
+            try:
+                val = int(raw_val)
+            except ValueError:
+                try:
+                    val = float(raw_val)
+                except ValueError:
+                    val = raw_val
+        OmegaConf.update(cfg, key, val, merge=True)
+
     OmegaConf.resolve(cfg)
     model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path)
@@ -281,7 +305,7 @@ def build_sam2_video_predictor(
         # VOS always compiles the image encoder; don't append compile_image_encoder
         # again below to avoid a duplicate hydra override.
         hydra_overrides = [
-            "++model._target_=sam.models.sam2_predictor.SAM2GenericVideoPredictorVOS",
+            "++model._target_=sam.models.sam2_predictor.Sam2VideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
             f"++model.use_half={use_half}",
         ]
@@ -331,7 +355,7 @@ def build_sam2_legacy_video_predictor(
     ]
     if vos_optimized:
         hydra_overrides = [
-            "++model._target_=sam.models.legacy_video_predictor.SAM2VideoPredictorVOS",
+            "++model._target_=sam.models.legacy_video_predictor.Sam2LegacyVideoPredictorVOS",
             "++model.compile_image_encoder=True",  # Let sam2_base handle this
         ]
 

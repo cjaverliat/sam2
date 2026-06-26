@@ -974,7 +974,7 @@ class Sam2LegacyVideoPredictor(SamTrackerBase):
                 non_cond_frame_outputs.pop(t, None)
 
 
-class SAM2VideoPredictorVOS(Sam2LegacyVideoPredictor):
+class Sam2LegacyVideoPredictorVOS(Sam2LegacyVideoPredictor):
     """Optimized for the VOS setting"""
 
     def __init__(self, *args, **kwargs):

@@ -13,10 +13,10 @@ import cv2
 import torch
 from tqdm import tqdm
 
-from sam.modeling.memory.forgetful import SAM2ForgetfulObjectMemoryBank
-from sam.modeling.memory.banks import SAM2ObjectMemoryBank
+from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
+from sam.modeling.memory.banks import Sam2ObjectMemoryBank
 from sam.prompts import GeometryPrompt
-from sam.models.sam2_predictor import SAM2GenericVideoPredictorState
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 
 def read_frame(cap, device):
@@ -40,9 +40,9 @@ def warmup(predictor, video_state, device):
 def build_memory_bank(memory_window, bank_device):
     device = torch.device(bank_device)
     if memory_window > 0:
-        return SAM2ForgetfulObjectMemoryBank(
+        return ForgetfulObjectMemoryBank(
             memory_window_size=memory_window, storage_device=device)
-    return SAM2ObjectMemoryBank(storage_device=device)
+    return Sam2ObjectMemoryBank(storage_device=device)
 
 
 def sync(device):
@@ -72,7 +72,7 @@ def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=20
 
     The first ``warmup_frames`` propagation frames are discarded (engine/cache settle).
     ``max_frames=0`` runs the whole video. ``memory_bank`` overrides the default
-    (infinite) bank — pass a ``SAM2ForgetfulObjectMemoryBank`` for bounded memory.
+    (infinite) bank — pass a ``ForgetfulObjectMemoryBank`` for bounded memory.
     """
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
@@ -81,7 +81,7 @@ def run_video_benchmark(predictor, video, device, warmup_frames=5, max_frames=20
     orig_hw = (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
 
-    state = SAM2GenericVideoPredictorState.create(orig_hw, memory_bank)
+    state = Sam2VideoPredictorState.create(orig_hw, memory_bank)
     warmup(predictor, state, device)
 
     prompt = GeometryPrompt(

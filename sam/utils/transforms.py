@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torchvision.transforms import Normalize, Resize, ToTensor
 from sam.utils.misc import get_connected_components
 
-class SAM2Transforms(nn.Module):
+class Sam2Transforms(nn.Module):
     def __init__(
         self, resolution, mask_threshold, max_hole_area=0.0, max_sprinkle_area=0.0
     ):

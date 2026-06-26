@@ -22,7 +22,7 @@ from sam.utils.misc import concat_points
 from training.utils.data_utils import BatchedVideoDatapoint
 
 
-class SAM2Train(SamTrackerBase):
+class Sam2Train(SamTrackerBase):
     def __init__(
         self,
         image_encoder,

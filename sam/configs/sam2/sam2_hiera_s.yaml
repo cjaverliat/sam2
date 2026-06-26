@@ -1,8 +1,8 @@
-# @package _global_
+﻿# @package _global_
 
 # Model
 model:
-  _target_: sam.modeling.tracking.tracker_base.SAM2Base
+  _target_: sam.modeling.tracking.tracker_base.SamTrackerBase
   image_encoder:
     _target_: sam.modeling.encoders.image_encoder.ImageEncoder
     scalp: 1

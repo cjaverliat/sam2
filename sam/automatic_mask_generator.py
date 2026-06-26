@@ -33,7 +33,7 @@ from sam.utils.amg import (
 )
 
 
-class SAM2AutomaticMaskGenerator:
+class Sam2AutomaticMaskGenerator:
     def __init__(
         self,
         model: Sam2Predictor,
@@ -149,7 +149,7 @@ class SAM2AutomaticMaskGenerator:
         self.multimask_output = multimask_output
 
     @classmethod
-    def from_pretrained(cls, model_id: str, **kwargs) -> "SAM2AutomaticMaskGenerator":
+    def from_pretrained(cls, model_id: str, **kwargs) -> "Sam2AutomaticMaskGenerator":
         """
         Load a pretrained model from the Hugging Face hub.
 
@@ -158,7 +158,7 @@ class SAM2AutomaticMaskGenerator:
           **kwargs: Additional arguments to pass to the model constructor.
 
         Returns:
-          (SAM2AutomaticMaskGenerator): The loaded model.
+          (Sam2AutomaticMaskGenerator): The loaded model.
         """
         from sam.build_sam import build_sam2_hf
 
