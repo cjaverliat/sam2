@@ -4,7 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Build backend for sam2's CUDA extension (sam2._C).
+"""Build backend for sam2's CUDA extension (sam._C).
 
 flash-attn-style install: at `pip install` / wheel-build time we first try to
 download a prebuilt wheel matching the user's exact (torch, CUDA, Python,
@@ -181,7 +181,7 @@ class _BuildError(Exception):
 def _require_msvc():
     """Check MSVC's cl.exe is on PATH (Windows); raise ``_BuildError`` otherwise.
 
-    nvcc compiles the host side of sam2._C with MSVC. Without an activated MSVC
+    nvcc compiles the host side of sam._C with MSVC. Without an activated MSVC
     environment the build otherwise dies deep inside ninja with an opaque,
     swallowed error. Check up front and tell the user how to fix it.
     """
@@ -191,7 +191,7 @@ def _require_msvc():
 
     if shutil.which("cl") is None:
         raise _BuildError(
-            "MSVC compiler 'cl.exe' was not found on PATH. Building the sam2._C "
+            "MSVC compiler 'cl.exe' was not found on PATH. Building the sam._C "
             "CUDA extension on Windows needs the MSVC x64 toolchain active: build "
             "from an \"x64 Native Tools Command Prompt for VS\" (or run vcvars64.bat "
             "first), then retry."
@@ -229,10 +229,10 @@ def get_extensions(torch):
     # setuptools requires /-separated paths relative to setup.py, never absolute.
     return [
         CUDAExtension(
-            name="sam2._C",
+            name="sam._C",
             sources=[
-                "sam2/csrc/connected_components.cu",
-                "sam2/csrc/connected_components_binding.cpp",
+                "sam/csrc/connected_components.cu",
+                "sam/csrc/connected_components_binding.cpp",
             ],
             extra_compile_args={"cxx": cxx_args, "nvcc": nvcc_args},
         )
@@ -341,7 +341,7 @@ else:
             if not ALLOW_BUILD_ERRORS:
                 raise SystemExit(f"\nsam2 build error: {e}\n")
             warnings.warn(
-                f"sam2: {e} Building a pure-Python wheel instead; sam2._C is "
+                f"sam2: {e} Building a pure-Python wheel instead; sam._C is "
                 "JIT-compiled at runtime on first use "
                 "(set SAM2_ALLOW_BUILD_ERRORS=0 to fail the build instead).",
                 stacklevel=2,
@@ -370,7 +370,7 @@ else:
                 if not ALLOW_BUILD_ERRORS:
                     raise
                 warnings.warn(
-                    f"sam2: compiling sam2._C failed ({e}). Installing a pure-Python "
+                    f"sam2: compiling sam._C failed ({e}). Installing a pure-Python "
                     "sam2; _C is JIT-compiled at runtime on first use "
                     "(set SAM2_ALLOW_BUILD_ERRORS=0 to fail the build instead).",
                     stacklevel=2,

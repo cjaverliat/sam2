@@ -52,7 +52,7 @@ def _load_connected_components_ext():
     global _connected_components_ext
     if _connected_components_ext is False:
         raise ImportError(
-            "sam2._C is not available (pre-built extension missing; JIT compile also failed)."
+            "sam._C is not available (pre-built extension missing; JIT compile also failed)."
         )
     if _connected_components_ext is not None:
         return _connected_components_ext
@@ -98,7 +98,7 @@ def _load_connected_components_ext():
 
         _csrc = Path(__file__).parent.parent / "csrc"
         warnings.warn(
-            "sam2._C (pre-built CUDA extension) not found. "
+            "sam._C (pre-built CUDA extension) not found. "
             "Attempting JIT compile — this may take a few minutes on first run.",
             category=UserWarning,
             stacklevel=4,
@@ -122,7 +122,7 @@ def _load_connected_components_ext():
     except Exception as e:
         _connected_components_ext = False
         raise ImportError(
-            f"sam2._C JIT compile failed: {e}. "
+            f"sam._C JIT compile failed: {e}. "
             "Install a CUDA toolchain or set SAM2_BUILD_CUDA=0 to skip the extension."
         ) from e
 
