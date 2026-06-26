@@ -280,6 +280,87 @@ Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam
 
 ---
 
+## SAM 3 — Concept Segmentation
+
+SAM 3 segments by **concept** (a text phrase) rather than by clicks or boxes. Build with `build_sam3` (image) or `build_sam3_video_predictor` (streaming video); the API mirrors SAM 2's predictor (encode once, run per frame). SAM 3 weights are access-gated — request via [Meta AI](https://ai.meta.com/sam) and download with:
+
+```bash
+pixi run download-sam3       # sam3.pt
+pixi run download-sam3-1     # sam3.1_multiplex.pt (SAM 3.1)
+```
+
+### Image — detect all instances of a concept
+
+```python
+import numpy as np
+from PIL import Image
+from sam.build_sam import build_sam3
+from sam.prompts import ConceptPrompt
+
+predictor = build_sam3("configs/sam3/sam3.yaml", "./checkpoints/sam3.pt", device="cuda")
+
+image = np.array(Image.open("images/truck.jpg").convert("RGB"))  # (H, W, 3) uint8
+
+result = predictor.predict(image, ConceptPrompt(text="wheel"))
+# result.masks_logits: (N, H, W)  — per-instance mask logits  (> 0 → foreground)
+# result.boxes:        (N, 4)     — xyxy pixel bounding boxes
+# result.scores:       (N,)       — per-instance confidence scores
+# result.presence:     float      — 0..1 concept-in-image presence score
+
+binary_masks = result.masks_logits > 0.0
+```
+
+### Streaming video — track a concept across frames
+
+```python
+from sam.build_sam import build_sam3_video_predictor
+from sam.prompts import ConceptPrompt
+from sam.models.sam3_predictor import Sam3VideoPredictorState
+
+predictor = build_sam3_video_predictor(
+    "configs/sam3/sam3.yaml", "./checkpoints/sam3.pt", device="cuda"
+)
+
+# State holds memory bank + tracklet bookkeeping — not the frames.
+state = Sam3VideoPredictorState(video_hw=(height, width))
+predictor.set_concept(state, ConceptPrompt(text="wheel"))
+
+for frame_idx, frame in enumerate(frames):  # frames: (H, W, 3) uint8 arrays
+    results = predictor.forward(state, frame_idx, frame)
+    # results: {obj_id: MaskletResult, ...}
+    masks = {obj_id: (r.masks_logits > 0) for obj_id, r in results.items()}
+```
+
+Per-object memory is managed by the internal `ForgetfulObjectMemoryBank` (non-conditional frames outside a 7-frame window are pruned), so VRAM stays constant regardless of clip length.
+
+### SAM 3.1 (multiplex) — up to 16 objects in one joint forward pass
+
+SAM 3.1 packs all tracked objects into one joint forward via `build_sam3_multiplex` (image) and `build_sam3_multiplex_video_predictor` (video). The calling API is **identical** to base SAM 3; mux/demux is internal to the tracker.
+
+```python
+from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor
+from sam.prompts import ConceptPrompt
+from sam.models.sam3_predictor import Sam3VideoPredictorState
+
+# Image
+image_predictor = build_sam3_multiplex(
+    "configs/sam3/sam3.1.yaml", "./checkpoints/sam3.1_multiplex.pt", device="cuda"
+)
+result = image_predictor.predict(image, ConceptPrompt(text="wheel"))
+
+# Video
+video_predictor = build_sam3_multiplex_video_predictor(
+    "configs/sam3/sam3.1.yaml", "./checkpoints/sam3.1_multiplex.pt", device="cuda"
+)
+state = Sam3VideoPredictorState(video_hw=(height, width))
+video_predictor.set_concept(state, ConceptPrompt(text="wheel"))
+for frame_idx, frame in enumerate(frames):
+    results = video_predictor.forward(state, frame_idx, frame)
+    masks = {obj_id: (r.masks_logits > 0) for obj_id, r in results.items()}
+```
+
+---
+
 ## Benchmarks
 
 Per-frame **streaming** throughput of `Sam2VideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
