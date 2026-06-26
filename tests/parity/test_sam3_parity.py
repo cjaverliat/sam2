@@ -583,3 +583,189 @@ def test_sam3_video_constant_vram(video_fixture):
         f"peak VRAM grew {growth:.1%} from frame 4 ({mem_after_warm/1e6:.1f} MB) to "
         f"frame {N_LONG-1} ({mem_after_long/1e6:.1f} MB) -- not constant-VRAM"
     )
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3.1 multiplex tracker (M1) ---------------------------------------------------
+CKPT_MUX = Path(__file__).parents[2] / "checkpoints" / "sam3.1_multiplex.pt"
+
+
+@pytest.fixture(scope="module")
+def video_sam31_fixture():
+    f = FIXTURES / "video_sam31.npz"
+    if not f.is_file():
+        pytest.skip(f"fixture absent: {f}")
+    return dict(np.load(f, allow_pickle=True))
+
+
+def test_sam3p1_tracker_step_parity(video_sam31_fixture):
+    """One SAM 3.1 MULTIPLEX ``track_step`` (mux per-object -> buckets -> K-token joint
+    decode at ``batch=num_buckets`` -> demux -> per-object) reproduces the golden frame-1
+    multiplex decode.
+
+    Isolation (mirrors ``test_tracker_step_parity``): the sam3.1 PE encoder (propagation
+    "sam2_backbone_out" neck) runs on frames 0 and 1. Frame-0 memory is SEEDED from the
+    committed golden frame-0 masklets (``frame0_obj{id}``) through the cond-frame
+    ``_use_mask_as_output`` + memory-encoder path. Frame 1 is then propagated through the
+    multiplex SAM head (``mux`` per-object tensors into ``num_buckets`` buckets ->
+    ``MultiplexMaskDecoder`` over all ``K`` slots jointly -> ``demux`` back to per-object).
+
+    Gates:
+      * per-object best mask (thresholded, video-res) IoU vs ``frame1_obj{id}`` >= 0.99
+        (authoritative; match per-object by IoU, not raw bucket order);
+      * the mux/demux round-trip ``demux(mux(x)) == x`` is exact, and the precomputed
+        ``mux_matrix`` / ``demux_matrix`` match the committed golden;
+      * the raw bucket-space ``MultiplexMaskDecoder`` output, demuxed, reproduces
+        ``trk_f1_demux_perobj`` (thresholded multimask IoU per object).
+    Regime: bf16 autocast + deterministic TF32-off (matches the sam3.1 capture).
+    """
+    if not CKPT_MUX.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT_MUX}")
+    import torch as _torch
+    import torch.nn.functional as _F
+
+    from sam.build_sam import (
+        build_sam3_multiplex_tracker,
+        build_sam3_multiplex_vision_encoder,
+    )
+
+    _determinism()
+    # The sam3.1 vision encoder is NOT bit-shared with base sam3.pt (different trunk weights
+    # + a 3-level tri-neck); load its propagation neck from the multiplex checkpoint.
+    encoder = build_sam3_multiplex_vision_encoder(ckpt_path=str(CKPT_MUX), device="cuda")
+    tracker = build_sam3_multiplex_tracker(ckpt_path=str(CKPT_MUX), device="cuda")
+
+    fx = video_sam31_fixture
+    frames = fx["video_frames_rgb"]  # (T,288,512,3) uint8
+    video_h, video_w = (int(v) for v in fx["video_hw"])
+    f0_ids = fx["frame0_obj_ids"].tolist()
+    f1_ids = fx["frame1_obj_ids"].tolist()
+    obj_ids = [o for o in f1_ids if o in f0_ids]
+    n = len(obj_ids)
+    assert n > 0, "no shared objects between frame 0 and frame 1"
+
+    mc = tracker.multiplex_controller
+    K = int(fx["multiplex_count"])
+    assert mc.multiplex_count == K, f"K mismatch {mc.multiplex_count} != {K}"
+
+    def _pyramids(rgb):
+        # ONE trunk pass -> interactive pyramid (sam3 slot = interactive_convs) for the
+        # cond-frame object-pointer head + propagation pyramid (sam2 slot) for tracking.
+        x = _preprocess_to_1008(rgb, device="cuda")
+        s3f, s3p, s2f, s2p = encoder.vision_backbone(x)  # each 3-level [288,144,72]
+        return (s3f, s3p), (s2f, s2p)
+
+    def _backbone_features(feats, pos, conv_s0, conv_s1):
+        fpn = list(feats)
+        fpn[0] = conv_s0(fpn[0])
+        fpn[1] = conv_s1(fpn[1])
+        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
+        vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]  # (HW, 1, C) batch=1
+        vpos = [p.flatten(2).permute(2, 0, 1) for p in pos]
+        return {
+            "vision_feats": vis,
+            "vision_masks": [None] * len(vis),
+            "vision_pos_embeds": vpos,
+            "feat_sizes": feat_sizes,
+        }
+
+    # frame-0 binary masklets -> (n,1,input_mask_size,input_mask_size) soft masks
+    ims = tracker.input_mask_size
+    masks0 = []
+    for oid in obj_ids:
+        m = fx[f"frame0_obj{oid}"].astype(np.float32)  # (288,512) {0,1}
+        mt = _torch.from_numpy(m)[None, None].to("cuda")
+        mt = _F.interpolate(mt, size=(ims, ims), mode="bilinear",
+                            align_corners=False, antialias=True)
+        masks0.append(mt)
+    mask_inputs0 = _torch.cat(masks0, dim=0)  # (n,1,ims,ims)
+
+    trk_cap = {}
+
+    def _hook(_m, _i, output):
+        trk_cap["x"] = output["masks"].detach().float().cpu().numpy()  # (1,K,3,288,288)
+
+    handle = tracker.sam_mask_decoder.register_forward_hook(_hook)
+    try:
+        with _torch.inference_mode():
+            with _torch.autocast(device_type="cuda", dtype=_torch.bfloat16):
+                state = mc.get_state(n, _torch.device("cuda"), _torch.float32, random=False)
+                (i0f, i0p), (p0f, p0p) = _pyramids(frames[0])
+                (_, _), (p1f, p1p) = _pyramids(frames[1])
+                bf0_int = _backbone_features(
+                    i0f, i0p, tracker.interactive_sam_mask_decoder.conv_s0,
+                    tracker.interactive_sam_mask_decoder.conv_s1,
+                )
+                bf0_prop = _backbone_features(
+                    p0f, p0p, tracker.sam_mask_decoder.conv_s0,
+                    tracker.sam_mask_decoder.conv_s1,
+                )
+                bf1_prop = _backbone_features(
+                    p1f, p1p, tracker.sam_mask_decoder.conv_s0,
+                    tracker.sam_mask_decoder.conv_s1,
+                )
+
+                output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
+                out0 = tracker.track_step(
+                    frame_idx=0, is_init_cond_frame=True,
+                    backbone_features_interactive=bf0_int,
+                    backbone_features_propagation=bf0_prop,
+                    point_inputs=None, mask_inputs=mask_inputs0,
+                    output_dict=output_dict, num_frames=len(frames),
+                    multiplex_state=state,
+                )
+                output_dict["cond_frame_outputs"][0] = out0
+                out1 = tracker.track_step(
+                    frame_idx=1, is_init_cond_frame=False,
+                    backbone_features_interactive=None,
+                    backbone_features_propagation=bf1_prop,
+                    point_inputs=None, mask_inputs=None,
+                    output_dict=output_dict, num_frames=len(frames),
+                    multiplex_state=state,
+                )
+    finally:
+        handle.remove()
+
+    # --- mux/demux round-trip + committed-matrix agreement ---------------------------
+    g_mux = _torch.from_numpy(fx["mux_matrix"].astype(np.float32))      # (K, n)
+    g_demux = _torch.from_numpy(fx["demux_matrix"].astype(np.float32))  # (n, K)
+    np.testing.assert_allclose(state.mux_matrix.cpu().numpy(), g_mux.numpy(), atol=0,
+                               err_msg="precomputed mux_matrix != committed golden")
+    np.testing.assert_allclose(state.demux_matrix.cpu().numpy(), g_demux.numpy(), atol=0,
+                               err_msg="precomputed demux_matrix != committed golden")
+    x = _torch.randn(n, 5, device="cuda")
+    rt = state.demux(state.mux(x))
+    np.testing.assert_allclose(rt.cpu().numpy(), x.cpu().numpy(), atol=1e-5,
+                               err_msg="demux(mux(x)) != x")
+
+    # --- per-object gate: best mask vs frame1_obj{id} (>= 0.99) ----------------------
+    high_res = out1["pred_masks_high_res"].float()  # (n,1,1008,1008) demuxed per-object
+    assert high_res.shape[0] == n, f"track_step output not demuxed per-object: {high_res.shape}"
+    vid = _F.interpolate(high_res, size=(video_h, video_w), mode="bilinear",
+                         align_corners=False)
+    my_bin = (vid[:, 0].cpu().numpy() > 0.0).astype(np.uint8)  # (n,288,512)
+    ious = []
+    for oid in obj_ids:
+        g = fx[f"frame1_obj{oid}"].astype(np.uint8)  # (288,512)
+        best = max(_mask_iou(my_bin[j], g) for j in range(n))
+        ious.append(best)
+    min_iou = min(ious)
+    assert min_iou >= 0.99, (
+        f"per-object multiplex tracker-step IoU vs frame1_obj: {dict(zip(obj_ids, ious))} "
+        f"(min={min_iou:.4f} < 0.99)"
+    )
+
+    # --- trk_f1 cross-check: raw bucket decode -> demux -> per-object multimask -------
+    assert "x" in trk_cap, "MultiplexMaskDecoder hook did not fire on frame 1"
+    bucket_masks = _torch.from_numpy(trk_cap["x"])  # (1,K,3,288,288)
+    demuxed = (g_demux @ bucket_masks.reshape(K, -1)).reshape(n, 3, 288, 288).numpy()
+    g_trk = fx["trk_f1_demux_perobj"].astype(np.float32)  # (n,3,288,288)
+    assert demuxed.shape == g_trk.shape, f"demux shape {demuxed.shape} != {g_trk.shape}"
+    g_bin = (g_trk.reshape(n, 3, -1) > 0.0)
+    m_bin = (demuxed.reshape(n, 3, -1) > 0.0)
+    for gi in range(n):
+        best = max(
+            _mask_iou(g_bin[gi, gc], m_bin[mj, mc_])
+            for mj in range(n) for gc in range(3) for mc_ in range(3)
+        )
+        assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"

@@ -972,6 +972,195 @@ def build_sam3_video_predictor_hf(model_id, **kwargs):
     return build_sam3_video_predictor(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3.1 multiplex tracker (M1) -------------------------------------------
+# Direct-construction builders for the SAM 3.1 MULTIPLEX tracker + its vision encoder. The
+# sam3.1 tracker is the upstream ``VideoTrackingMultiplex`` (decoupled memory attention +
+# ``MultiplexMaskDecoder`` + separate interactive heads); its ``tracker.*`` subtree (457 keys,
+# all under ``tracker.model.*``) is NOT bit-shared with the base per-object tracker (309 keys) --
+# only ``obj_ptr_proj`` is identical. The sam3.1 vision encoder is ALSO not bit-shared with base
+# (different PE-trunk weights + a 3-level tri-neck), so the tracker's propagation features are
+# loaded from the sam3.1 checkpoint's ``propagation_convs`` (mapped onto the existing dual-neck's
+# ``sam2_convs`` slot). Config mirrors sam3/model_builder.py (_create_multiplex_transformer /
+# _create_multiplex_maskmem_backbone / build_sam3_multiplex_video_model).
+
+
+def build_sam3_multiplex_vision_encoder(ckpt_path=None, device="cuda"):
+    """Build the SAM 3.1 vision encoder (PE trunk + propagation neck) and optionally load weights.
+
+    Unlike base ``sam3.pt``, the sam3.1 PE trunk is fine-tuned and the neck is a 3-level tri-neck
+    (``convs`` / ``interactive_convs`` / ``propagation_convs``). This builds the shared ViT trunk
+    + a dual neck with ``scale_factors=[4,2,1]`` (``scalp=0`` so the pyramid is the 3-level
+    [288,144,72]) and strict-loads from ``sam3.1_multiplex.pt``: trunk -> ``trunk``,
+    ``interactive_convs`` -> ``convs`` (the SAM-3 head slot), ``propagation_convs`` ->
+    ``sam2_convs``. The detector ``convs`` slot is repurposed for ``interactive_convs`` so a
+    SINGLE trunk pass yields BOTH necks: ``vision_backbone(x)`` returns the interactive pyramid
+    (``sam3_*``, for the cond-frame object-pointer head) and the propagation pyramid (``sam2_*``,
+    via ``forward(..., return_sam2=True)``, the ``sam2_backbone_out`` the tracker propagates).
+    The detector neck itself is unused by the tracker.
+    """
+    from sam.modeling.encoders.necks import Sam3DualViTDetNeck
+    from sam.modeling.encoders.pe_vitdet import ViT
+    from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+
+    trunk = ViT(
+        img_size=1008, pretrain_img_size=336, patch_size=14, embed_dim=1024, depth=32,
+        num_heads=16, mlp_ratio=4.625, norm_layer="LayerNorm", drop_path_rate=0.1,
+        qkv_bias=True, use_abs_pos=True, tile_abs_pos=True, global_att_blocks=(7, 15, 23, 31),
+        use_rope=True, use_interp_rope=True, window_size=24, pretrain_use_cls_token=True,
+        retain_cls_token=False, ln_pre=True, ln_post=False, return_interm_layers=False,
+        bias_patch_embed=False,
+    )
+    position_encoding = PositionEmbeddingSine(
+        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
+    )
+    neck = Sam3DualViTDetNeck(
+        trunk=trunk, position_encoding=position_encoding, d_model=256,
+        scale_factors=[4.0, 2.0, 1.0], add_sam2_neck=True,
+    )
+    encoder = Sam3VisionEncoder(vision_backbone=neck, scalp=0)
+
+    if ckpt_path is not None:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            ckpt = ckpt["model"]
+        vb = "detector.backbone.vision_backbone."
+        sub = {}
+        for k, v in ckpt.items():
+            if not k.startswith(vb):
+                continue
+            rel = k[len(vb):]
+            if rel.startswith("convs."):
+                continue  # detector neck unused by the tracker
+            if rel.startswith("interactive_convs."):
+                rel = "convs." + rel[len("interactive_convs."):]  # SAM-3 slot = interactive
+            elif rel.startswith("propagation_convs."):
+                rel = "sam2_convs." + rel[len("propagation_convs."):]
+            sub["vision_backbone." + rel] = v
+        encoder.load_state_dict(sub, strict=True)
+
+    encoder = encoder.to(device)
+    encoder.eval()
+    return encoder
+
+
+def _build_sam3_multiplex_tracker_module(multiplex_count=16):
+    """Construct the SAM 3.1 ``Sam3MultiplexTracker`` (weights-only, no load, on CPU)."""
+    from sam.modeling.decoders.multiplex_memory_attention import (
+        DecoupledTransformerDecoderLayerv2,
+        SimpleRoPEAttention,
+        TransformerEncoderDecoupledCrossAttention,
+    )
+    from sam.modeling.decoders.sam3_transformer import TransformerWrapper
+    from sam.modeling.memory.sam3_memory_encoder import (
+        CXBlock,
+        SimpleFuser,
+        SimpleMaskDownSampler,
+        SimpleMaskEncoder,
+    )
+    from sam.modeling.multiplex import MultiplexController
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+    from sam.modeling.tracking.sam3_multiplex_tracker import Sam3MultiplexTracker
+
+    d_model = 256
+
+    # Multiplex memory encoder (per-bucket: K mask channels + K conditioning channels -> 256-ch).
+    position_encoding = PositionEmbeddingSine(
+        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
+    )
+    mask_downsampler = SimpleMaskDownSampler(
+        kernel_size=3, stride=2, padding=1, interpol_size=[1152, 1152],
+        multiplex_count=multiplex_count, starting_out_chan=4, input_channel_multiplier=2,
+    )
+    cx_block = CXBlock(
+        dim=256, kernel_size=7, padding=3, layer_scale_init_value=1.0e-06, use_dwconv=True
+    )
+    fuser = SimpleFuser(layer=cx_block, num_layers=2)
+    maskmem_backbone = SimpleMaskEncoder(
+        out_dim=256, position_encoding=position_encoding,
+        mask_downsampler=mask_downsampler, fuser=fuser,
+    )
+
+    # Decoupled memory attention (4 layers; RoPE self-attn + image/spatial cross-attn).
+    self_attention = SimpleRoPEAttention(
+        d_model=d_model, num_heads=8, dropout_p=0.1, rope_theta=10000.0,
+        feat_sizes=[72, 72], use_rope_real=False,
+    )
+    cross_attention = SimpleRoPEAttention(
+        d_model=d_model, num_heads=8, dropout_p=0.1, rope_theta=10000.0,
+        feat_sizes=[72, 72], rope_k_repeat=True, use_rope_real=False,
+    )
+    encoder_layer = DecoupledTransformerDecoderLayerv2(
+        activation="gelu", d_model=d_model, num_heads=8, dropout=0.1, dim_feedforward=2048,
+        pos_enc_at_attn=False, pre_norm=True, pos_enc_at_cross_attn_keys=True,
+        pos_enc_at_cross_attn_queries=False, self_attention_rope=self_attention,
+        cross_attention_rope=cross_attention,
+    )
+    encoder = TransformerEncoderDecoupledCrossAttention(
+        d_model=d_model, frozen=False, pos_enc_at_input=True, use_image_in_output=False,
+        layer=encoder_layer, num_layers=4, use_act_checkpoint=False, batch_first=True,
+    )
+    transformer = TransformerWrapper(encoder=encoder, decoder=None, d_model=d_model)
+
+    multiplex_controller = MultiplexController(
+        multiplex_count=multiplex_count, eval_multiplex_count=multiplex_count,
+    )
+
+    tracker = Sam3MultiplexTracker(
+        transformer=transformer,
+        maskmem_backbone=maskmem_backbone,
+        multiplex_controller=multiplex_controller,
+        image_size=1008, num_maskmem=7, backbone_stride=14,
+        multimask_output_in_sam=True, multimask_output_for_tracking=True,
+        multimask_min_pt_num=0, multimask_max_pt_num=1, num_multimask_outputs=3,
+        use_multimask_token_for_obj_ptr=True, non_overlap_masks_for_mem_enc=False,
+        max_cond_frames_in_attn=4, pred_obj_scores=True, pred_obj_scores_mlp=True,
+        sam_mask_decoder_extra_args={
+            "dynamic_multimask_via_stability": True,
+            "dynamic_multimask_stability_delta": 0.05,
+            "dynamic_multimask_stability_thresh": 0.98,
+        },
+        use_memory_selection=False,
+    )
+    return tracker
+
+
+def _load_sam3_multiplex_tracker_subtree(tracker, ckpt_path):
+    """Strict-load the ``tracker.model.*`` subtree (457 keys, prefix stripped) into the tracker."""
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    prefix = "tracker.model."
+    sub = {k[len(prefix):]: v for k, v in ckpt.items() if k.startswith(prefix)}
+    tracker.load_state_dict(sub, strict=True)
+
+
+def build_sam3_multiplex_tracker(ckpt_path=None, device="cuda"):
+    """Build the SAM 3.1 multiplex tracker and optionally load weights.
+
+    Args:
+        ckpt_path: path to a local ``sam3.1_multiplex.pt``. The tracker subtree
+            (``tracker.model.*``, 457 keys) is loaded with ``strict=True`` (the
+            ``tracker.model.`` prefix is stripped). If ``None`` the model is returned with init
+            weights.
+        device: device to move the model to.
+
+    Returns:
+        A ``Sam3MultiplexTracker`` in eval mode. It is weights-only (no vision backbone): callers
+        pass the propagation feature pyramid (from
+        ``build_sam3_multiplex_vision_encoder(...).forward(..., return_sam2=True)``) into
+        ``track_step`` (mux/demux internal; outputs demuxed per-object).
+    """
+    tracker = _build_sam3_multiplex_tracker_module()
+    _load_sam3_multiplex_tracker_subtree(tracker, ckpt_path)
+    tracker = tracker.to(device)
+    tracker.eval()
+    return tracker
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
