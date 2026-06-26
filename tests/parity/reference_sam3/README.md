@@ -8,6 +8,16 @@ validates against them (mask IoU ≥ 0.99, score/logit `atol`). The capture runs
 an **isolated reference env** (not this repo's pixi env); the fixtures let CI run the parity
 tests without the upstream repo or the gated weights present.
 
+**Two oracles** (Phase 1 targets both models):
+- **base `sam3.pt`** (per-object tracker) — `--model sam3` (default) → `image.npz` / `video.npz`.
+- **`sam3.1_multiplex.pt`** (K>1 joint-decode multiplex tracker) — `--model sam3.1` →
+  `image_sam31.npz` / `video_sam31.npz` (+ git-ignored `video_sam31_multiplex_internals.npz`).
+
+```bash
+$PY tests/parity/reference_sam3/capture_sam3_golden.py                 # base sam3 (default)
+$PY tests/parity/reference_sam3/capture_sam3_golden.py --model sam3.1  # sam3.1 multiplex
+```
+
 ## Upstream commit
 
 `facebookresearch/sam3` @ **`5dd401d1c5c1d5c3eedff06d41b77af824517619`** (cloned to the sibling
@@ -46,6 +56,25 @@ Notes:
   (`load_from_HF=False`); the weights are never committed.
 - GPU used: RTX 3080 Ti (12 GB). The full model loads in bf16-autocast within budget.
 
+**SAM 3.1 multiplex (`--model sam3.1`) — two extra reference-env concessions:**
+- **No flash-attn-3 → SDPA math fallback.** The multiplex memory attention
+  (`sam3/model/decoder.py::functional_attention`) hardcodes
+  `with sdpa_kernel(SDPBackend.FLASH_ATTENTION):` on the `use_fa3=False` path; the flash SDPA
+  backend is unavailable for these inputs on this GPU (→ `RuntimeError: No available kernel`).
+  The capture overrides the module-level `decoder.sdpa_kernel` so the forced-flash context
+  permits **all** backends (SDPA then picks math/efficient — math is the exact reference
+  attention). Kernel-dispatch only; no weights/logic change.
+- **`use_deterministic_algorithms` is NOT set** for the sam3.1 path (it forbids the
+  forced-flash SDPA kernel above). Every other lever holds (seed 0, cuDNN deterministic,
+  TF32 off). Reproducibility was verified empirically: a fresh re-run reproduces **every**
+  fixture array **bitwise** (max|Δ| = 0.0, all masklets IoU = 1.0).
+- Built via `build_sam3_predictor(version="sam3.1", use_fa3=False, use_rope_real=False,
+  compile=False)` loading the **local** `checkpoints/sam3.1_multiplex.pt` (3.3 GB, never
+  committed). The session `handle_request` wrapper is bypassed (it passes an
+  `offload_state_to_cpu` kwarg the multiplex `init_state` rejects); we drive
+  `predictor.model` directly (`init_state` → `add_prompt` → `propagate_in_video`), exactly as
+  the base capture drives `build_sam3_video_model`.
+
 ## Scenario
 
 | | Image | Video |
@@ -59,6 +88,16 @@ Notes:
 The exact preprocessed inputs are saved **inside** the fixtures (`image_input_rgb`,
 `video_frames_rgb`) so downstream tests feed byte-identical tensors. `scenario.json` records
 the inputs, per-frame object ids/scores, precision mode, and commit.
+
+**SAM 3.1 multiplex uses the SAME inputs** (truck@384×512 / "truck"; dance clip first 4
+frames@288×512 / "person") for comparability. The image flows through the multiplex
+predictor's detector as a single frame (`model.add_prompt`); the video flows
+`model.add_prompt(@f0) → model.propagate_in_video(start_frame_idx=1)`. Observed result:
+image → 1 truck (score 0.828, identical to base); video → 4 persons (ids 0–3, scores
+0.95–0.97). With `multiplex_count K = 16` and 4 objects the controller uses
+**`num_buckets = ceil(4/16) = 1`** (one bucket, 4 valid slots + 12 padding); in eval the slot
+assignment is the deterministic identity order (`get_state(random=self.training=False)`), so
+the mux/demux is the identity embedding of objects 0–3 into the first 4 of the 16 slots.
 
 ## Fixture keys
 
@@ -82,6 +121,39 @@ for finer Task-2 encoder checks by re-running the capture.
 per-object × 3 multimask tokens; for Task-5 tracker-step parity); `trk_f1_num_calls`;
 `video_frames_rgb` (4,288,512,3 uint8), plus `video_hw`, `video_phrase`,
 `video_frame_indices`, `precision_mode`, `upstream_commit`.
+
+### SAM 3.1 multiplex fixtures
+
+**`image_sam31.npz`** (committed, ~2.4 MB) — SAM 3.1 detector image golden, **same keys as
+`image.npz`**: `boxes` (1,4 xyxy px = `[24,90,485,271]`), `scores` (1, = 0.828),
+`presence`/`presence_logit` (1,1), `masks` (1,384,512 uint8), `pred_boxes_cxcywh` (1,200,4),
+`pred_logits` (1,200,1), `text_emb` (**32,3,256** f16 — note the batch dim is 3, not base's 1:
+the multiplex detector's text tower batches the prompt differently), `text_embeds_pre`
+(32,3,1024 f16), `enc_feat_lastlevel` (1,256,72,72 f16), `image_input_rgb` (384,512,3 uint8),
+plus `image_hw`, `image_phrase`, `model_version="sam3.1"`, `precision_mode`, `upstream_commit`,
+`confidence_threshold`. (The DETR detector is set-prediction, **not** multiplex; this validates
+the 3.1 detector weights load + run — outputs nearly match base.)
+
+**`video_sam31.npz`** (committed, ~2.6 MB) — multiplex streaming masklets + the multiplex
+mapping + the frame-1 per-object decode:
+- masklets like base: `frame{i}_obj{id}` (288,512 uint8) i∈0..3 id∈0..3, `frame{i}_obj_ids`
+  (4,), `frame{i}_scores` (4,); `video_frames_rgb` (4,288,512,3 uint8); `video_hw`,
+  `video_phrase`, `video_frame_indices`, `precision_mode`, `upstream_commit`,
+  `model_version="sam3.1"`.
+- **multiplex `MultiplexController` mapping** (the new content): `multiplex_count` (=16, K),
+  `num_buckets` (=1), `total_valid_entries` (=4), `mux_assignments` (1,16 int64; object idx per
+  bucket slot, −1 = padding), `mux_matrix` (16,4 f32), `demux_matrix` (4,16 f32),
+  `mux_valid_mask` (1,16 uint8).
+- **frame-1 multiplex tracker step (per-object space):** `trk_f1_demux_perobj` (4,3,288,288 f16
+  — `MultiplexState.demux` of the bucket-space decode; the analogue of base `trk_f1`).
+  `demux_matrix @ trk_f1_mux_buckets == trk_f1_demux_perobj` exactly (verified, max|Δ|=0).
+
+**`video_sam31_multiplex_internals.npz`** (NOT committed — git-ignored, ~4.6 MB, regenerable) —
+the frame-1 **bucket-space** decode `trk_f1_mux_buckets` (1,16,3,288,288 f16 = `num_buckets × K`
+slots incl. the 12 padding slots, the raw `MultiplexMaskDecoder` output *before* demux). Bulky
+(like the base `image_encoder_pyramid.npz`); regenerate via `--model sam3.1`. The committed
+`trk_f1_demux_perobj` + `demux_matrix` already let a re-impl validate the mux→compute→demux
+round-trip without it.
 
 ## Upstream layout (actual paths @ 5dd401d — corrects the plan's guesses)
 
@@ -128,3 +200,17 @@ is the DETR early-fusion *transformer* encoder; the PE **vision trunk** is `vitd
   `build_sam3_multiplex_video_*` (SAM 3.1 `sam3.1_multiplex.pt`), `download_ckpt_from_hf`.
   `sam3.pt` keys split under `detector.*` (1156) and `tracker.*` (309); the loader strips the
   `detector.` prefix for the image model.
+- **SAM 3.1 multiplex runtime stack** (`build_sam3_predictor(version="sam3.1")` →
+  `build_sam3_multiplex_video_predictor`): `sam3/model/sam3_multiplex_video_predictor.py`
+  (`Sam3MultiplexVideoPredictor`, `handle_request` API) wraps
+  `sam3/model/sam3_multiplex_tracking.py` (`Sam3MultiplexTrackingWithInteractivity` — det+track
+  per-frame loop, `_run_single_frame_inference`) which composes
+  `sam3/model/sam3_multiplex_detector.py` (`Sam3MultiplexDetector(Sam3Image)`) +
+  `sam3/model/sam3_multiplex_base.py` (`Sam3MultiplexPredictorWrapper`) +
+  `sam3/model/video_tracking_multiplex_demo.py` (`Sam3VideoTrackingMultiplexDemo`) ⊂
+  `sam3/model/video_tracking_multiplex.py` (`VideoTrackingMultiplex` — owns the
+  `MultiplexMaskDecoder` `sam_mask_decoder` + `MultiplexController`; `_forward_sam_heads` does
+  `sam_mask_decoder(bucket space) → multiplex_state.demux(per-object)`). The mux/demux math +
+  the `MultiplexState`/`MultiplexController` live in `sam3/model/multiplex_utils.py`; the
+  bucket-batched mask decoder in `sam3/model/multiplex_mask_decoder.py`. `sam3.1_multiplex.pt`
+  keys split under `detector.*` (1166) and `tracker.*` (457) = 1623 params.

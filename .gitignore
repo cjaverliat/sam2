@@ -18,6 +18,14 @@ demo/backend/checkpoints/*.pt
 # tests/parity/reference_sam3/capture_sam3_golden.py. The small image.npz / video.npz
 # golden fixtures ARE committed.
 tests/parity/fixtures/sam3/image_encoder_pyramid.npz
+# SAM 3.1 multiplex golden: the full BUCKET-SPACE frame-1 decode (trk_f1_mux_buckets,
+# ~8 MB; num_buckets x K=16 slots incl. padding) is bulky and regenerable. The committed
+# video_sam31.npz keeps the essentials (per-object demux + mux/demux mapping). Regenerate
+# via: capture_sam3_golden.py --model sam3.1.
+tests/parity/fixtures/sam3/video_sam31_multiplex_internals.npz
+# Throwaway capture scratch (smoke/verify scripts, re-run dir) — never committed.
+tests/parity/reference_sam3/_*.py
+tests/parity/reference_sam3/_rerun/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
