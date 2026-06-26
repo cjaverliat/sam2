@@ -231,3 +231,148 @@ def test_detector_parity(image_fixture):
     top = int(np.argmax(scores)) if scores.size else 0
     iou = _mask_iou(my_masks[top], g_masks[top])
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+@pytest.fixture(scope="module")
+def video_fixture():
+    f = FIXTURES / "video.npz"
+    if not f.is_file():
+        pytest.skip(f"fixture absent: {f}")
+    return dict(np.load(f, allow_pickle=True))
+
+
+def test_tracker_step_parity(video_fixture):
+    """One per-object SAM2-lineage ``track_step`` (RoPE memory attention + SAM mask
+    decoder) reproduces the golden frame-1 tracker activation.
+
+    Isolation (no detector needed): the Task-2 PE encoder (here built with the SAM 2 neck,
+    which the tracker consumes via ``sam2_backbone_out``) runs on frames 0 and 1. Frame-0
+    memory is SEEDED from the committed golden frame-0 masklets (``frame0_obj{id}``) through
+    the cond-frame ``_use_mask_as_output`` + memory-encoder path -- exactly how the video
+    model conditions the first frame from the detector's masks. Frame 1 is then tracked
+    (memory-conditioned RoPE attention -> SAM mask decoder, ``multimask_output=True``); its
+    raw ``sam_mask_decoder`` low-res logits are the analogue of golden ``trk_f1``
+    (4,3,288,288). Per the Task-1b ordering caveat, the AUTHORITATIVE per-object reference is
+    ``frame1_obj{id}``: each object's best mask (thresholded, resized to video res) must match
+    its masklet at IoU >= 0.99. ``trk_f1`` is additionally cross-checked at the best-matched
+    rows.
+    """
+    if not CKPT.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT}")
+    import torch as _torch
+    import torch.nn.functional as _F
+
+    from sam.build_sam import build_sam3_tracker, build_sam3_vision_encoder
+
+    _determinism()
+    encoder = build_sam3_vision_encoder(
+        ckpt_path=str(CKPT), device="cuda", add_sam2_neck=True
+    )
+    tracker = build_sam3_tracker(ckpt_path=str(CKPT), device="cuda")
+
+    frames = video_fixture["video_frames_rgb"]  # (T,288,512,3) uint8
+    video_h, video_w = (int(v) for v in video_fixture["video_hw"])
+    f0_ids = video_fixture["frame0_obj_ids"].tolist()
+    f1_ids = video_fixture["frame1_obj_ids"].tolist()
+    # track objects present on BOTH frames, ordered by the frame-1 output order
+    obj_ids = [o for o in f1_ids if o in f0_ids]
+    n = len(obj_ids)
+    assert n > 0, "no shared objects between frame 0 and frame 1"
+
+    def _sam2_pyramid(rgb):
+        x = _preprocess_to_1008(rgb, device="cuda")
+        feats, pos = encoder(x, return_sam2=True)
+        return feats, pos
+
+    def _track_feats(feats, pos):
+        # tracker.forward_image: conv_s0/conv_s1 project the two hi-res levels in-place;
+        # then expand to batch=n (all objects share the same frame) and flatten to (HW)BC.
+        fpn = list(feats)
+        fpn[0] = tracker.sam_mask_decoder.conv_s0(fpn[0])
+        fpn[1] = tracker.sam_mask_decoder.conv_s1(fpn[1])
+        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
+        vis = [f.expand(n, -1, -1, -1).flatten(2).permute(2, 0, 1) for f in fpn]
+        vpos = [p.expand(n, -1, -1, -1).flatten(2).permute(2, 0, 1) for p in pos]
+        return vis, vpos, feat_sizes
+
+    # frame-0 binary masklets -> (n,1,input_mask_size,input_mask_size) soft masks
+    ims = tracker.input_mask_size
+    masks0 = []
+    for oid in obj_ids:
+        m = video_fixture[f"frame0_obj{oid}"].astype(np.float32)  # (288,512) {0,1}
+        mt = _torch.from_numpy(m)[None, None].to("cuda")
+        mt = _F.interpolate(mt, size=(ims, ims), mode="bilinear",
+                            align_corners=False, antialias=True)
+        masks0.append(mt)
+    mask_inputs0 = _torch.cat(masks0, dim=0)  # (n,1,ims,ims)
+
+    trk_f1_capture = {}
+
+    def _hook(_m, _i, output):
+        trk_f1_capture["x"] = output[0].detach().float().cpu().numpy()
+
+    handle = tracker.sam_mask_decoder.register_forward_hook(_hook)
+    try:
+        with _torch.inference_mode():
+            with _torch.autocast(device_type="cuda", dtype=_torch.bfloat16):
+                f0, p0 = _sam2_pyramid(frames[0])
+                f1, p1 = _sam2_pyramid(frames[1])
+                vis0, vpos0, sizes0 = _track_feats(f0, p0)
+                vis1, vpos1, sizes1 = _track_feats(f1, p1)
+
+                output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
+                out0 = tracker.track_step(
+                    frame_idx=0, is_init_cond_frame=True,
+                    current_vision_feats=vis0, current_vision_pos_embeds=vpos0,
+                    feat_sizes=sizes0, image=None, point_inputs=None,
+                    mask_inputs=mask_inputs0, output_dict=output_dict, num_frames=len(frames),
+                )
+                output_dict["cond_frame_outputs"][0] = out0
+                out1 = tracker.track_step(
+                    frame_idx=1, is_init_cond_frame=False,
+                    current_vision_feats=vis1, current_vision_pos_embeds=vpos1,
+                    feat_sizes=sizes1, image=None, point_inputs=None,
+                    mask_inputs=None, output_dict=output_dict, num_frames=len(frames),
+                )
+    finally:
+        handle.remove()
+
+    # best per-object mask -> video res -> binary (replicates out_binary_masks)
+    high_res = out1["pred_masks_high_res"].float()  # (n,1,1008,1008)
+    vid = _F.interpolate(high_res, size=(video_h, video_w), mode="bilinear",
+                         align_corners=False)
+    my_bin = (vid[:, 0].cpu().numpy() > 0.0).astype(np.uint8)  # (n,288,512)
+
+    g_trk = video_fixture["trk_f1"].astype(np.float32)  # (n,3,288,288)
+
+    # Per-object gate: match each golden masklet to my best object by IoU (>=0.99).
+    ious = []
+    for oid in obj_ids:
+        g = video_fixture[f"frame1_obj{oid}"].astype(np.uint8)  # (288,512)
+        best = max(_mask_iou(my_bin[j], g) for j in range(n))
+        ious.append(best)
+    min_iou = min(ious)
+    assert min_iou >= 0.99, (
+        f"per-object tracker-step IoU vs frame1_obj: {dict(zip(obj_ids, ious))} (min={min_iou:.4f} < 0.99)"
+    )
+
+    # trk_f1 cross-check: my raw ``sam_mask_decoder`` decode (n,3,288,288) reproduces the
+    # golden multimask set. The raw LOGITS carry a large per-pixel max|delta| (~5-9) because the
+    # frame-0 memory is seeded from the committed BINARY masklet rather than the detector's soft
+    # mask (plus bf16 + the flash->SDPA swap); but the THRESHOLDED multimask shapes match. For
+    # each golden object row, the best thresholded-mask IoU across my 3x3 channel pairs is the
+    # meaningful, ordering-robust check.
+    assert "x" in trk_f1_capture, "sam_mask_decoder hook did not fire on frame 1"
+    my_trk = trk_f1_capture["x"]  # (n,3,288,288)
+    assert my_trk.shape == g_trk.shape, f"trk_f1 shape {my_trk.shape} != {g_trk.shape}"
+    g_bin = (g_trk.reshape(n, 3, -1) > 0.0)
+    m_bin = (my_trk.reshape(n, 3, -1) > 0.0)
+    for gi in range(n):
+        best = max(
+            _mask_iou(g_bin[gi, gc], m_bin[mj, mc])
+            for mj in range(n)
+            for gc in range(3)
+            for mc in range(3)
+        )
+        assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"

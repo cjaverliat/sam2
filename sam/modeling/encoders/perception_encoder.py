@@ -34,10 +34,24 @@ class Sam3VisionEncoder(nn.Module):
         self.scalp = scalp
 
     def forward(
-        self, image: torch.Tensor
+        self, image: torch.Tensor, return_sam2: bool = False
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        sam3_features, sam3_pos, _, _ = self.vision_backbone(image)
+        """Run the trunk + neck(s). By default returns the SAM 3 ``(features, pos)`` pyramid.
+
+        With ``return_sam2=True`` (requires the backbone built with ``add_sam2_neck=True``)
+        returns the SAM 2 ("propagation") neck pyramid ``(features, pos)`` instead -- this is
+        the ``sam2_backbone_out`` the SAM 3 tracker consumes. ``scalp`` is applied to whichever
+        pyramid is returned.
+        """
+        sam3_features, sam3_pos, sam2_features, sam2_pos = self.vision_backbone(image)
+        if return_sam2:
+            assert sam2_features is not None, (
+                "encoder was built without the SAM 2 neck (add_sam2_neck=True required)"
+            )
+            features, pos = sam2_features, sam2_pos
+        else:
+            features, pos = sam3_features, sam3_pos
         if self.scalp > 0:
-            sam3_features = sam3_features[: -self.scalp]
-            sam3_pos = sam3_pos[: -self.scalp]
-        return sam3_features, sam3_pos
+            features = features[: -self.scalp]
+            pos = pos[: -self.scalp]
+        return features, pos

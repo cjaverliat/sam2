@@ -350,15 +350,19 @@ def build_sam2_predictor_hf(model_id, **kwargs):
 # sam3/model_builder.py::_create_vit_backbone / _create_vit_neck (the SAM 3 image model).
 
 
-def build_sam3_vision_encoder(ckpt_path=None, device="cuda"):
+def build_sam3_vision_encoder(ckpt_path=None, device="cuda", add_sam2_neck=False):
     """Build the SAM 3 Perception-Encoder vision encoder and (optionally) load weights.
 
     Args:
         ckpt_path: path to a local ``sam3.pt``. The encoder subtree
             (``detector.backbone.vision_backbone.{trunk,convs}.*``) is loaded with
-            ``strict=True``; the unused SAM 2 dual-neck (``sam2_convs.*``) and the language
-            tower are filtered out. If ``None`` the model is returned with init weights.
+            ``strict=True``. With ``add_sam2_neck=False`` (default, the detector path) the SAM 2
+            dual-neck (``sam2_convs.*``) is filtered out; with ``add_sam2_neck=True`` (the
+            tracker path) it is built and loaded too, so ``forward(..., return_sam2=True)``
+            yields the ``sam2_backbone_out`` pyramid the tracker consumes. If ``None`` the model
+            is returned with init weights.
         device: device to move the model to.
+        add_sam2_neck: build + load the SAM 2 ("propagation") neck used by the tracker.
 
     Returns:
         A ``Sam3VisionEncoder`` in eval mode. ``forward(image)`` takes the preprocessed
@@ -405,7 +409,7 @@ def build_sam3_vision_encoder(ckpt_path=None, device="cuda"):
         position_encoding=position_encoding,
         d_model=256,
         scale_factors=[4.0, 2.0, 1.0, 0.5],
-        add_sam2_neck=False,
+        add_sam2_neck=add_sam2_neck,
     )
     encoder = Sam3VisionEncoder(vision_backbone=neck, scalp=1)
 
@@ -418,7 +422,8 @@ def build_sam3_vision_encoder(ckpt_path=None, device="cuda"):
         sub = {
             k[len("detector.backbone."):]: v
             for k, v in ckpt.items()
-            if k.startswith(sub_prefix) and not k.startswith(skip_prefix)
+            if k.startswith(sub_prefix)
+            and (add_sam2_neck or not k.startswith(skip_prefix))
         }
         encoder.load_state_dict(sub, strict=True)
 
@@ -655,6 +660,122 @@ def build_sam3_detector(ckpt_path=None, device="cuda"):
     detector = detector.to(device)
     detector.eval()
     return detector
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3 per-object tracker -------------------------------------------------
+# Minimal direct-construction builder for the base (per-object) SAM 3 tracker (Phase 1, Task 5).
+# Mirrors build_sam3_detector: construct the memory-attention transformer (4 RoPE self+cross
+# layers) + memory encoder (SimpleMaskEncoder) + SAM prompt encoder / mask decoder + the
+# temporal / no-object embeddings, then strict-load the ``tracker.*`` subtree (309 keys) from a
+# local sam3.pt. Config mirrors sam3/model_builder.py (_create_tracker_transformer /
+# _create_tracker_maskmem_backbone / build_tracker). NO multiplex (that is SAM 3.1).
+
+
+def build_sam3_tracker(ckpt_path=None, device="cuda"):
+    """Build the base SAM 3 per-object tracker and optionally load weights.
+
+    Args:
+        ckpt_path: path to a local ``sam3.pt``. The tracker subtree (``tracker.*``, 309 keys)
+            is loaded with ``strict=True`` (the ``tracker.`` prefix is stripped). If ``None``
+            the model is returned with init weights.
+        device: device to move the model to.
+
+    Returns:
+        A ``Sam3Tracker`` in eval mode. It is weights-only (no vision backbone): callers pass
+        the SAM 2-neck feature pyramid (from ``build_sam3_vision_encoder(add_sam2_neck=True)``,
+        ``forward(..., return_sam2=True)``) into ``track_step`` / the data-space block methods.
+    """
+    from sam.modeling.decoders.sam3_transformer import (
+        RoPEAttention,
+        TransformerDecoderLayerv2,
+        TransformerEncoderCrossAttention,
+        TransformerWrapper,
+    )
+    from sam.modeling.memory.sam3_memory_encoder import (
+        CXBlock,
+        SimpleFuser,
+        SimpleMaskDownSampler,
+        SimpleMaskEncoder,
+    )
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+    from sam.modeling.tracking.sam3_tracker import Sam3Tracker
+
+    d_model = 256
+
+    # Memory encoder (mask + pixel-feature -> 64-ch spatial memory at 72x72).
+    position_encoding = PositionEmbeddingSine(
+        num_pos_feats=64, normalize=True, scale=None, temperature=10000,
+        warmup_cache=False,
+    )
+    mask_downsampler = SimpleMaskDownSampler(
+        kernel_size=3, stride=2, padding=1, interpol_size=[1152, 1152]
+    )
+    cx_block = CXBlock(
+        dim=256, kernel_size=7, padding=3, layer_scale_init_value=1.0e-06, use_dwconv=True
+    )
+    fuser = SimpleFuser(layer=cx_block, num_layers=2)
+    maskmem_backbone = SimpleMaskEncoder(
+        out_dim=64, position_encoding=position_encoding,
+        mask_downsampler=mask_downsampler, fuser=fuser,
+    )
+
+    # Memory attention (4 layers; RoPE self-attn over frame feats + RoPE cross-attn to memory).
+    self_attention = RoPEAttention(
+        embedding_dim=d_model, num_heads=1, downsample_rate=1, dropout=0.1,
+        rope_theta=10000.0, feat_sizes=[72, 72], use_rope_real=False,
+    )
+    cross_attention = RoPEAttention(
+        embedding_dim=d_model, num_heads=1, downsample_rate=1, dropout=0.1, kv_in_dim=64,
+        rope_theta=10000.0, feat_sizes=[72, 72], rope_k_repeat=True, use_rope_real=False,
+    )
+    encoder_layer = TransformerDecoderLayerv2(
+        cross_attention_first=False, activation="relu", dim_feedforward=2048, dropout=0.1,
+        pos_enc_at_attn=False, pre_norm=True, self_attention=self_attention, d_model=d_model,
+        pos_enc_at_cross_attn_keys=True, pos_enc_at_cross_attn_queries=False,
+        cross_attention=cross_attention,
+    )
+    encoder = TransformerEncoderCrossAttention(
+        remove_cross_attention_layers=[], batch_first=True, d_model=d_model, frozen=False,
+        pos_enc_at_input=True, layer=encoder_layer, num_layers=4, use_act_checkpoint=False,
+    )
+    transformer = TransformerWrapper(encoder=encoder, decoder=None, d_model=d_model)
+
+    tracker = Sam3Tracker(
+        transformer=transformer,
+        maskmem_backbone=maskmem_backbone,
+        image_size=1008,
+        num_maskmem=7,
+        backbone_stride=14,
+        multimask_output_in_sam=True,
+        multimask_output_for_tracking=True,
+        multimask_min_pt_num=0,
+        multimask_max_pt_num=1,
+        non_overlap_masks_for_mem_enc=False,
+        max_cond_frames_in_attn=4,
+        sam_mask_decoder_extra_args={
+            "dynamic_multimask_via_stability": True,
+            "dynamic_multimask_stability_delta": 0.05,
+            "dynamic_multimask_stability_thresh": 0.98,
+        },
+        use_memory_selection=True,
+    )
+
+    if ckpt_path is not None:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            ckpt = ckpt["model"]
+        prefix = "tracker."
+        sub = {
+            k[len(prefix):]: v
+            for k, v in ckpt.items()
+            if k.startswith(prefix)
+        }
+        tracker.load_state_dict(sub, strict=True)
+
+    tracker = tracker.to(device)
+    tracker.eval()
+    return tracker
 
 
 # SPDX-License-Identifier: Apache-2.0

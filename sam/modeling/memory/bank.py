@@ -16,6 +16,11 @@ class ObjectMemory:
         memory_pos_embeddings: torch.Tensor,
         ptr: torch.Tensor,
         is_conditional: bool = False,
+        # Optional per-object state some trackers carry alongside (mem, pos, ptr). SAM 3's
+        # per-object memory also produces ``object_score_logits`` (occlusion / no-object gate
+        # consumed by the memory encoder and by memory selection). Kept optional + general so the
+        # dataclass stays pluggable; no SAM-3-specific logic lives here.
+        object_score_logits: torch.Tensor = None,
     ):
         self.obj_id = obj_id
         self.frame_idx = frame_idx
@@ -23,7 +28,8 @@ class ObjectMemory:
         self.memory_pos_embeddings = memory_pos_embeddings
         self.ptr = ptr
         self.is_conditional = is_conditional
-    
+        self.object_score_logits = object_score_logits
+
     @abstractmethod
     def to(self, device: torch.device) -> ObjectMemory:
         return ObjectMemory(
@@ -32,6 +38,12 @@ class ObjectMemory:
             memory_embeddings=self.memory_embeddings.to(device),
             memory_pos_embeddings=self.memory_pos_embeddings.to(device),
             ptr=self.ptr.to(device),
+            is_conditional=self.is_conditional,
+            object_score_logits=(
+                self.object_score_logits.to(device)
+                if self.object_score_logits is not None
+                else None
+            ),
         )
 
 class ObjectMemorySelection:
