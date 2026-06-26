@@ -33,7 +33,7 @@ from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
 from sam.modeling.tracking.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam.prompts import ConceptPrompt, GeometryPrompt
 from sam.results import MaskletResult
-from sam.utils.sam3_transforms import preprocess_to_1008
+from sam.utils.sam3_transforms import preprocess_to_1008, preprocess_to_1008_video
 
 if TYPE_CHECKING:
     from sam.results import Sam3DetectionResult
@@ -266,6 +266,17 @@ class Sam3VideoPredictorState:
     # Tracklet lifecycle state machine (Task 7).  Holds per-obj-id
     # PENDING → CONFIRMED → DEAD transitions driven by det-match signal.
     tracklet_mgr: TrackletManager = field(default_factory=TrackletManager)
+    # --- SAM 3.1 multiplex only (M3); untouched by the base per-object path. ---
+    # The multiplex tracker's SPATIAL memory is BUCKET-space (``num_buckets, C, H, W`` -- a JOINT
+    # K-object encoding, NOT per-object-separable), so it is threaded as the tracker's native
+    # ``output_dict`` (the M1-proven format) rather than the per-object bank. The bank +
+    # tracklet_mgr + allocator still drive the per-object LIFECYCLE (``known_obj_ids`` ->
+    # active set, spawn/confirm/kill); the loop's OUTPUT masks are demuxed per-object.
+    mux_output_dict: dict = field(
+        default_factory=lambda: {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
+    )
+    mux_state: object = None        # the MultiplexState for the (stable) tracked set
+    mux_obj_ids: list = field(default_factory=list)  # obj index i (mux_state) -> obj_id
 
     @property
     def started(self) -> bool:
@@ -763,3 +774,263 @@ class Sam3VideoPredictor(nn.Module):
             obj_ptrs=obj_ptrs,
             obj_scores_logits=obj_scores,
         )
+
+
+class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
+    """SAM 3.1 (multiplex) streaming video concept predictor (spec §8 + §10).
+
+    SUBCLASSES :class:`Sam3VideoPredictor` to REUSE the spec §10 streaming machinery verbatim --
+    the obj-id allocator (``_alloc_obj_id``), ``remove_object``, the Task-7 association +
+    ``TrackletManager`` lifecycle (``_associate_and_update``), the forgetful bank, concept
+    management (``set_concept`` / ``encode_text``), and output un-squashing
+    (``_masklet_from_lowres``) -- but swaps in the SAM 3.1 components: the M1 multiplex vision
+    encoder (a tri-neck: detection / interactive / propagation, run ONCE per frame), the SAM 3.1
+    text tower (base ``Sam3TextEncoder``), the M2 SAM 3.1 detector
+    (``supervise_joint_box_scores`` -> joint score), and the M1 :class:`Sam3MultiplexTracker`.
+
+    Multiplex mux/demux is INTERNAL to the tracker (spec §8): the loop + forgetful bank only ever
+    see PER-OBJECT tensors. Each frame the active objects are packed into one
+    :class:`~sam.modeling.multiplex.MultiplexState` (``num_buckets = ceil(N/K)``, K=16); the SAM
+    head + decoupled memory attention run JOINTLY at ``batch = num_buckets``; the K-slot decode is
+    DEMUXED back to per-object BEFORE it is stored in the (per-object) bank, and the per-object
+    object-pointers are re-MUXED on read (so memory conditioning is bucket-space again). The
+    inherited data-space aliases (``encode_memory`` / ``condition_on_memories`` / ``decode``) are
+    NOT used -- the loop calls the multiplex ``track_step`` directly (they would need a
+    ``multiplex_state`` and raise ``TypeError`` otherwise).
+
+    Scope (the committed parity scenario, like the golden): objects are seeded together on the
+    cond frame and co-tracked thereafter (no mid-stream spawn/despawn mixed into one decode), so a
+    single ``MultiplexState`` per frame + the per-object bank reassembly are exact. Mid-stream
+    spawn-alongside-existing (the upstream dynamic add-object plumbing M1 stripped) is out of
+    scope for this gate.
+    """
+
+    def encode_image(self, x: torch.Tensor):
+        """One trunk pass -> the THREE sam3.1 pyramids (tri-neck), scalp applied to each.
+
+        Returns ``(det_feats, det_pos, prop_feats, prop_pos, int_feats, int_pos)``:
+        ``det_*`` (detection ``convs``) feed the detector; ``prop_*`` (``sam2_convs`` /
+        propagation) feed the tracker's per-frame propagation; ``int_*`` (``interactive_convs``)
+        feed the tracker's cond-frame interactive object-pointer head.
+        """
+        nb = self.vision_encoder.vision_backbone
+        det_f, det_p, prop_f, prop_p, int_f, int_p = nb.forward_all(x)
+        s = self.vision_encoder.scalp
+        if s > 0:
+            det_f, det_p = det_f[:-s], det_p[:-s]
+            prop_f, prop_p = prop_f[:-s], prop_p[:-s]
+            int_f, int_p = int_f[:-s], int_p[:-s]
+        return det_f, det_p, prop_f, prop_p, int_f, int_p
+
+    def _detect(self, det_feats, det_pos, concept: ConceptState) -> "Sam3DetectionResult":
+        """Run the SAM 3.1 detector at the tracker's low-res mask grid, joint-score post-proc.
+
+        The SAM 3.1 detector folds presence into ``pred_logits`` (``supervise_joint_box_scores``),
+        so the score is ``sigmoid(pred_logits)`` directly -- the base ``Sam3DetrDetector.detect``
+        would multiply by presence a SECOND time. Mirrors M2's ``Sam3MultiplexPredictor.predict``
+        post-processing but emits masks at ``(low_res_mask_size, low_res_mask_size)`` (the squashed
+        tracker grid the loop seeds/associates/outputs at). Boxes are unused by the loop
+        (association is mask-IoU) so they are returned as zeros.
+        """
+        from sam.results import Sam3DetectionResult
+
+        m = self.tracker.low_res_mask_size
+        out = self.detector.forward_grounding(
+            det_feats, det_pos, concept.text_emb, concept.text_mask
+        )
+        pred_logits = out["pred_logits"]            # (P, nq, 1) JOINT (presence folded)
+        pred_masks = out["pred_masks"]              # (P, nq, h, w) logits
+        presence_logit = out["presence_logit_dec"]  # (P, 1)
+        out_probs = pred_logits.sigmoid().squeeze(-1)  # (P, nq) joint, no extra presence mult
+        keep = out_probs > 0.5
+        kept_probs = out_probs[keep]
+        kept_masks = pred_masks[keep]               # (N, h, w)
+        masks_logits = F.interpolate(
+            kept_masks.unsqueeze(1).float(), (m, m), mode="bilinear", align_corners=False,
+        ).squeeze(1)  # (N, m, m) logits (binarise at 0)
+        n = masks_logits.shape[0]
+        presence = float(presence_logit.float().sigmoid().reshape(-1)[0])
+        return Sam3DetectionResult(
+            masks_logits=masks_logits,
+            boxes=masks_logits.new_zeros((n, 4)),
+            scores=kept_probs,
+            presence=presence,
+            instance_ids=torch.arange(n, device=masks_logits.device),
+        )
+
+    # ------------------------------------------------------------------
+    # Streaming forward (spec §10 data-flow; multiplex track_step internal)
+    # ------------------------------------------------------------------
+
+    @torch.inference_mode()
+    def forward(
+        self,
+        state: Sam3VideoPredictorState,
+        frame_idx: int,
+        frame,
+        geometry_prompts: list[GeometryPrompt] = [],
+    ) -> dict[int, MaskletResult]:
+        device = self.device
+        H, W = state.video_hw
+        state.num_frames_processed += 1
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            # encode the frame ONCE (the sam3.1 video regime: PIL TF.resize + float16 loader)
+            x = preprocess_to_1008_video(frame, device=device)
+            det_f, det_p, prop_f, prop_p, int_f, int_p = self.encode_image(x)
+            bf_prop = self._mux_backbone_features(prop_f, prop_p, self.tracker.sam_mask_decoder)
+            bf_int = self._mux_backbone_features(
+                int_f, int_p, self.tracker.interactive_sam_mask_decoder
+            )
+            num_frames = frame_idx + 1
+            concept = state.concepts[0] if state.concepts else None
+
+            # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
+            active_ids = sorted(state.bank.known_obj_ids)
+            trk_low_masks: dict[int, torch.Tensor] = {}
+            trk_results: dict[int, dict] = {}
+            if active_ids:
+                per_obj = self._propagate_multiplex(state, frame_idx, bf_prop, num_frames)
+                for oid in state.mux_obj_ids:
+                    trk_results[oid] = per_obj[oid]
+                    trk_low_masks[oid] = per_obj[oid]["pred_masks"][0, 0].float()
+
+            # 2) concept-driven detection (GATED) — joint-score sam3.1 detector
+            det = self._detect(det_f, det_p, concept) if concept is not None else None
+
+            # 3) associate det<->trk + spawn / confirm / kill (Task 7, per-object, unchanged)
+            new_objects: list[tuple[int, int]] = []
+            if det is not None:
+                new_objects = self._associate_and_update(
+                    state, det, active_ids, trk_low_masks, trk_results
+                )
+
+            # 4) seed new detector instances (JOINT multiplex cond-frame mask_as_output)
+            if new_objects:
+                self._seed_multiplex(
+                    state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames
+                )
+
+            # 5) build outputs: existing -> tracker masks; new dets -> detector masks
+            results: dict[int, MaskletResult] = {}
+            for oid in active_ids:
+                if oid not in state.bank.known_obj_ids:
+                    continue  # killed this frame
+                results[oid] = self._masklet_from_lowres(
+                    trk_low_masks[oid], trk_results[oid], H, W
+                )
+            for oid, det_idx in new_objects:
+                results[oid] = self._masklet_from_lowres(
+                    det.masks_logits[det_idx].float(), None, H, W
+                )
+            return results
+
+    # ------------------------------------------------------------------
+    # Multiplex helpers (mux/demux internal; bank sees per-object)
+    # ------------------------------------------------------------------
+
+    def _mux_backbone_features(self, feats, pos, decoder) -> dict:
+        """Project the two hi-res pyramid levels (``conv_s0``/``conv_s1`` of ``decoder``) and
+        flatten to ``(HW, 1, C)`` -- the ``backbone_features_*`` dict the multiplex ``track_step``
+        consumes (batch=1; the multiplex tracker expands to ``num_buckets`` internally)."""
+        fpn = list(feats)
+        fpn[0] = decoder.conv_s0(fpn[0])
+        fpn[1] = decoder.conv_s1(fpn[1])
+        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
+        vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
+        vpos = [p.flatten(2).permute(2, 0, 1) for p in pos]
+        return {
+            "vision_feats": vis,
+            "vision_masks": [None] * len(vis),
+            "vision_pos_embeds": vpos,
+            "feat_sizes": feat_sizes,
+        }
+
+    def _propagate_multiplex(self, state, frame_idx, bf_prop, num_frames) -> dict:
+        """Joint-propagate ALL tracked objects one frame; return per-object output views.
+
+        Reuses the persistent ``MultiplexState`` (``state.mux_state``) + the threaded
+        ``output_dict`` (``state.mux_output_dict``, the multiplex tracker's native BUCKET-space
+        memory). The K-slot decode is demuxed to per-object outputs (masks / score / obj_ptr); the
+        full frame output (bucket-space maskmem + image features) is appended to ``output_dict``
+        for the next frame, then the non-conditional window is pruned (bounded memory).
+        """
+        out = self.tracker.track_step(
+            frame_idx=frame_idx,
+            is_init_cond_frame=False,
+            backbone_features_interactive=None,
+            backbone_features_propagation=bf_prop,
+            point_inputs=None,
+            mask_inputs=None,
+            output_dict=state.mux_output_dict,
+            num_frames=num_frames,
+            multiplex_state=state.mux_state,
+        )
+        state.mux_output_dict["non_cond_frame_outputs"][frame_idx] = out
+        self._prune_mux_memory(state, frame_idx)
+        return self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
+
+    def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
+        """Seed new detector instances JOINTLY (multiplex ``mask_as_output`` cond frame).
+
+        Mirrors the base ``_seed_object`` (resize each detector mask to ``input_mask_size`` +
+        BINARIZE) but stacks all new objects into ONE multiplex ``track_step`` (cond-frame
+        interactive head + joint memory encoder). Builds the persistent ``MultiplexState`` for the
+        tracked set (the committed scenario seeds once, on the cond frame, then co-tracks), records
+        the obj-index -> obj_id map, registers the ids on the bank (lifecycle), and stores the
+        cond-frame output in ``output_dict``.
+        """
+        device = self.device
+        new_ids = [oid for oid, _ in new_objects]
+        mux_state = self.tracker.multiplex_controller.get_state(
+            len(new_ids), device, torch.float32, random=False
+        )
+        ims = self.tracker.input_mask_size
+        masks = []
+        for _oid, det_idx in new_objects:
+            m = F.interpolate(
+                det.masks_logits[det_idx][None, None].float(), size=(ims, ims),
+                mode="bilinear", align_corners=False,
+            )
+            masks.append((m > 0.0).float())
+        mask_inputs = torch.cat(masks, dim=0)  # (n, 1, ims, ims)
+        out = self.tracker.track_step(
+            frame_idx=frame_idx,
+            is_init_cond_frame=True,
+            backbone_features_interactive=bf_int,
+            backbone_features_propagation=bf_prop,
+            point_inputs=None,
+            mask_inputs=mask_inputs,
+            output_dict={"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
+            num_frames=num_frames,
+            multiplex_state=mux_state,
+        )
+        state.mux_state = mux_state
+        state.mux_obj_ids = new_ids
+        state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
+        for oid in new_ids:
+            state.bank.known_obj_ids.add(oid)
+
+    def _demux_outputs(self, out, mux_state, obj_ids) -> dict:
+        """Slice the joint track_step output into per-object dicts. ``pred_masks`` /
+        ``object_score_logits`` are already demuxed; ``obj_ptr`` is muxed in ``out`` so it is
+        demuxed here. Indexed in the ``MultiplexState`` object order == ``obj_ids`` order."""
+        per_obj_ptr = mux_state.demux(out["obj_ptr"])  # (N, C)
+        per_obj = {}
+        for i, oid in enumerate(obj_ids):
+            per_obj[oid] = {
+                "pred_masks": out["pred_masks"][i : i + 1],
+                "pred_masks_high_res": out["pred_masks_high_res"][i : i + 1],
+                "object_score_logits": out["object_score_logits"][i : i + 1],
+                "obj_ptr": per_obj_ptr[i : i + 1],
+            }
+        return per_obj
+
+    @staticmethod
+    def _prune_mux_memory(state, frame_idx: int) -> None:
+        """Drop non-conditional frame memories outside the forgetful window (cond kept
+        indefinitely) so the threaded bucket-space ``output_dict`` stays bounded vs clip length."""
+        window = getattr(state.bank, "memory_window_size", 7)
+        nc = state.mux_output_dict["non_cond_frame_outputs"]
+        for t in list(nc):
+            if t < frame_idx - window:
+                del nc[t]

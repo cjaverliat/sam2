@@ -853,3 +853,151 @@ def test_sam3p1_image_parity(image_sam31_fixture):
     top = int(np.argmax(scores))
     iou = _mask_iou(my_masks[top], g_masks[top])
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3.1 multiplex streaming video predictor (M3) ---------------------------------
+def test_sam3p1_video_parity(video_sam31_fixture):
+    """End-to-end SAM 3.1 MULTIPLEX streaming video parity through the real builder.
+
+    Replicates the sam3.1 multiplex video golden (``video_sam31.npz``,
+    ``capture_sam3_golden.capture_video_sam31``): ``add_prompt(@f0, "person")`` -> detect the
+    people on frame 0 (cond frame, multiplex ``mask_as_output`` seed) -> ``propagate_in_video``
+    frames 1..3 (joint multiplex ``track_step`` at ``batch=num_buckets``; the K-slot decode is
+    demuxed back to per-object before storage). Streamed here through
+    ``build_sam3_multiplex_video_predictor`` + ``Sam3MultiplexVideoPredictor.forward``:
+      ``set_concept(ConceptPrompt("person"))`` -> stream frames 0..3 -> collect per-object masks.
+
+    Frames are preprocessed with ``preprocess_to_1008_video`` (the PIL ``TF.resize`` + float16
+    folder loader the multiplex video demo used -- NOT the image ``preprocess_to_1008`` GPU-resize
+    path, whose ~0.037 median encoder bias would compound through the tracker's memory; see
+    STEP 0 / m3-report).
+
+    Gate (mirrors Task 9's ``test_sam3_video_parity`` -- honest + robust): exact object COUNT per
+    frame, a bijective golden<->mine id-mapping (Hungarian on IoU, since our allocator may number
+    objects differently than the official spawn order), per-frame MEAN IoU >= 0.99, min >= 0.98,
+    and >= N-1 objects >= 0.99 (one hard / occluded object may dip to ~0.985, an FA3-absent SDPA
+    seed limit, like base obj-1). Regime: bf16 autocast + deterministic TF32-off.
+    """
+    if not CKPT_MUX.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT_MUX}")
+    from scipy.optimize import linear_sum_assignment
+
+    from sam.build_sam import build_sam3_multiplex_video_predictor
+    from sam.models.sam3_predictor import Sam3VideoPredictorState
+    from sam.prompts import ConceptPrompt
+
+    _determinism()
+    predictor = build_sam3_multiplex_video_predictor(
+        config_file="configs/sam3/sam3.1.yaml", ckpt_path=str(CKPT_MUX), device="cuda"
+    )
+
+    fx = video_sam31_fixture
+    frames = fx["video_frames_rgb"]  # (T,288,512,3) uint8
+    video_h, video_w = (int(v) for v in fx["video_hw"])
+    phrase = str(fx["video_phrase"])  # "person"
+    n_frames = int(frames.shape[0])
+
+    state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
+    predictor.set_concept(state, ConceptPrompt(phrase))
+
+    per_frame_masks = {}  # frame_idx -> {obj_id: (H,W) uint8}
+    for f_idx in range(n_frames):
+        out = predictor.forward(state, f_idx, frames[f_idx])
+        per_frame_masks[f_idx] = {
+            oid: (r.masks_logits.float().cpu().numpy()[0, 0] > 0.0).astype(np.uint8)
+            for oid, r in out.items()
+        }
+
+    id_mapping = {}
+    for f_idx in range(n_frames):
+        g_ids = fx[f"frame{f_idx}_obj_ids"].tolist()
+        my = per_frame_masks[f_idx]
+        my_ids = list(my.keys())
+        assert len(my_ids) == len(g_ids), (
+            f"frame {f_idx}: object count {len(my_ids)} != golden {len(g_ids)} "
+            f"(mine={my_ids}, golden={g_ids})"
+        )
+        # Hungarian-match golden<->mine on IoU; require every golden object reproduced.
+        iou_mat = np.zeros((len(g_ids), len(my_ids)), np.float64)
+        for i, gid in enumerate(g_ids):
+            g = fx[f"frame{f_idx}_obj{gid}"].astype(np.uint8)  # (288,512)
+            for j, mid in enumerate(my_ids):
+                iou_mat[i, j] = _mask_iou(my[mid], g)
+        row, col = linear_sum_assignment(-iou_mat)
+        matched = {int(g_ids[r]): (int(my_ids[c]), float(iou_mat[r, c])) for r, c in zip(row, col)}
+        id_mapping[f_idx] = matched
+        assert len(set(c for _, c in zip(row, col))) == len(g_ids), (
+            f"frame {f_idx}: id-mapping is not a bijection ({matched})"
+        )
+        ious = [v[1] for v in matched.values()]
+        min_iou = min(ious)
+        mean_iou = sum(ious) / len(ious)
+        n_ge_99 = sum(1 for x in ious if x >= 0.99)
+        assert min_iou >= 0.98, (
+            f"frame {f_idx}: per-object multiplex video IoU {matched} (min={min_iou:.4f} < 0.98)"
+        )
+        assert mean_iou >= 0.99, (
+            f"frame {f_idx}: mean per-object multiplex IoU {mean_iou:.4f} < 0.99 ({matched})"
+        )
+        assert n_ge_99 >= len(ious) - 1, (
+            f"frame {f_idx}: only {n_ge_99}/{len(ious)} multiplex objects >= 0.99 ({matched})"
+        )
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+def test_sam3p1_video_constant_vram(video_sam31_fixture):
+    """Peak CUDA memory stays ~flat as the streamed clip grows (the multiplex fork property).
+
+    The multiplex tracker's BUCKET-space spatial memory is threaded as the tracker's native
+    ``output_dict``; ``Sam3MultiplexVideoPredictor`` prunes its non-conditional frame entries
+    outside the forgetful window (cond frames kept), so the per-frame stored memory is bounded to
+    ``<= window`` non-conditional frames -> peak VRAM does not grow with clip length. Streams the 4
+    golden frames looped to ``N_LONG`` and asserts ``max_memory_allocated`` after the final frame
+    is within a small tolerance of its value once the window is FULL. The peak is reset at
+    ``WARM_FRAME`` (the window-fill point, ``> memory_window_size``) -- unlike the base tracker
+    (mem_dim 64), the multiplex memory (mem_dim 256 + the saved image features) is large enough
+    that resetting before the window fills measures the warmup ramp, not the steady state. Mirrors
+    Task 9's base ``test_sam3_video_constant_vram``.
+    """
+    if not CKPT_MUX.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT_MUX}")
+    from sam.build_sam import build_sam3_multiplex_video_predictor
+    from sam.models.sam3_predictor import Sam3VideoPredictorState
+    from sam.prompts import ConceptPrompt
+
+    _determinism()
+    predictor = build_sam3_multiplex_video_predictor(
+        config_file="configs/sam3/sam3.1.yaml", ckpt_path=str(CKPT_MUX), device="cuda"
+    )
+
+    fx = video_sam31_fixture
+    base_frames = fx["video_frames_rgb"]  # (4,288,512,3)
+    video_h, video_w = (int(v) for v in fx["video_hw"])
+    phrase = str(fx["video_phrase"])
+    N_LONG = 16
+    WARM_FRAME = 9  # > forgetful window (7): the non-conditional store is full and steady here
+
+    state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
+    predictor.set_concept(state, ConceptPrompt(phrase))
+
+    mem_after_warm = None
+    for f_idx in range(N_LONG):
+        frame = base_frames[f_idx % base_frames.shape[0]]
+        predictor.forward(state, f_idx, frame)
+        torch.cuda.synchronize()
+        if f_idx == WARM_FRAME:  # after the forgetful window has FILLED (steady-state working set)
+            torch.cuda.reset_peak_memory_stats()
+            mem_after_warm = torch.cuda.max_memory_allocated()
+
+    torch.cuda.synchronize()
+    mem_after_long = torch.cuda.max_memory_allocated()
+
+    assert mem_after_warm is not None and mem_after_warm > 0
+    # From the window-full frame on, the per-frame working set is bounded (<= window non-cond
+    # frames + the cond frames), so peak VRAM must not balloon. Allow 25% allocator slack.
+    growth = (mem_after_long - mem_after_warm) / mem_after_warm
+    assert growth <= 0.25, (
+        f"peak VRAM grew {growth:.1%} from frame {WARM_FRAME} ({mem_after_warm/1e6:.1f} MB) to "
+        f"frame {N_LONG-1} ({mem_after_long/1e6:.1f} MB) -- not constant-VRAM"
+    )

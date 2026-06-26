@@ -1234,6 +1234,146 @@ def build_sam3_multiplex(
     return model
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3.1 multiplex streaming video predictor (M3) -------------------------
+# Mirrors build_sam3_video_predictor (base) but for the SAM 3.1 multiplex path: compose the
+# detector + text tower from configs/sam3/sam3.1.yaml, build a TRI-neck sam3.1 vision encoder
+# (detection + interactive + propagation necks from one trunk) + the M1 Sam3MultiplexTracker, wrap
+# them in Sam3MultiplexVideoPredictor, and strict-load the FULL sam3.1_multiplex.pt = detector.*
+# (1166: vision_backbone 474 + language 295 + DETR head 397) + tracker.model.* (457) = 1623 keys.
+
+
+def _build_sam3_multiplex_video_vision_encoder_module():
+    """Construct the SAM 3.1 TRI-neck vision encoder (weights-only, no load, on CPU).
+
+    Unlike the M1 ``build_sam3_multiplex_vision_encoder`` (a DUAL neck: interactive->convs,
+    propagation->sam2_convs -- the tracker-only path), the video predictor also runs the DETECTOR,
+    so it needs all THREE necks from one trunk pass: detection ``convs`` (-> detector),
+    ``interactive_convs`` (-> the tracker's cond-frame object-pointer head), and
+    ``propagation_convs`` (-> ``sam2_convs``, the tracker's per-frame propagation). ``scalp=0`` so
+    each pyramid is the 3-level [288,144,72] the sam3.1 model uses.
+    """
+    from sam.modeling.encoders.necks import Sam3DualViTDetNeck
+    from sam.modeling.encoders.pe_vitdet import ViT
+    from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+
+    trunk = ViT(
+        img_size=1008, pretrain_img_size=336, patch_size=14, embed_dim=1024, depth=32,
+        num_heads=16, mlp_ratio=4.625, norm_layer="LayerNorm", drop_path_rate=0.1,
+        qkv_bias=True, use_abs_pos=True, tile_abs_pos=True, global_att_blocks=(7, 15, 23, 31),
+        use_rope=True, use_interp_rope=True, window_size=24, pretrain_use_cls_token=True,
+        retain_cls_token=False, ln_pre=True, ln_post=False, return_interm_layers=False,
+        bias_patch_embed=False,
+    )
+    position_encoding = PositionEmbeddingSine(
+        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
+    )
+    neck = Sam3DualViTDetNeck(
+        trunk=trunk, position_encoding=position_encoding, d_model=256,
+        scale_factors=[4.0, 2.0, 1.0], add_sam2_neck=True, add_interactive_neck=True,
+    )
+    return Sam3VisionEncoder(vision_backbone=neck, scalp=0)
+
+
+def _load_sam3_multiplex_video_checkpoint(model, ckpt_path):
+    """Strict-load the FULL ``sam3.1_multiplex.pt`` (1623 keys) into a ``Sam3MultiplexVideoPredictor``.
+
+      ``detector.backbone.vision_backbone.trunk.*``             -> ``vision_encoder.vision_backbone.trunk.*``           (420)
+      ``detector.backbone.vision_backbone.convs.*`` (detection) -> ``vision_encoder.vision_backbone.convs.*``           (18)
+      ``detector.backbone.vision_backbone.interactive_convs.*`` -> ``vision_encoder.vision_backbone.interactive_convs.*`` (18)
+      ``detector.backbone.vision_backbone.propagation_convs.*`` -> ``vision_encoder.vision_backbone.sam2_convs.*``       (18)
+      ``detector.backbone.language_backbone.*``                 -> ``text_encoder.*``                                    (295)
+      ``detector.*`` (minus ``detector.backbone.*``)            -> ``detector.*`` (DETR head)                           (397)
+      ``tracker.model.*``                                       -> ``tracker.*`` (multiplex tracker)                    (457)
+
+    474 + 295 + 397 + 457 = **1623 keys, strict (0 missing / 0 unexpected)**.
+    """
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    vb_prefix = "detector.backbone.vision_backbone."
+    lb_prefix = "detector.backbone.language_backbone."
+    sub = {}
+    for k, v in ckpt.items():
+        if k.startswith(vb_prefix):
+            rel = k[len(vb_prefix):]
+            if rel.startswith("propagation_convs."):
+                rel = "sam2_convs." + rel[len("propagation_convs."):]
+            # detection ``convs.*``, ``interactive_convs.*`` and ``trunk.*`` map 1:1
+            sub["vision_encoder.vision_backbone." + rel] = v
+        elif k.startswith(lb_prefix):
+            sub["text_encoder." + k[len(lb_prefix):]] = v
+        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
+            sub[k] = v  # detector head keys (transformer/geometry/seg/scoring) map 1:1
+        elif k.startswith("tracker.model."):
+            sub["tracker." + k[len("tracker.model."):]] = v  # multiplex tracker (457)
+    model.load_state_dict(sub, strict=True)
+
+
+def build_sam3_multiplex_video_predictor(
+    config_file,
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+    hydra_overrides_extra=[],
+    **kwargs,
+):
+    """Build a SAM 3.1 multiplex streaming video predictor (``Sam3MultiplexVideoPredictor``).
+
+    Mirrors :func:`build_sam3_video_predictor` (base): compose ``config_file`` (e.g.
+    ``"configs/sam3/sam3.1.yaml"``) for the SAM 3.1 text tower + DETR detector
+    (``supervise_joint_box_scores=true``), build the TRI-neck sam3.1 vision encoder + the M1
+    ``Sam3MultiplexTracker`` directly, wrap them, and strict-load the full ``sam3.1_multiplex.pt``
+    (1623 keys). The forgetful bank owns temporal memory selection, so the tracker runs with
+    ``use_memory_selection=False`` (already set in ``_build_sam3_multiplex_tracker_module``).
+    """
+    from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor
+
+    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
+    OmegaConf.resolve(cfg)
+    text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
+    detector = instantiate(cfg.model.detector, _recursive_=True)
+    vision_encoder = _build_sam3_multiplex_video_vision_encoder_module()
+    tracker = _build_sam3_multiplex_tracker_module()
+
+    model = Sam3MultiplexVideoPredictor(
+        vision_encoder=vision_encoder,
+        text_encoder=text_encoder,
+        detector=detector,
+        tracker=tracker,
+    )
+    _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+HF_SAM3P1_MODEL_ID_TO_CONFIG = {
+    "facebook/sam3.1": ("configs/sam3/sam3.1.yaml", "sam3.1_multiplex.pt"),
+}
+
+
+def build_sam3_multiplex_video_predictor_hf(model_id, **kwargs):
+    """Build a SAM 3.1 multiplex video predictor from a HuggingFace model id (downloads weights).
+
+    The hydra config is OURS (``configs/sam3/sam3.1.yaml``); only the gated
+    ``sam3.1_multiplex.pt`` is pulled from HF. Mirrors :func:`build_sam3_video_predictor_hf`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_SAM3P1_MODEL_ID_TO_CONFIG.get(
+        model_id, ("configs/sam3/sam3.1.yaml", "sam3.1_multiplex.pt")
+    )
+    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
+    return build_sam3_multiplex_video_predictor(
+        config_file=config_file, ckpt_path=ckpt_path, **kwargs
+    )
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:

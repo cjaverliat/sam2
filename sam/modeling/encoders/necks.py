@@ -23,11 +23,16 @@ class Sam3DualViTDetNeck(nn.Module):
         d_model: int,
         scale_factors=(4.0, 2.0, 1.0, 0.5),
         add_sam2_neck: bool = False,
+        add_interactive_neck: bool = False,
     ):
         """SimpleFPN neck a la ViTDet (from detectron2, very lightly adapted).
 
         Optionally supports a "dual neck" setting (``add_sam2_neck``): two identical necks
-        (for SAM 3 and SAM 2) with different weights.
+        (for SAM 3 and SAM 2) with different weights. ``add_interactive_neck`` adds a THIRD
+        identical neck (``interactive_convs``) -- the SAM 3.1 multiplex *video* path is a
+        tri-neck (detection ``convs`` + ``interactive_convs`` + ``propagation_convs``), all fed
+        by ONE trunk pass; the third neck is exposed only via :meth:`forward_all` so the base
+        (dual/single) :meth:`forward` arity is byte-unchanged.
 
         :param trunk: the backbone
         :param position_encoding: the positional encoding to use
@@ -93,6 +98,12 @@ class Sam3DualViTDetNeck(nn.Module):
             # Assumes the sam2 neck is just a clone of the original neck.
             self.sam2_convs = deepcopy(self.convs)
 
+        self.interactive_convs = None
+        if add_interactive_neck:
+            # The SAM 3.1 multiplex tracker's interactive (cond-frame object-pointer) neck --
+            # a third clone, fed by the same trunk output (see forward_all).
+            self.interactive_convs = deepcopy(self.convs)
+
     def forward(
         self, tensor_list: List[torch.Tensor]
     ) -> Tuple[
@@ -119,3 +130,33 @@ class Sam3DualViTDetNeck(nn.Module):
                 sam2_out.append(sam2_x_out)
                 sam2_pos.append(sam2_pos_out)
         return sam3_out, sam3_pos, sam2_out, sam2_pos
+
+    def forward_all(self, tensor_list: List[torch.Tensor]):
+        """Tri-neck forward: ONE trunk pass -> ``(sam3_out, sam3_pos, sam2_out, sam2_pos,
+        interactive_out, interactive_pos)``.
+
+        ``interactive_*`` is ``None`` when the encoder was built without
+        ``add_interactive_neck``. Additive to :meth:`forward` (which keeps its 4-tuple arity so
+        every base caller is byte-unchanged); used only by the SAM 3.1 multiplex *video*
+        predictor, whose ``encode_image`` needs all three pyramids (detection ``convs`` ->
+        detector, ``sam2_convs`` -> tracker propagation, ``interactive_convs`` -> the tracker's
+        cond-frame interactive object-pointer head) from a single heavy ViT trunk pass.
+        """
+        xs = self.trunk(tensor_list)
+        x = xs[-1]  # simpleFPN
+        sam3_out, sam3_pos = [], []
+        sam2_out, sam2_pos = ([], []) if self.sam2_convs is not None else (None, None)
+        int_out, int_pos = ([], []) if self.interactive_convs is not None else (None, None)
+        for i in range(len(self.convs)):
+            a = self.convs[i](x)
+            sam3_out.append(a)
+            sam3_pos.append(self.position_encoding(a).to(a.dtype))
+            if self.sam2_convs is not None:
+                b = self.sam2_convs[i](x)
+                sam2_out.append(b)
+                sam2_pos.append(self.position_encoding(b).to(b.dtype))
+            if self.interactive_convs is not None:
+                c = self.interactive_convs[i](x)
+                int_out.append(c)
+                int_pos.append(self.position_encoding(c).to(c.dtype))
+        return sam3_out, sam3_pos, sam2_out, sam2_pos, int_out, int_pos
