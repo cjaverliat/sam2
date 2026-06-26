@@ -984,6 +984,7 @@ class Sam3DetrDetector(nn.Module):
         dot_prod_scoring: DotProductScoring,
         num_feature_levels: int = 1,
         o2m_mask_predict: bool = True,
+        supervise_joint_box_scores: bool = False,
     ):
         super().__init__()
         self.transformer = transformer
@@ -993,6 +994,11 @@ class Sam3DetrDetector(nn.Module):
         self.hidden_dim = transformer.d_model
         self.num_feature_levels = num_feature_levels
         self.o2m_mask_predict = o2m_mask_predict
+        # SAM 3.1: fold the presence probability into ``pred_logits`` (joint box-score
+        # supervision). Base ``sam3.pt`` leaves them separate (``supervise_joint_box_scores
+        # =False``); SAM 3.1 trains the joint score, so the captured ``pred_logits`` already
+        # carry presence and ``out_probs = sigmoid(pred_logits)`` (no extra presence mult).
+        self.supervise_joint_box_scores = supervise_joint_box_scores
 
     def _update_scores_and_boxes(self, out, hs, reference_boxes, prompt, prompt_mask,
                                  dec_presence_out):
@@ -1006,6 +1012,17 @@ class Sam3DetrDetector(nn.Module):
         outputs_boxes_xyxy = box_cxcywh_to_xyxy(outputs_coord)
         if dec_presence_out is not None:
             out["presence_logit_dec"] = dec_presence_out[-1]
+        if self.supervise_joint_box_scores:
+            # SAM 3.1: pred_logits = inverse_sigmoid(sigmoid(class) * sigmoid(presence)),
+            # so sigmoid(pred_logits) is the presence-weighted joint score directly
+            # (verbatim from Sam3Image._update_scores_and_boxes).
+            assert dec_presence_out is not None, (
+                "supervise_joint_box_scores requires the decoder presence token"
+            )
+            prob_dec_presence_out = dec_presence_out.clone().sigmoid()
+            outputs_class = inverse_sigmoid(
+                outputs_class.sigmoid() * prob_dec_presence_out.unsqueeze(2)
+            ).clamp(min=-10.0, max=10.0)
         out["pred_logits"] = outputs_class[:, :, :num_o2o][-1]
         out["pred_boxes"] = outputs_coord[:, :, :num_o2o][-1]
         out["pred_boxes_xyxy"] = outputs_boxes_xyxy[:, :, :num_o2o][-1]

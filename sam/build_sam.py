@@ -1161,6 +1161,79 @@ def build_sam3_multiplex_tracker(ckpt_path=None, device="cuda"):
     return tracker
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3.1 multiplex image concept predictor (M2) ---------------------------
+# Hydra-compose builder for the full Sam3MultiplexPredictor (image): the SAM 3.1 PE vision
+# encoder (DETECTION tri-neck head `convs`) + text tower + DETR detector
+# (supervise_joint_box_scores=true), composed from configs/sam3/sam3.1.yaml and strict-loading
+# the relevant detector.* subtree of a local sam3.1_multiplex.pt. Mirrors build_sam3 (the base
+# image builder): compose -> instantiate -> load. The SAM 3.1 detector HEAD is architecturally
+# identical to base (same 397 keys); the +10 detector.* keys are the tri-neck's extra conv set.
+
+
+def _load_sam3_multiplex_image_checkpoint(model, ckpt_path):
+    """Strict-load the relevant ``detector.*`` subtree of ``sam3.1_multiplex.pt`` into a
+    ``Sam3MultiplexPredictor`` (1130 of the 1166 ``detector.*`` keys).
+
+    The predictor separates the upstream ``Sam3MultiplexDetector.backbone`` into the OWNED
+    ``vision_encoder`` + ``text_encoder``, so the checkpoint keys are remapped in three groups:
+
+      ``detector.backbone.vision_backbone.{trunk,convs}.*`` -> ``vision_encoder.vision_backbone.*``  (420 trunk + 18 detection `convs` = 438)
+      ``detector.backbone.language_backbone.*``             -> ``text_encoder.*``                     (295)
+      ``detector.*`` (minus ``detector.backbone.*``)        -> ``detector.*``                         (397, the DETR head)
+
+    The tri-neck's ``interactive_convs`` / ``propagation_convs`` (18 + 18 = 36 keys) are
+    TRACKER-only (M1) and are SKIPPED -- the image detector consumes only the detection neck.
+    ``tracker.*`` (457) is ignored (the image predictor has no tracker). The load is STRICT
+    over the predictor's 1130 params (0 missing / 0 unexpected).
+    """
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    vb_prefix = "detector.backbone.vision_backbone."
+    lb_prefix = "detector.backbone.language_backbone."
+    sub = {}
+    for k, v in ckpt.items():
+        if k.startswith(vb_prefix):
+            rel = k[len(vb_prefix):]
+            if rel.startswith("interactive_convs.") or rel.startswith("propagation_convs."):
+                continue  # tracker-only necks (M1); the image detector uses detection `convs`
+            sub["vision_encoder.vision_backbone." + rel] = v
+        elif k.startswith(lb_prefix):
+            sub["text_encoder." + k[len(lb_prefix):]] = v
+        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
+            sub[k] = v  # detector head keys (transformer/geometry/seg/scoring) map 1:1
+    model.load_state_dict(sub, strict=True)
+
+
+def build_sam3_multiplex(
+    config_file,
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+    hydra_overrides_extra=[],
+    **kwargs,
+):
+    """Build a SAM 3.1 multiplex image concept predictor (``Sam3MultiplexPredictor``).
+
+    Mirrors :func:`build_sam3`: hydra-compose ``config_file`` (e.g.
+    ``"configs/sam3/sam3.1.yaml"``) -> instantiate the owned SAM 3.1 vision encoder /
+    text tower / detector via their ``_target_``s -> strict-load the relevant ``detector.*``
+    subtree of ``ckpt_path`` (a local ``sam3.1_multiplex.pt``). Returns the predictor on
+    ``device``, in eval mode when ``mode == "eval"``.
+    """
+    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
+    OmegaConf.resolve(cfg)
+    model = instantiate(cfg.model, _recursive_=True)
+    _load_sam3_multiplex_image_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:

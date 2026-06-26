@@ -158,6 +158,95 @@ class Sam3Predictor(nn.Module):
             )
 
 
+def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
+    """Tight ``xyxy`` (pixel) bounding box of each binary mask -- ``torchvision.ops.
+    masks_to_boxes`` semantics (xmax/ymax are inclusive max indices).
+
+    The SAM 3.1 multiplex demo derives detection boxes from the OUTPUT masks
+    (``Sam3MultiplexTracking._postprocess_output`` runs ``masks_to_boxes`` on
+    ``out_binary_masks``), so the committed ``image_sam31.npz`` ``boxes`` are mask-derived,
+    not the raw DETR ``pred_boxes``. Reproducing the box the same way keeps the box and mask
+    consistent (the gate compares against the mask-derived golden).
+    """
+    n = masks.shape[0]
+    boxes = masks.new_zeros((n, 4), dtype=torch.float32)
+    for i in range(n):
+        ys, xs = torch.where(masks[i])
+        if ys.numel() == 0:
+            continue
+        boxes[i, 0] = xs.min()
+        boxes[i, 1] = ys.min()
+        boxes[i, 2] = xs.max()
+        boxes[i, 3] = ys.max()
+    return boxes
+
+
+class Sam3MultiplexPredictor(Sam3Predictor):
+    """SAM 3.1 (multiplex) image concept predictor (text-only path).
+
+    Mirrors :class:`Sam3Predictor` -- OWNS the SAM 3.1 PE vision encoder (the DETECTION
+    tri-neck head ``convs``, run ONCE per image), the SAM 3.1 text tower, and the SAM 3.1
+    DETR detector -- but the detector is built with ``supervise_joint_box_scores=True`` (the
+    SAM 3.1 difference). It reuses the base ``encode_image`` / ``encode_text`` / ``device``
+    (the text path feeds the detector exactly the text-id-0 slice == encoding the positive
+    phrase alone, which equals ``image_sam31.npz``'s ``text_emb[:, 0]``).
+
+    ``predict`` overrides the base post-processing to the SAM 3.1 demo semantics:
+      * the score is the joint ``sigmoid(pred_logits)`` (presence is already folded into
+        ``pred_logits`` by ``supervise_joint_box_scores``; NO extra presence multiply), and
+      * the box is ``masks_to_boxes`` of the output mask (the multiplex demo derives boxes
+        from masks), not the raw DETR ``pred_boxes``.
+    Built by :func:`sam.build_sam.build_sam3_multiplex` (compose ``configs/sam3/sam3.1.yaml``
+    -> instantiate -> strict-load the relevant ``detector.*`` subtree of
+    ``sam3.1_multiplex.pt``).
+    """
+
+    @torch.inference_mode()
+    def predict(
+        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5
+    ) -> "Sam3DetectionResult":
+        """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
+
+        Args mirror :meth:`Sam3Predictor.predict`. Runs under bf16 autocast + inference_mode
+        (the only supported SAM 3 regime); the shared encoder runs ONCE.
+        """
+        from sam.results import Sam3DetectionResult
+
+        device = self.device
+        image_hw = (int(image.shape[0]), int(image.shape[1]))
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            x = preprocess_to_1008(image, device=device)
+            feats, pos = self.encode_image(x)
+            text_emb, text_mask = self.encode_text(concept)
+            out = self.detector.forward_grounding(feats, pos, text_emb, text_mask)
+
+        pred_logits = out["pred_logits"]              # (P, nq, 1) -- JOINT (presence folded)
+        pred_masks = out["pred_masks"]                # (P, nq, h, w) logits
+        presence_logit = out["presence_logit_dec"]    # (P, 1)
+
+        out_probs = pred_logits.sigmoid().squeeze(-1)  # (P, nq) -- joint score, no extra mult
+        keep = out_probs > confidence_threshold
+        kept_probs = out_probs[keep]
+        kept_masks = pred_masks[keep]                  # (N, h, w)
+
+        img_h, img_w = image_hw
+        masks_logits = F.interpolate(
+            kept_masks.unsqueeze(1).float(), (img_h, img_w),
+            mode="bilinear", align_corners=False,
+        ).squeeze(1)  # (N, H, W) logits (binarise at 0 == prob > 0.5)
+        boxes = _masks_to_boxes(masks_logits > 0.0)    # (N, 4) xyxy px (mask-derived)
+
+        presence = float(presence_logit.float().sigmoid().reshape(-1)[0])
+        instance_ids = torch.arange(boxes.shape[0], device=boxes.device)
+        return Sam3DetectionResult(
+            masks_logits=masks_logits,
+            boxes=boxes,
+            scores=kept_probs,
+            presence=presence,
+            instance_ids=instance_ids,
+        )
+
+
 @dataclass
 class ConceptState:
     concept_id: int

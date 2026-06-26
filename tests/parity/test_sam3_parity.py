@@ -769,3 +769,87 @@ def test_sam3p1_tracker_step_parity(video_sam31_fixture):
             for mj in range(n) for gc in range(3) for mc_ in range(3)
         )
         assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3.1 multiplex detector + image predictor (M2) --------------------------------
+@pytest.fixture(scope="module")
+def image_sam31_fixture():
+    f = FIXTURES / "image_sam31.npz"
+    if not f.is_file():
+        pytest.skip(f"fixture absent: {f}")
+    return dict(np.load(f, allow_pickle=True))
+
+
+def test_sam3p1_image_parity(image_sam31_fixture):
+    """End-to-end SAM 3.1 image concept-prediction parity through the real builder/config.
+
+    ``build_sam3_multiplex(configs/sam3/sam3.1.yaml, checkpoints/sam3.1_multiplex.pt)``
+    composes the SAM 3.1 PE vision encoder (DETECTION tri-neck head ``convs``, 3 levels) +
+    the SAM 3.1 text tower + the SAM 3.1 DETR detector (``supervise_joint_box_scores=True``)
+    from ONE hydra config and strict-loads the relevant ``detector.*`` subtree (1130 of the
+    1166 keys; the 36 interactive/propagation neck keys are tracker-only). The captured
+    ``image_sam31.npz`` golden ran the truck@384x512 / phrase "truck" through the multiplex
+    predictor's detector (set-prediction, NOT multiplex) on a single frame.
+
+    ``predict(truck, ConceptPrompt("truck"))`` runs preprocessing (GPU resize -> 1008) +
+    ``encode_image`` (once) + ``encode_text`` (the text-id-0 slice = encoding "truck" alone,
+    == ``text_emb[:, 0]``) + the detector grounding, post-processed with the SAM 3.1 demo
+    semantics (joint score ``sigmoid(pred_logits)`` since presence is folded in; boxes from
+    ``masks_to_boxes`` of the output masks, mirroring the capture). Gates mirror the base
+    image parity: boxes (atol 2px), scores (atol 1e-2), presence (atol 1e-2), top-mask
+    IoU >= 0.99, and exactly 1 instance. Regime: bf16 autocast + deterministic TF32-off.
+    """
+    if not CKPT_MUX.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT_MUX}")
+    import torch as _torch
+
+    from sam.build_sam import build_sam3_multiplex
+    from sam.prompts import ConceptPrompt
+
+    _determinism()
+    predictor = build_sam3_multiplex(
+        config_file="configs/sam3/sam3.1.yaml",
+        ckpt_path=str(CKPT_MUX),
+        device="cuda",
+    )
+
+    fx = image_sam31_fixture
+    image_rgb = fx["image_input_rgb"]  # (384,512,3) uint8 -- the golden input
+    thr = float(fx["confidence_threshold"])
+
+    # predict() owns preprocessing (GPU resize), encode_image, encode_text, grounding +
+    # post-processing, and runs under bf16 autocast + inference_mode internally.
+    result = predictor.predict(image_rgb, ConceptPrompt("truck"), confidence_threshold=thr)
+
+    g_boxes = fx["boxes"].astype(np.float32)    # (N,4) xyxy px
+    g_scores = fx["scores"].astype(np.float32)  # (N,)
+    g_masks = fx["masks"].astype(np.uint8)      # (N,H,W)
+    boxes = result.boxes.float().cpu().numpy()
+    scores = result.scores.float().cpu().numpy()
+
+    # --- instance count == golden (== 1) --------------------------------------------
+    assert g_boxes.shape[0] == 1, f"fixture sanity: expected 1 golden detection, got {g_boxes.shape[0]}"
+    assert boxes.shape[0] == 1, f"instance count {boxes.shape[0]} != 1"
+
+    # --- final boxes / scores -------------------------------------------------------
+    assert boxes.shape == g_boxes.shape, f"boxes shape {boxes.shape} != golden {g_boxes.shape}"
+    assert scores.shape == g_scores.shape, f"scores shape {scores.shape} != golden {g_scores.shape}"
+    d_box = float(np.max(np.abs(boxes - g_boxes)))
+    d_sc = float(np.max(np.abs(scores - g_scores)))
+    np.testing.assert_allclose(boxes, g_boxes, atol=2.0,
+                               err_msg=f"final boxes max|delta|={d_box:.4g}px")
+    np.testing.assert_allclose(scores, g_scores, atol=1e-2,
+                               err_msg=f"final scores max|delta|={d_sc:.4g}")
+
+    # --- presence (decoder presence token, last layer) ------------------------------
+    g_presence = float(fx["presence"].reshape(-1)[0])
+    d_pres = abs(float(result.presence) - g_presence)
+    assert d_pres <= 1e-2, f"presence |delta|={d_pres:.4g} (got {result.presence}, want {g_presence})"
+
+    # --- top-mask IoU ---------------------------------------------------------------
+    my_masks = (result.masks_logits.float().cpu().numpy() > 0.0).astype(np.uint8)  # (N,H,W)
+    assert my_masks.shape == g_masks.shape, f"masks shape {my_masks.shape} != golden {g_masks.shape}"
+    top = int(np.argmax(scores))
+    iou = _mask_iou(my_masks[top], g_masks[top])
+    assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
