@@ -672,19 +672,12 @@ def build_sam3_detector(ckpt_path=None, device="cuda"):
 # _create_tracker_maskmem_backbone / build_tracker). NO multiplex (that is SAM 3.1).
 
 
-def build_sam3_tracker(ckpt_path=None, device="cuda"):
-    """Build the base SAM 3 per-object tracker and optionally load weights.
+def _build_sam3_tracker_module():
+    """Construct the base SAM 3 per-object ``Sam3Tracker`` (weights-only, no load).
 
-    Args:
-        ckpt_path: path to a local ``sam3.pt``. The tracker subtree (``tracker.*``, 309 keys)
-            is loaded with ``strict=True`` (the ``tracker.`` prefix is stripped). If ``None``
-            the model is returned with init weights.
-        device: device to move the model to.
-
-    Returns:
-        A ``Sam3Tracker`` in eval mode. It is weights-only (no vision backbone): callers pass
-        the SAM 2-neck feature pyramid (from ``build_sam3_vision_encoder(add_sam2_neck=True)``,
-        ``forward(..., return_sam2=True)``) into ``track_step`` / the data-space block methods.
+    Shared by :func:`build_sam3_tracker` (image/isolated tracker) and
+    :func:`build_sam3_video_predictor` (streaming) so the proven 309-key module tree is built
+    in exactly one place. Returns the tracker on CPU with init weights.
     """
     from sam.modeling.decoders.sam3_transformer import (
         RoPEAttention,
@@ -760,19 +753,37 @@ def build_sam3_tracker(ckpt_path=None, device="cuda"):
         },
         use_memory_selection=True,
     )
+    return tracker
 
-    if ckpt_path is not None:
-        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        if "model" in ckpt and isinstance(ckpt["model"], dict):
-            ckpt = ckpt["model"]
-        prefix = "tracker."
-        sub = {
-            k[len(prefix):]: v
-            for k, v in ckpt.items()
-            if k.startswith(prefix)
-        }
-        tracker.load_state_dict(sub, strict=True)
 
+def _load_sam3_tracker_subtree(tracker, ckpt_path):
+    """Strict-load the ``tracker.*`` subtree (309 keys, prefix stripped) into a ``Sam3Tracker``."""
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    prefix = "tracker."
+    sub = {k[len(prefix):]: v for k, v in ckpt.items() if k.startswith(prefix)}
+    tracker.load_state_dict(sub, strict=True)
+
+
+def build_sam3_tracker(ckpt_path=None, device="cuda"):
+    """Build the base SAM 3 per-object tracker and optionally load weights.
+
+    Args:
+        ckpt_path: path to a local ``sam3.pt``. The tracker subtree (``tracker.*``, 309 keys)
+            is loaded with ``strict=True`` (the ``tracker.`` prefix is stripped). If ``None``
+            the model is returned with init weights.
+        device: device to move the model to.
+
+    Returns:
+        A ``Sam3Tracker`` in eval mode. It is weights-only (no vision backbone): callers pass
+        the SAM 2-neck feature pyramid (from ``build_sam3_vision_encoder(add_sam2_neck=True)``,
+        ``forward(..., return_sam2=True)``) into ``track_step`` / the data-space block methods.
+    """
+    tracker = _build_sam3_tracker_module()
+    _load_sam3_tracker_subtree(tracker, ckpt_path)
     tracker = tracker.to(device)
     tracker.eval()
     return tracker
@@ -867,6 +878,98 @@ def build_sam3_hf(model_id, **kwargs):
     )
     ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
     return build_sam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+
+
+# --- SAM 3 streaming video concept predictor (Phase 1, Task 9) -----------------
+# Mirrors build_sam2_video_predictor: hydra-compose the shared encoder/text/detector from
+# configs/sam3/sam3.yaml, build the proven 309-key tracker module, wrap them in
+# Sam3VideoPredictor, and strict-load the FULL sam3.pt = detector.* (1156, the Task 8 3-group
+# remap) + tracker.* (309) = 1465 keys.
+
+
+def _load_sam3_video_checkpoint(model, ckpt_path):
+    """Strict-load the FULL ``sam3.pt`` (1465 keys) into a ``Sam3VideoPredictor``.
+
+    Combines the Task-8 image 3-group remap (``detector.backbone.vision_backbone.*`` ->
+    ``vision_encoder.vision_backbone.*`` 464; ``detector.backbone.language_backbone.*`` ->
+    ``text_encoder.*`` 295; ``detector.*`` head 397) with the tracker subtree
+    (``tracker.*`` -> ``tracker.*`` 309) = **1465 keys, strict (0 missing / 0 unexpected)**.
+    """
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    vb_prefix = "detector.backbone.vision_backbone."
+    lb_prefix = "detector.backbone.language_backbone."
+    sub = {}
+    for k, v in ckpt.items():
+        if k.startswith(vb_prefix):
+            sub["vision_encoder.vision_backbone." + k[len(vb_prefix):]] = v
+        elif k.startswith(lb_prefix):
+            sub["text_encoder." + k[len(lb_prefix):]] = v
+        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
+            sub[k] = v  # detector head keys map 1:1
+        elif k.startswith("tracker."):
+            sub[k] = v  # tracker subtree maps 1:1 (model.tracker.*)
+    model.load_state_dict(sub, strict=True)
+
+
+def build_sam3_video_predictor(
+    config_file,
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+    hydra_overrides_extra=[],
+    **kwargs,
+):
+    """Build a SAM 3 streaming video concept predictor (``Sam3VideoPredictor``) and load weights.
+
+    Composes the shared PE vision encoder + text tower + DETR detector from ``config_file``
+    (e.g. ``"configs/sam3/sam3.yaml"`` — the encoder built ``add_sam2_neck=True`` so the
+    tracker's SAM 2 pyramid view is available), builds the per-object ``Sam3Tracker``, wraps
+    them in ``Sam3VideoPredictor``, and strict-loads the full ``sam3.pt`` (1465 keys). The
+    forgetful bank owns temporal memory selection, so the tracker runs with
+    ``use_memory_selection=False``.
+    """
+    from sam.models.sam3_predictor import Sam3VideoPredictor
+
+    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
+    OmegaConf.resolve(cfg)
+    vision_encoder = instantiate(cfg.model.vision_encoder, _recursive_=True)
+    text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
+    detector = instantiate(cfg.model.detector, _recursive_=True)
+    tracker = _build_sam3_tracker_module()
+    # The bank performs temporal memory selection; the tracker conditions on exactly the frames
+    # the bank returns (so it must NOT additionally filter via its SAM2Long heuristic).
+    tracker.use_memory_selection = False
+
+    model = Sam3VideoPredictor(
+        vision_encoder=vision_encoder,
+        text_encoder=text_encoder,
+        detector=detector,
+        tracker=tracker,
+    )
+    _load_sam3_video_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+def build_sam3_video_predictor_hf(model_id, **kwargs):
+    """Build a SAM 3 video predictor from a HuggingFace model id (downloads the checkpoint).
+
+    The hydra config is OURS; only the gated ``sam3.pt`` is pulled from HF. Mirrors
+    :func:`build_sam2_video_predictor_hf`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_SAM3_MODEL_ID_TO_CONFIG.get(
+        model_id, ("configs/sam3/sam3.yaml", "sam3.pt")
+    )
+    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
+    return build_sam3_video_predictor(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
 
 
 # SPDX-License-Identifier: Apache-2.0

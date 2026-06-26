@@ -94,19 +94,34 @@ def fill_holes_in_mask_scores(
     return mask
 
 
-def _get_connected_components_with_padding(mask):
-    """Connected-component areas per pixel for a (B,1,H,W) binary mask, on CPU via skimage
-    (lazy import -- avoids a hard triton/cc_torch dependency at import time)."""
-    from skimage.measure import label as _label
+def _label_4conn(mask2d):
+    """4-connectivity connected-component labelling of a 2D uint8 array.
 
+    Prefers ``scipy.ndimage.label`` (already a dependency; its default cross structuring
+    element is 4-connectivity == ``skimage.measure.label(connectivity=1)``) and falls back to
+    skimage if scipy is unavailable. Returns an int32 ndarray of component labels (0 = bg)."""
+    try:
+        from scipy.ndimage import label as _scipy_label
+
+        lab, _ = _scipy_label(mask2d)  # default structure == 4-connectivity
+        return lab.astype("int32")
+    except ImportError:
+        from skimage.measure import label as _sk_label
+
+        return _sk_label(mask2d, connectivity=1).astype("int32")
+
+
+def _get_connected_components_with_padding(mask):
+    """Connected-component areas per pixel for a (B,1,H,W) binary mask, on CPU
+    (lazy import -- avoids a hard triton/cc_torch dependency at import time)."""
     device = mask.device
     mask_np = mask.to(torch.uint8).cpu().numpy()
     B, _, H, W = mask_np.shape
     areas = torch.zeros((B, 1, H, W), dtype=torch.int32)
     labels = torch.zeros((B, 1, H, W), dtype=torch.int32)
     for b in range(B):
-        lab = _label(mask_np[b, 0], connectivity=1)
-        lab_t = torch.from_numpy(lab.astype("int32"))
+        lab = _label_4conn(mask_np[b, 0])
+        lab_t = torch.from_numpy(lab)
         labels[b, 0] = lab_t
         if lab.max() > 0:
             counts = torch.bincount(lab_t.reshape(-1))
