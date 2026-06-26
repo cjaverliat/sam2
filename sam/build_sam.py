@@ -482,6 +482,181 @@ def build_sam3_text_encoder(ckpt_path=None, device="cuda"):
     return text_encoder
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3 DETR detector ------------------------------------------------------
+# Minimal direct-construction builder for the base (per-object) SAM 3 detector
+# (Phase 1, Task 4). Mirrors build_sam3_vision_encoder / build_sam3_text_encoder:
+# construct the VL fusion encoder + 200-query set decoder (presence token, log-boxRPB,
+# box-refine) + dot-product scorer + per-object mask head + the (text-only) geometry
+# cls-token encoder, then strict-load the detector subtree from a local sam3.pt. The
+# config mirrors sam3/model_builder.py (_create_transformer_encoder / _decoder /
+# _dot_product_scoring / _segmentation_head / _geometry_encoder, all d_model=256).
+
+
+def build_sam3_detector(ckpt_path=None, device="cuda"):
+    """Build the base SAM 3 DETR detector and optionally load weights.
+
+    Args:
+        ckpt_path: path to a local ``sam3.pt``. The detector subtree (``detector.*``
+            minus the shared ``detector.backbone.*`` vision/language backbones, which are
+            built by ``build_sam3_vision_encoder`` / ``build_sam3_text_encoder``) is loaded
+            with ``strict=True``. If ``None`` the model is returned with init weights.
+        device: device to move the model to.
+
+    Returns:
+        A ``Sam3DetrDetector`` in eval mode. ``forward_grounding(feats, pos, text_emb,
+        text_mask)`` returns the raw DETR set; ``detect(...)`` returns a
+        ``Sam3DetectionResult`` (presence-weighted boxes/scores/masks).
+    """
+    from sam.modeling.decoders.detr_decoder import (
+        DotProductScoring,
+        MLP,
+        MultiheadAttention,
+        Sam3DetrDetector,
+        Sam3GeometryEncoder,
+        TransformerDecoder,
+        TransformerDecoderLayer,
+        TransformerEncoderFusion,
+        TransformerEncoderLayer,
+        TransformerWrapper,
+    )
+    from sam.modeling.decoders.maskformer_segmentation import (
+        PixelDecoder,
+        UniversalSegmentationHead,
+    )
+
+    d_model = 256
+
+    # VL early-fusion encoder (6 layers; pre-norm; image self-attn + text cross-attn).
+    encoder_layer = TransformerEncoderLayer(
+        activation="relu",
+        d_model=d_model,
+        dim_feedforward=2048,
+        dropout=0.1,
+        pos_enc_at_attn=True,
+        pos_enc_at_cross_attn_keys=False,
+        pos_enc_at_cross_attn_queries=False,
+        pre_norm=True,
+        self_attention=MultiheadAttention(
+            num_heads=8, dropout=0.1, embed_dim=d_model, batch_first=True
+        ),
+        cross_attention=MultiheadAttention(
+            num_heads=8, dropout=0.1, embed_dim=d_model, batch_first=True
+        ),
+    )
+    encoder = TransformerEncoderFusion(
+        layer=encoder_layer,
+        num_layers=6,
+        d_model=d_model,
+        num_feature_levels=1,
+        add_pooled_text_to_img_feat=False,
+        pool_text_with_mask=True,
+    )
+
+    # 200-query set decoder (box-refine, log-boxRPB, presence token).
+    decoder_layer = TransformerDecoderLayer(
+        activation="relu",
+        d_model=d_model,
+        dim_feedforward=2048,
+        dropout=0.1,
+        cross_attention=MultiheadAttention(
+            num_heads=8, dropout=0.1, embed_dim=d_model
+        ),
+        n_heads=8,
+        use_text_cross_attention=True,
+    )
+    decoder = TransformerDecoder(
+        layer=decoder_layer,
+        num_layers=6,
+        num_queries=200,
+        return_intermediate=True,
+        box_refine=True,
+        num_o2m_queries=0,
+        dac=True,
+        boxRPB="log",
+        d_model=d_model,
+        dac_use_selfatt_ln=True,
+        resolution=1008,
+        stride=14,
+        presence_token=True,
+    )
+    transformer = TransformerWrapper(encoder=encoder, decoder=decoder, d_model=d_model)
+
+    # Dot-product scorer (per-query class logits + the seg-head presence; here unused).
+    prompt_mlp = MLP(
+        input_dim=d_model,
+        hidden_dim=2048,
+        output_dim=d_model,
+        num_layers=2,
+        dropout=0.1,
+        residual=True,
+        out_norm=torch.nn.LayerNorm(d_model),
+    )
+    dot_prod_scoring = DotProductScoring(
+        d_model=d_model, d_proj=d_model, prompt_mlp=prompt_mlp
+    )
+
+    # Per-object mask head (PixelDecoder over the FPN pyramid + per-query MaskPredictor).
+    pixel_decoder = PixelDecoder(
+        num_upsampling_stages=3, interpolation_mode="nearest", hidden_dim=d_model
+    )
+    cross_attend_prompt = MultiheadAttention(num_heads=8, dropout=0, embed_dim=d_model)
+    segmentation_head = UniversalSegmentationHead(
+        hidden_dim=d_model,
+        upsampling_stages=3,
+        aux_masks=False,
+        presence_head=False,
+        dot_product_scorer=None,
+        cross_attend_prompt=cross_attend_prompt,
+        pixel_decoder=pixel_decoder,
+    )
+
+    # Geometry cls-token encoder (text-only path active; box/point/mask encoders dormant).
+    geo_layer = TransformerEncoderLayer(
+        activation="relu",
+        d_model=d_model,
+        dim_feedforward=2048,
+        dropout=0.1,
+        pos_enc_at_attn=False,
+        pos_enc_at_cross_attn_keys=True,
+        pos_enc_at_cross_attn_queries=False,
+        pre_norm=True,
+        self_attention=MultiheadAttention(
+            num_heads=8, dropout=0.1, embed_dim=d_model, batch_first=False
+        ),
+        cross_attention=MultiheadAttention(
+            num_heads=8, dropout=0.1, embed_dim=d_model, batch_first=False
+        ),
+    )
+    geometry_encoder = Sam3GeometryEncoder(d_model=d_model, layer=geo_layer, num_layers=3)
+
+    detector = Sam3DetrDetector(
+        transformer=transformer,
+        geometry_encoder=geometry_encoder,
+        segmentation_head=segmentation_head,
+        dot_prod_scoring=dot_prod_scoring,
+        num_feature_levels=1,
+        o2m_mask_predict=True,
+    )
+
+    if ckpt_path is not None:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            ckpt = ckpt["model"]
+        prefix = "detector."
+        skip_prefix = "detector.backbone."  # vision + language backbones built elsewhere
+        sub = {
+            k[len(prefix):]: v
+            for k, v in ckpt.items()
+            if k.startswith(prefix) and not k.startswith(skip_prefix)
+        }
+        detector.load_state_dict(sub, strict=True)
+
+    detector = detector.to(device)
+    detector.eval()
+    return detector
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
