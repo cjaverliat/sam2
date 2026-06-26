@@ -8,8 +8,8 @@ from sam.modeling.memory.bank import (
     ObjectMemory,
     ObjectMemorySelection,
 )
-from sam.modeling.sam2_result import SAM2Result
-from sam.modeling.sam2_prompt import SAM2Prompt
+from sam.results import SAM2Result
+from sam.prompts import SAM2Prompt
 
 import bisect
 

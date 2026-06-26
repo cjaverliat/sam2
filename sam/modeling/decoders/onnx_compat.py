@@ -32,7 +32,7 @@ import torch.nn.functional as F
 import torch.onnx.ops as _onnx_ops
 from torch import Tensor, nn
 
-from sam.modeling.sam2_utils import is_exporting
+from sam.modeling.utils import is_exporting
 
 _EXPORT_OPSET = 23
 

@@ -15,7 +15,7 @@ from sam.modeling.encoders.utils import (
     window_unpartition,
 )
 
-from sam.modeling.sam2_utils import DropPath, LayerScale, MLP
+from sam.modeling.utils import DropPath, LayerScale, MLP
 
 
 class Attention(nn.Module):

@@ -12,7 +12,7 @@ from torch import nn
 
 from sam.modeling.position_encoding import PositionEmbeddingRandom
 
-from sam.modeling.sam2_utils import LayerNorm2d
+from sam.modeling.utils import LayerNorm2d
 
 
 class PromptEncoder(nn.Module):

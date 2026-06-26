@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from PIL.Image import Image
 
-from sam.modeling.sam2_base import SAM2Base
+from sam.modeling.tracking.tracker_base import SAM2Base
 
 from sam.utils.transforms import SAM2Transforms
 

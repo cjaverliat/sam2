@@ -16,7 +16,7 @@ from sam.modeling.decoders.transformer import (
     RoPEAttention,
 )
 
-from sam.modeling.sam2_utils import get_activation_fn, get_clones
+from sam.modeling.utils import get_activation_fn, get_clones
 
 
 class MemoryAttentionLayer(nn.Module):

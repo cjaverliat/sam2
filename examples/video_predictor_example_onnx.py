@@ -35,7 +35,7 @@ import torch
 from tqdm import tqdm
 
 from sam.build_sam import build_sam2_generic_video_predictor_onnx
-from sam.modeling.sam2_prompt import SAM2Prompt
+from sam.prompts import SAM2Prompt
 from sam.onnx.trt_options import TensorRTOptions
 from sam.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
 

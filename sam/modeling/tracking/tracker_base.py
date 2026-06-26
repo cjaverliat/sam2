@@ -14,7 +14,7 @@ from torch.nn.init import trunc_normal_
 from sam.modeling.decoders.mask_decoder import MaskDecoder
 from sam.modeling.prompt.prompt_encoder import PromptEncoder
 from sam.modeling.decoders.transformer import TwoWayTransformer
-from sam.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
+from sam.modeling.utils import get_1d_sine_pe, MLP, select_closest_cond_frames
 
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0

@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 
 from abc import ABC, abstractmethod
-from sam.modeling.sam2_prompt import SAM2Prompt
-from sam.modeling.sam2_result import SAM2Result
+from sam.prompts import SAM2Prompt
+from sam.results import SAM2Result
 
 class ObjectMemory:
 

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from sam.modeling.sam2_utils import LayerNorm2d
+from sam.modeling.utils import LayerNorm2d
 
 
 class ImageEncoder(nn.Module):

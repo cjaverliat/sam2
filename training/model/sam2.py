@@ -9,8 +9,8 @@ import logging
 import numpy as np
 import torch
 import torch.distributed
-from sam.modeling.sam2_base import SAM2Base
-from sam.modeling.sam2_utils import (
+from sam.modeling.tracking.tracker_base import SAM2Base
+from sam.modeling.utils import (
     get_1d_sine_pe,
     get_next_point,
     sample_box_points,

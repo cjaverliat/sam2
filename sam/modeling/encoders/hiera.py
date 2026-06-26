@@ -20,7 +20,7 @@ from sam.modeling.encoders.utils import (
     window_unpartition,
 )
 
-from sam.modeling.sam2_utils import DropPath, MLP
+from sam.modeling.utils import DropPath, MLP
 
 
 def do_pool(x: torch.Tensor, pool: nn.Module, norm: nn.Module = None) -> torch.Tensor:
