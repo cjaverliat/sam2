@@ -144,6 +144,7 @@ python-build = "*"   # provides `python -m build` for the build-wheel task
 curl = "*"
 pixi-pycharm = "*"
 huggingface_hub = ">=1.21.0,<2"
+pytest = ">=9.1.1,<10"
 
 # CUDA build toolchain: nvcc + dev libs + ninja (CUDAExtension build / JIT) and,
 # on linux, the g++ host compiler so the extension builds with zero system
@@ -263,6 +264,9 @@ cpu = { features = ["cpu"], solve-group = "cpu" }
 [tool.pixi.tasks.build-wheel]
 cmd = "python -m build --wheel --no-isolation"
 env = { SAM2_FORCE_BUILD = "1", SAM2_BUILD_CUDA = "1", SAM2_ALLOW_BUILD_ERRORS = "0" }
+
+[tool.pixi.tasks.test]
+cmd = "pytest tests/ -v"
 
 # ---------------------------------------------------------------------------
 # Checkpoint download tasks (cross-platform via curl, conda-provided so it is
