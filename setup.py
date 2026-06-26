@@ -95,6 +95,8 @@ BASE_DEPS = [
     # SAM 3 text tokenizer (CLIP BPE): text normalisation + Unicode regex.
     "ftfy>=6.1.1",
     "regex>=2024.1.1",
+    # SAM 3 det↔track association: Hungarian solver (Task 7).
+    "scipy>=1.11.0",
 ]
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import torch
 from dataclasses import dataclass, field
 
+from sam.modeling.association.tracklet import TrackletManager
 from sam.modeling.memory.bank import ObjectMemoryBank
 from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
 from sam.prompts import ConceptPrompt
@@ -37,6 +38,9 @@ class Sam3VideoPredictorState:
     concepts: list[ConceptState] = field(default_factory=list)  # 0..1 now; list keeps multi open
     num_frames_processed: int = 0
     _next_obj_id: int = 0
+    # Tracklet lifecycle state machine (Task 7).  Holds per-obj-id
+    # PENDING → CONFIRMED → DEAD transitions driven by det-match signal.
+    tracklet_mgr: TrackletManager = field(default_factory=TrackletManager)
 
     @property
     def started(self) -> bool:
