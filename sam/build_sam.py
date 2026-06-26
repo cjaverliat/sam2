@@ -778,6 +778,97 @@ def build_sam3_tracker(ckpt_path=None, device="cuda"):
     return tracker
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3 image concept predictor --------------------------------------------
+# Hydra-compose builder for the full Sam3Predictor (image, Phase 1, Task 8): the shared PE
+# vision encoder + text tower + DETR detector, composed from configs/sam3/sam3.yaml and
+# strict-loading the detector.* subtree of a local sam3.pt. Mirrors build_sam2_predictor /
+# build_sam2_hf (compose -> instantiate -> load). The hydra config is a hand-translation of
+# sam3/model_builder.py::build_sam3_image_model cross-checked vs the build_sam3_* stubs.
+
+
+HF_SAM3_MODEL_ID_TO_CONFIG = {
+    "facebook/sam3": ("configs/sam3/sam3.yaml", "sam3.pt"),
+}
+
+
+def _load_sam3_image_checkpoint(model, ckpt_path):
+    """Strict-load the ``detector.*`` subtree (1156 keys) of ``sam3.pt`` into a Sam3Predictor.
+
+    The predictor separates the upstream ``Sam3Image.backbone`` into the OWNED
+    ``vision_encoder`` + ``text_encoder`` (spec §5), so the checkpoint keys are remapped in
+    three groups (the upstream image loader only strips the flat ``detector.`` prefix because
+    its ``Sam3Image`` keeps the combined ``backbone`` submodule):
+
+      ``detector.backbone.vision_backbone.*``   -> ``vision_encoder.vision_backbone.*``  (464, incl. the 22 sam2_convs)
+      ``detector.backbone.language_backbone.*`` -> ``text_encoder.*``                    (295)
+      ``detector.*`` (minus ``detector.backbone.*``) -> ``detector.*``                    (397, the head)
+
+    ``tracker.*`` (309) is ignored — the image predictor has no tracker. The vision encoder
+    MUST be built with ``add_sam2_neck=True`` (set in configs/sam3/sam3.yaml) so the
+    ``sam2_convs`` load and the 1156-key load is STRICT (0 missing / 0 unexpected).
+    """
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    vb_prefix = "detector.backbone.vision_backbone."
+    lb_prefix = "detector.backbone.language_backbone."
+    sub = {}
+    for k, v in ckpt.items():
+        if k.startswith(vb_prefix):
+            sub["vision_encoder.vision_backbone." + k[len(vb_prefix):]] = v
+        elif k.startswith(lb_prefix):
+            sub["text_encoder." + k[len(lb_prefix):]] = v
+        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
+            sub[k] = v  # detector head keys (transformer/geometry/seg/scoring) map 1:1
+    model.load_state_dict(sub, strict=True)
+
+
+def build_sam3(
+    config_file,
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+    hydra_overrides_extra=[],
+    **kwargs,
+):
+    """Build a SAM 3 image concept predictor (``Sam3Predictor``) and load weights.
+
+    Mirrors :func:`build_sam2_predictor`: hydra-compose ``config_file`` (e.g.
+    ``"configs/sam3/sam3.yaml"``) -> instantiate the owned encoder / text tower / detector
+    via their ``_target_``s -> strict-load the ``detector.*`` subtree of ``ckpt_path`` (a
+    local ``sam3.pt``). Returns the predictor on ``device``, in eval mode when
+    ``mode == "eval"``.
+    """
+    hydra_overrides = list(hydra_overrides_extra)
+    cfg = compose(config_name=config_file, overrides=hydra_overrides)
+    OmegaConf.resolve(cfg)
+    model = instantiate(cfg.model, _recursive_=True)
+    _load_sam3_image_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+def build_sam3_hf(model_id, **kwargs):
+    """Build a SAM 3 image predictor from a HuggingFace model id (downloads the checkpoint).
+
+    The hydra config is OURS (``configs/sam3/sam3.yaml`` — a hand-translation of the upstream
+    architecture); only the gated weights (``sam3.pt``) are pulled from HF. Mirrors
+    :func:`build_sam2_hf`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_SAM3_MODEL_ID_TO_CONFIG.get(
+        model_id, ("configs/sam3/sam3.yaml", "sam3.pt")
+    )
+    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
+    return build_sam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:

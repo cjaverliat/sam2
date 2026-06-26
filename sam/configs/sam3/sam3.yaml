@@ -1,0 +1,198 @@
+# @package _global_
+# SPDX-License-Identifier: LicenseRef-SAM
+# SAM 3 image concept predictor (base / per-object, text-only path) — hydra config.
+#
+# Hand-translated from sam3/model_builder.py::build_sam3_image_model (upstream is
+# imperative; there is no upstream hydra config) and cross-checked against the working
+# build_sam3_vision_encoder / build_sam3_text_encoder / build_sam3_detector stubs, which
+# strict-load sam3.pt — so their hardcoded dims are authoritative and reproduced here.
+#
+# Composition (spec §5/§7): the predictor OWNS the shared PE vision encoder (run once per
+# image, injected into the detector), the text tower, and the DETR detector. The vision
+# encoder is built with add_sam2_neck=true so the full detector.backbone.vision_backbone
+# subtree (464 keys, incl. the 22 sam2_convs that the Task 9 tracker consumes) loads STRICT
+# alongside the language backbone (295) and the detector head (397) = 1156 detector.* keys.
+
+model:
+  _target_: sam.models.sam3_predictor.Sam3Predictor
+
+  # --- shared PE vision encoder (ViTDet trunk + dual Simple-FPN neck) ------------------
+  vision_encoder:
+    _target_: sam.modeling.encoders.perception_encoder.Sam3VisionEncoder
+    scalp: 1
+    vision_backbone:
+      _target_: sam.modeling.encoders.necks.Sam3DualViTDetNeck
+      d_model: 256
+      scale_factors: [4.0, 2.0, 1.0, 0.5]
+      add_sam2_neck: true   # build + load sam2_convs so detector.* loads strict (Task 9 tracker view)
+      trunk:
+        _target_: sam.modeling.encoders.pe_vitdet.ViT
+        img_size: 1008
+        pretrain_img_size: 336
+        patch_size: 14
+        embed_dim: 1024
+        depth: 32
+        num_heads: 16
+        mlp_ratio: 4.625
+        norm_layer: LayerNorm
+        drop_path_rate: 0.1
+        qkv_bias: true
+        use_abs_pos: true
+        tile_abs_pos: true
+        global_att_blocks: [7, 15, 23, 31]
+        use_rope: true
+        use_interp_rope: true
+        window_size: 24
+        pretrain_use_cls_token: true
+        retain_cls_token: false
+        ln_pre: true
+        ln_post: false
+        return_interm_layers: false
+        bias_patch_embed: false
+      position_encoding:
+        _target_: sam.modeling.position_encoding.PositionEmbeddingSine
+        num_pos_feats: 256
+        normalize: true
+        scale: null
+        temperature: 10000
+        warmup_cache: false
+
+  # --- text tower (PE text transformer + resizer) -------------------------------------
+  text_encoder:
+    _target_: sam.modeling.text.text_encoder.Sam3TextEncoder
+    d_model: 256
+    width: 1024
+    heads: 16
+    layers: 24
+    context_length: 32
+    vocab_size: 49408
+    use_ln_post: true
+    tokenizer:
+      _target_: sam.modeling.text.tokenizer.Sam3Tokenizer
+
+  # --- DETR detector (VL fusion encoder + 200-query set decoder + heads) ---------------
+  detector:
+    _target_: sam.modeling.decoders.detr_decoder.Sam3DetrDetector
+    num_feature_levels: 1
+    o2m_mask_predict: true
+
+    transformer:
+      _target_: sam.modeling.decoders.detr_decoder.TransformerWrapper
+      d_model: 256
+      encoder:
+        _target_: sam.modeling.decoders.detr_decoder.TransformerEncoderFusion
+        num_layers: 6
+        d_model: 256
+        num_feature_levels: 1
+        add_pooled_text_to_img_feat: false
+        pool_text_with_mask: true
+        layer:
+          _target_: sam.modeling.decoders.detr_decoder.TransformerEncoderLayer
+          activation: relu
+          d_model: 256
+          dim_feedforward: 2048
+          dropout: 0.1
+          pos_enc_at_attn: true
+          pos_enc_at_cross_attn_keys: false
+          pos_enc_at_cross_attn_queries: false
+          pre_norm: true
+          self_attention:
+            _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+            num_heads: 8
+            dropout: 0.1
+            embed_dim: 256
+            batch_first: true
+          cross_attention:
+            _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+            num_heads: 8
+            dropout: 0.1
+            embed_dim: 256
+            batch_first: true
+      decoder:
+        _target_: sam.modeling.decoders.detr_decoder.TransformerDecoder
+        d_model: 256
+        num_layers: 6
+        num_queries: 200
+        return_intermediate: true
+        box_refine: true
+        num_o2m_queries: 0
+        dac: true
+        boxRPB: log
+        dac_use_selfatt_ln: true
+        resolution: 1008
+        stride: 14
+        presence_token: true
+        layer:
+          _target_: sam.modeling.decoders.detr_decoder.TransformerDecoderLayer
+          activation: relu
+          d_model: 256
+          dim_feedforward: 2048
+          dropout: 0.1
+          n_heads: 8
+          use_text_cross_attention: true
+          cross_attention:
+            _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+            num_heads: 8
+            dropout: 0.1
+            embed_dim: 256
+
+    geometry_encoder:
+      _target_: sam.modeling.decoders.detr_decoder.Sam3GeometryEncoder
+      d_model: 256
+      num_layers: 3
+      layer:
+        _target_: sam.modeling.decoders.detr_decoder.TransformerEncoderLayer
+        activation: relu
+        d_model: 256
+        dim_feedforward: 2048
+        dropout: 0.1
+        pos_enc_at_attn: false
+        pos_enc_at_cross_attn_keys: true
+        pos_enc_at_cross_attn_queries: false
+        pre_norm: true
+        self_attention:
+          _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+          num_heads: 8
+          dropout: 0.1
+          embed_dim: 256
+          batch_first: false
+        cross_attention:
+          _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+          num_heads: 8
+          dropout: 0.1
+          embed_dim: 256
+          batch_first: false
+
+    segmentation_head:
+      _target_: sam.modeling.decoders.maskformer_segmentation.UniversalSegmentationHead
+      hidden_dim: 256
+      upsampling_stages: 3
+      aux_masks: false
+      presence_head: false
+      dot_product_scorer: null
+      cross_attend_prompt:
+        _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+        num_heads: 8
+        dropout: 0
+        embed_dim: 256
+      pixel_decoder:
+        _target_: sam.modeling.decoders.maskformer_segmentation.PixelDecoder
+        num_upsampling_stages: 3
+        interpolation_mode: nearest
+        hidden_dim: 256
+
+    dot_prod_scoring:
+      _target_: sam.modeling.decoders.detr_decoder.DotProductScoring
+      d_model: 256
+      d_proj: 256
+      prompt_mlp:
+        _target_: sam.modeling.decoders.detr_decoder.MLP
+        input_dim: 256
+        hidden_dim: 2048
+        output_dim: 256
+        num_layers: 2
+        dropout: 0.1
+        residual: true
+        out_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: 256

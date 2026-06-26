@@ -234,6 +234,68 @@ def test_detector_parity(image_fixture):
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
+def test_sam3_image_parity(image_fixture):
+    """End-to-end image concept-prediction parity through the REAL builder/config/predictor.
+
+    ``build_sam3(configs/sam3/sam3.yaml, checkpoints/sam3.pt)`` composes the owned PE
+    vision encoder + text tower + DETR detector from ONE hydra config and strict-loads the
+    full ``detector.*`` subtree (1156 keys; the encoder is built with ``add_sam2_neck=True``
+    so the 22 ``sam2_convs`` load too). ``predict(truck, ConceptPrompt("truck"))`` runs the
+    predictor's own preprocessing (GPU resize -> 1008) + ``encode_image`` (once) +
+    ``encode_text`` (positives, here no negatives) + ``detect``. This reproduces Task 4's
+    isolated-detector parity but through the real predictor, so the gates match: boxes
+    (atol 2px), scores (atol 1e-2), top-mask IoU >= 0.99, and exactly 1 instance.
+    """
+    if not CKPT.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT}")
+    import torch as _torch
+
+    from sam.build_sam import build_sam3
+    from sam.prompts import ConceptPrompt
+
+    _determinism()
+    predictor = build_sam3(
+        config_file="configs/sam3/sam3.yaml",
+        ckpt_path=str(CKPT),
+        device="cuda",
+    )
+
+    image_rgb = image_fixture["image_input_rgb"]  # (384,512,3) uint8 -- the golden input
+    thr = float(image_fixture["confidence_threshold"])
+
+    # predict() owns preprocessing (GPU resize), encode_image, encode_text, detect, and runs
+    # under bf16 autocast + inference_mode internally (the only supported SAM 3 regime).
+    result = predictor.predict(image_rgb, ConceptPrompt("truck"), confidence_threshold=thr)
+
+    g_boxes = image_fixture["boxes"].astype(np.float32)    # (N,4) xyxy px
+    g_scores = image_fixture["scores"].astype(np.float32)  # (N,)
+    g_masks = image_fixture["masks"].astype(np.uint8)      # (N,H,W)
+    boxes = result.boxes.float().cpu().numpy()
+    scores = result.scores.float().cpu().numpy()
+
+    # --- instance count == golden (== 1) --------------------------------------------
+    assert g_boxes.shape[0] == 1, f"fixture sanity: expected 1 golden detection, got {g_boxes.shape[0]}"
+    assert boxes.shape[0] == 1, f"instance count {boxes.shape[0]} != 1"
+
+    # --- final boxes / scores -------------------------------------------------------
+    assert boxes.shape == g_boxes.shape, f"boxes shape {boxes.shape} != golden {g_boxes.shape}"
+    assert scores.shape == g_scores.shape, f"scores shape {scores.shape} != golden {g_scores.shape}"
+    d_box = float(np.max(np.abs(boxes - g_boxes)))
+    d_sc = float(np.max(np.abs(scores - g_scores)))
+    np.testing.assert_allclose(boxes, g_boxes, atol=2.0,
+                               err_msg=f"final boxes max|delta|={d_box:.4g}px")
+    np.testing.assert_allclose(scores, g_scores, atol=1e-2,
+                               err_msg=f"final scores max|delta|={d_sc:.4g}")
+
+    # --- top-mask IoU ---------------------------------------------------------------
+    my_masks = (result.masks_logits.float().cpu().numpy() > 0.0).astype(np.uint8)  # (N,H,W)
+    assert my_masks.shape == g_masks.shape, f"masks shape {my_masks.shape} != golden {g_masks.shape}"
+    top = int(np.argmax(scores))
+    iou = _mask_iou(my_masks[top], g_masks[top])
+    assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
 @pytest.fixture(scope="module")
 def video_fixture():
     f = FIXTURES / "video.npz"
