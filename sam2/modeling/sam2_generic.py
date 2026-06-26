@@ -27,7 +27,7 @@ def _half_inference(method):
     def wrapper(self, *args, **kwargs):
         half = self._use_half and self.device.type == "cuda"
         dtype = self._half_dtype
-        if dtype is None:
+        if half and dtype is None:
             dtype = (torch.bfloat16
                      if torch.cuda.get_device_capability(self.device)[0] >= 8
                      else torch.float16)
