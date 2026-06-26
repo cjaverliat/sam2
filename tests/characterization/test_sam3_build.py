@@ -152,3 +152,101 @@ def test_tracklet_manager_kills_unmatched_track():
 
     mgr.step(matched_track_ids=set(), new_det_ids=set())
     assert mgr.is_dead(0), "track must be dead after 3 consecutive unmatched frames"
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle tests (Task 9) — remove_object + allocator + kill path.
+# CPU-only, no checkpoint, no GPU.
+# ---------------------------------------------------------------------------
+
+def test_remove_object_purges_everything():
+    """remove_object must purge obj_id from known_obj_ids, both memory dicts, and tracklet_mgr.
+
+    Constructs a Sam3VideoPredictorState, registers an object in BOTH the bank (known_obj_ids,
+    conditional_memories, non_conditional_memories) AND the TrackletManager, then asserts that
+    remove_object wipes all four stores atomically.
+    """
+    pred = _predictor()
+    state = _state()
+    obj_id = 42
+
+    # Register the object in the bank's known set and both per-object memory dicts.
+    state.bank.known_obj_ids.add(obj_id)
+    state.bank.conditional_memories[obj_id] = ["dummy_cond_memory"]
+    state.bank.non_conditional_memories[obj_id] = ["dummy_non_cond_memory"]
+    # Register in tracklet manager.
+    state.tracklet_mgr.spawn(obj_id)
+
+    # Sanity: object is present in all four stores before removal.
+    assert obj_id in state.bank.known_obj_ids
+    assert obj_id in state.bank.conditional_memories
+    assert obj_id in state.bank.non_conditional_memories
+    assert obj_id in state.tracklet_mgr._tracks
+
+    pred.remove_object(state, obj_id)
+
+    assert obj_id not in state.bank.known_obj_ids, "known_obj_ids must not contain removed id"
+    assert obj_id not in state.bank.conditional_memories, "conditional_memories must drop removed id"
+    assert obj_id not in state.bank.non_conditional_memories, "non_conditional_memories must drop removed id"
+    assert obj_id not in state.tracklet_mgr._tracks, "tracklet_mgr must drop removed id"
+
+
+def test_alloc_obj_id_monotonic_after_remove():
+    """After removing an obj_id, allocating a new one must yield a FRESH id (monotonic, no reuse).
+
+    Validates the 'remove-then-re-add yields a NEW id, never colliding with the removed
+    object's stale memories' guarantee of _alloc_obj_id.
+    """
+    pred = _predictor()
+    state = _state()
+
+    # Allocate first id (must be 0).
+    first_id = pred._alloc_obj_id(state)
+    assert first_id == 0, "first allocation must be 0"
+
+    # Register and then remove.
+    state.bank.known_obj_ids.add(first_id)
+    state.tracklet_mgr.spawn(first_id)
+    pred.remove_object(state, first_id)
+
+    # Allocate again: must NOT reuse the removed id (no collision with stale memories).
+    second_id = pred._alloc_obj_id(state)
+    assert second_id != first_id, "re-allocation must not reuse the removed id (no collision)"
+    assert second_id == 1, "allocator must be monotonic: second allocation must be 1"
+
+
+def test_kill_path_removes_dead_tracklet():
+    """The is_dead → remove_object kill path must purge a DEAD tracklet from bank + tracklet_mgr.
+
+    Drives a spawned tracklet to DEAD via TrackletManager.step() (kill_thresh=3 unmatched
+    frames), then exercises the same kill-path loop used in _associate_and_update at the
+    unit level without needing model weights.
+    """
+    pred = _predictor()
+    state = _state()
+    obj_id = 7
+    kill_thresh = 3  # matches TrackletManager default
+
+    # Register in bank and tracklet_mgr.
+    state.bank.known_obj_ids.add(obj_id)
+    state.bank.conditional_memories[obj_id] = ["dummy_cond"]
+    state.bank.non_conditional_memories[obj_id] = ["dummy_non_cond"]
+    mgr = state.tracklet_mgr
+    mgr.spawn(obj_id)
+
+    # Drive to DEAD: kill_thresh consecutive unmatched frames.
+    for _ in range(kill_thresh):
+        mgr.step(matched_track_ids=set(), new_det_ids=set())
+
+    assert mgr.is_dead(obj_id), "tracklet must be DEAD after kill_thresh unmatched frames"
+
+    # Exercise the kill-path logic from _associate_and_update (mirrors lines 461-464).
+    for oid in list(mgr._tracks):
+        if mgr.is_dead(oid):
+            pred.remove_object(state, oid)
+
+    # All four stores must be purged after the kill path runs.
+    assert obj_id not in state.bank.known_obj_ids, "dead tracklet must be purged from known_obj_ids"
+    assert obj_id not in state.bank.conditional_memories, "dead tracklet must be purged from conditional_memories"
+    assert obj_id not in state.bank.non_conditional_memories, "dead tracklet must be purged from non_conditional_memories"
+    assert obj_id not in mgr._tracks, "dead tracklet must be removed from tracklet_mgr after kill path"
