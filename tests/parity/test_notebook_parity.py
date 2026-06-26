@@ -33,6 +33,8 @@ def _iou(a, b):
 def outputs():
     if not GOLDEN.is_file():
         pytest.skip(f"golden fixture missing: {GOLDEN}")
+    if not Path(run_pipelines.CKPT).is_file():
+        pytest.skip(f"checkpoint absent: {run_pipelines.CKPT} (run `pixi run download-sam2-tiny`)")
     return dict(np.load(GOLDEN)), run_pipelines.run_all("new")
 
 
