@@ -109,7 +109,8 @@ exclude = ["notebooks*", "demo*", "tools*", "training*", "sav_dataset*"]
 [tool.setuptools.package-data]
 # Hydra configs + CUDA sources (the latter for the JIT source-build fallback in
 # sam/utils/misc.py when no _C extension is present).
-sam = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
+# SAM 3 text tokenizer BPE vocabulary (data asset, not weights).
+sam = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h", "modeling/text/assets/*.gz"]
 
 # Windows: the sam native extension is built with nvcc + MSVC cl.exe, which conda
 # cannot ship. Before running any pixi command that builds/installs sam (e.g.

@@ -427,6 +427,61 @@ def build_sam3_vision_encoder(ckpt_path=None, device="cuda"):
     return encoder
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3 text encoder -------------------------------------------------------
+# Minimal direct-construction builder for the SAM 3 text tower (Phase 1, Task 3).
+# Mirrors build_sam3_vision_encoder: construct Sam3TextEncoder with the PE-text
+# dims, strict-load the language_backbone subtree (295 keys) from a local sam3.pt.
+# Config mirrors sam3/model_builder.py::_create_language_backbone (VETextEncoder
+# init with d_model=256, width=1024, heads=16, layers=24, context_length=32).
+
+
+def build_sam3_text_encoder(ckpt_path=None, device="cuda"):
+    """Build the SAM 3 text encoder (PE text tower + resizer) and optionally load weights.
+
+    Args:
+        ckpt_path: path to a local ``sam3.pt``. The language-backbone subtree
+            (``detector.backbone.language_backbone.*``) is loaded with
+            ``strict=True`` (295 keys, 0 missing, 0 unexpected). If ``None``
+            the model is returned with init weights.
+        device: device to move the model to.
+
+    Returns:
+        A ``Sam3TextEncoder`` in eval mode. ``encode(phrases)`` takes a list of
+        strings and returns ``(seq=32, N, d_model=256)`` language_features.
+    """
+    from sam.modeling.text.text_encoder import Sam3TextEncoder
+    from sam.modeling.text.tokenizer import Sam3Tokenizer
+
+    tokenizer = Sam3Tokenizer()
+    text_encoder = Sam3TextEncoder(
+        d_model=256,
+        tokenizer=tokenizer,
+        width=1024,
+        heads=16,
+        layers=24,
+        context_length=32,
+        vocab_size=49408,
+        use_ln_post=True,
+    )
+
+    if ckpt_path is not None:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            ckpt = ckpt["model"]
+        prefix = "detector.backbone.language_backbone."
+        sub = {
+            k[len(prefix):]: v
+            for k, v in ckpt.items()
+            if k.startswith(prefix)
+        }
+        text_encoder.load_state_dict(sub, strict=True)
+
+    text_encoder = text_encoder.to(device)
+    text_encoder.eval()
+    return text_encoder
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:

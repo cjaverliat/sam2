@@ -75,3 +75,40 @@ def test_encoder_parity(image_fixture):
         got, golden, atol=1e-2,
         err_msg=f"encoder principal-level parity failed: max|delta|={max_abs:.4g}",
     )
+
+
+# SPDX-License-Identifier: LicenseRef-SAM
+def test_text_parity(image_fixture):
+    """The SAM 3 text encoder's output matches the golden ``text_emb`` within atol=1e-2.
+
+    Target key: ``text_emb`` (32, 1, 256) = ``language_features`` = ``text_memory_resized``
+    from ``VETextEncoder.forward()`` (transformer output transposed + resizer Linear).
+    This is a PURE-TEXT quantity — no vision fusion is involved; the early-fusion encoder
+    (``TransformerEncoderFusion``) is a separate module that consumes ``language_features``
+    together with vision features in Task 4. ``text_embeds_pre`` (1024) was rejected as the
+    target because it is merely the token embedding lookup (pre-transformer), which would be
+    a weaker check. Targeting ``text_emb`` exercises the full transformer stack + projection.
+    """
+    if not CKPT.is_file():
+        pytest.skip(f"checkpoint absent: {CKPT}")
+    from sam.build_sam import build_sam3_text_encoder  # noqa: F401 — will fail RED
+
+    _determinism()
+    text_encoder = build_sam3_text_encoder(ckpt_path=str(CKPT), device="cuda")
+
+    phrase = str(image_fixture["image_phrase"])  # "truck"
+
+    with torch.inference_mode():
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            text_emb = text_encoder.encode([phrase])  # (seq=32, 1, 256)
+
+    golden = image_fixture["text_emb"].astype(np.float32)  # (32, 1, 256) f16 → f32
+    assert tuple(text_emb.shape) == golden.shape, (
+        f"text_emb shape {tuple(text_emb.shape)} != golden {golden.shape}"
+    )
+    got = text_emb.float().cpu().numpy()
+    max_abs = float(np.max(np.abs(got - golden)))
+    np.testing.assert_allclose(
+        got, golden, atol=1e-2,
+        err_msg=f"text encoder parity failed: max|delta|={max_abs:.4g}",
+    )

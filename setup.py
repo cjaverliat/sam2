@@ -92,6 +92,9 @@ BASE_DEPS = [
     "iopath>=0.1.10",
     "pillow>=9.4.0",
     "opencv-python>=4.7.0",
+    # SAM 3 text tokenizer (CLIP BPE): text normalisation + Unicode regex.
+    "ftfy>=6.1.1",
+    "regex>=2024.1.1",
 ]
 
 
