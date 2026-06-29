@@ -33,6 +33,10 @@ _VARIANTS = {
         "efficientsam3_ft/efficientsam3_tinyvit.pt",
         "efficientsam3_tinyvit.pt",
     ),
+    "efficientvit": (
+        "efficientsam3_ft/efficientsam3_efficientvit.pt",
+        "efficientsam3_efficientvit.pt",
+    ),
 }
 
 

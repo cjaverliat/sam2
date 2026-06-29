@@ -66,6 +66,14 @@ VARIANTS: dict[str, dict] = {
         ],
         golden="efficientsam3_tinyvit",
     ),
+    "efficientvit": dict(
+        config="configs/efficientsam3/efficientsam3_efficientvit.yaml",
+        ckpts=[
+            _REPO / "checkpoints/efficientsam3_efficientvit.pt",
+            _REPO / "checkpoints/_esam3_validate/efficientsam3_ft/efficientsam3_efficientvit.pt",
+        ],
+        golden="efficientsam3_efficientvit",
+    ),
 }
 
 

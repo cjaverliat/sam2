@@ -384,9 +384,13 @@ outputs = ["checkpoints/efficientsam3_repvit.pt"]
 cmd = "python tools/download_efficientsam3.py --variant tinyvit --out-dir checkpoints"
 outputs = ["checkpoints/efficientsam3_tinyvit.pt"]
 
+[tool.pixi.tasks.download-efficientsam3-efficientvit]
+cmd = "python tools/download_efficientsam3.py --variant efficientvit --out-dir checkpoints"
+outputs = ["checkpoints/efficientsam3_efficientvit.pt"]
+
 # --- EfficientSAM3: all checkpoints ---
 [tool.pixi.tasks.download-efficientsam3]
-depends-on = ["download-efficientsam3-repvit", "download-efficientsam3-tinyvit"]
+depends-on = ["download-efficientsam3-repvit", "download-efficientsam3-tinyvit", "download-efficientsam3-efficientvit"]
 
 # ---------------------------------------------------------------------------
 # ONNX export tasks. One task per model: it downloads the checkpoint (via
