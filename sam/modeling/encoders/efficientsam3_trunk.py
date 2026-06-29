@@ -11,11 +11,18 @@ Upstream cross-check (efficientsam3_reference/stage1/model.py):
 import torch
 import torch.nn as nn
 from sam.modeling.encoders.repvit import repvit_m0_9, repvit_m1_1, repvit_m2_3
+from sam.modeling.encoders.tiny_vit import tiny_vit_5m_224, tiny_vit_11m_224, tiny_vit_21m_224
 
 _REPVIT = {
     "m0_9": repvit_m0_9, "m0.9": repvit_m0_9,
     "m1_1": repvit_m1_1, "m1.1": repvit_m1_1,
     "m2_3": repvit_m2_3, "m2.3": repvit_m2_3,
+}
+
+_TINYVIT = {
+    "5m": tiny_vit_5m_224,
+    "11m": tiny_vit_11m_224,
+    "21m": tiny_vit_21m_224,
 }
 
 
@@ -38,6 +45,24 @@ class _RepViTTrunk(nn.Module):
         for f in self.model.features:
             x = f(x)
         return x
+
+
+class _TinyViTTrunk(nn.Module):
+    """Runs TinyViT.patch_embed then layers; reshapes (B,L,C) → (B,C,H,W).
+    Exposes channel_list = [embed_dims[-1]]. (Upstream: TinyViTTrunkWrapper.)"""
+
+    def __init__(self, model_name: str, img_size: int = 1008):
+        super().__init__()
+        self.model = _TINYVIT[model_name](img_size=img_size)
+        self.channel_list = [self.model.norm_head.normalized_shape[0]]
+
+    def forward(self, x):
+        x = self.model.patch_embed(x)
+        for layer in self.model.layers:
+            x = layer(x)
+        B, L, C = x.shape
+        side = int(L ** 0.5)
+        return x.view(B, side, side, C).permute(0, 3, 1, 2).contiguous()
 
 
 class _ImageStudentEncoder(nn.Module):
@@ -92,9 +117,11 @@ class EfficientSam3Trunk(nn.Module):
         super().__init__()
         if backbone_type == "repvit":
             bk = _RepViTTrunk(model_name)
+        elif backbone_type == "tinyvit":
+            bk = _TinyViTTrunk(model_name, img_size=img_size)
         else:
             raise NotImplementedError(
-                f"backbone_type={backbone_type!r} is not supported; expected 'repvit'"
+                f"backbone_type={backbone_type!r} is not supported; expected 'repvit' or 'tinyvit'"
             )
         self.model = _ImageStudentEncoder(bk, bk.channel_list[0], embed_dim, embed_size)
         self.channel_list = [embed_dim]
