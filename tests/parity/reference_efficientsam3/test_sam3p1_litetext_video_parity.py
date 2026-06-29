@@ -201,29 +201,26 @@ def test_sam3p1_litetext_video_parity(video_fixture):
 # Part 2: VRAM-flat test (constant VRAM as clip grows)
 # ---------------------------------------------------------------------------
 def test_sam3p1_litetext_video_constant_vram(video_fixture):
-    """Peak CUDA memory stays ~flat as the streamed clip grows (multiplex property).
+    """Persistent CUDA allocation stays flat as the streamed clip grows (forgetful-bank property).
 
     The multiplex tracker's BUCKET-space spatial memory is threaded as the tracker's
     native ``output_dict``; ``Sam3MultiplexVideoPredictor`` prunes non-conditional frame
-    entries outside the forgetful window (cond frames kept), so peak VRAM is bounded to
-    ``<= window`` non-conditional frames -> does not grow with clip length.
+    entries outside the forgetful window (cond frames kept), so persistent VRAM is bounded
+    to ``<= window`` non-conditional frames -> does not grow with clip length.
 
     Method (mirrors Phase-1 test_sam3p1_video_constant_vram):
       * Stream 4 golden frames looped to N_LONG=16.
       * Reset peak at WARM_FRAME=9 (> forgetful window 7, the non-cond store is full).
-      * Assert VRAM growth from WARM_FRAME to final frame <= VRAM_GROWTH_GATE.
-
-    Gate is 0.40 (vs 0.25 for the full SAM3.1 Phase-1 model) because:
-      * The alloc (persistent state) IS flat at ~2728 MB from frame 9 onward — the
-        multiplex VRAM-flat PROPERTY holds.
-      * The measured "growth" is entirely from per-frame forward-pass TEMPORARY
-        allocations (~914 MB peak overhead), NOT persistent state.
-      * SAM3.1-LiteText uses MobileCLIP (111 keys) instead of the VE text tower
-        (295 keys), so its base alloc is ~700 MB lighter than Phase-1 SAM3.1.
-        The same absolute forward-overhead / smaller-base-alloc → higher ratio.
-        Phase-1 achieves ~26% (just under 25%) with its heavier base; E2 achieves
-        ~33.5% with the lighter MobileCLIP base. 0.40 = 2× the measured value,
-        providing a comfortable gating margin.
+      * PRIMARY gate: persistent allocation (memory_allocated after synchronize) from
+        WARM_FRAME to final frame <= PERSISTENT_GROWTH_GATE (5%). This directly proves the
+        forgetful bank bounds persistent state regardless of forward-pass temporaries.
+      * SECONDARY gate: peak growth (max_memory_allocated) <= VRAM_GROWTH_GATE (40%).
+        The 0.40 threshold provides ~1.2× headroom over the measured peak-temporary
+        overhead (~33.5%): SAM3.1-LiteText uses MobileCLIP (111 keys) instead of the VE
+        text tower (295 keys), so its persistent base is ~700 MB lighter than Phase-1
+        SAM3.1. The same absolute forward-overhead / smaller-base -> higher peak ratio.
+        The persistent-flatness gate is the authoritative property check; the peak gate
+        is a secondary sanity bound only.
     """
     if not CKPT.is_file():
         pytest.skip(f"checkpoint absent: {CKPT}")
@@ -243,34 +240,56 @@ def test_sam3p1_litetext_video_constant_vram(video_fixture):
     video_h, video_w = (int(v) for v in video_fixture["video_hw"])
     phrase = str(video_fixture["video_phrase"])
     N_LONG = 16
-    WARM_FRAME = 9         # > forgetful window (7): non-cond store full and steady here
-    VRAM_GROWTH_GATE = 0.40  # see docstring for why 0.40 (not 0.25 as in Phase-1)
+    WARM_FRAME = 9              # > forgetful window (7): non-cond store full and steady here
+    VRAM_GROWTH_GATE = 0.40     # secondary peak gate: see docstring
+    PERSISTENT_GROWTH_GATE = 0.05  # primary property gate: persistent alloc must stay flat
 
     state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
     predictor.set_concept(state, ConceptPrompt(phrase))
 
-    mem_after_warm = None
+    peak_after_warm = None
+    persistent_after_warm = None
     for f_idx in range(N_LONG):
         frame = base_frames[f_idx % base_frames.shape[0]]
         predictor.forward(state, f_idx, frame)
         torch.cuda.synchronize()
         if f_idx == WARM_FRAME:
             torch.cuda.reset_peak_memory_stats()
-            mem_after_warm = torch.cuda.max_memory_allocated()
+            peak_after_warm = torch.cuda.max_memory_allocated()
+            persistent_after_warm = torch.cuda.memory_allocated()
 
     torch.cuda.synchronize()
-    mem_after_long = torch.cuda.max_memory_allocated()
+    peak_after_long = torch.cuda.max_memory_allocated()
+    persistent_after_long = torch.cuda.memory_allocated()
 
-    assert mem_after_warm is not None and mem_after_warm > 0
-    growth = (mem_after_long - mem_after_warm) / mem_after_warm
+    assert peak_after_warm is not None and peak_after_warm > 0
+    assert persistent_after_warm is not None and persistent_after_warm > 0
+
+    # PRIMARY: persistent-flatness (the forgetful-bank property being proved)
+    persistent_growth = (persistent_after_long - persistent_after_warm) / persistent_after_warm
     print(
-        f"\n[vram] warm_frame={WARM_FRAME}  mem={mem_after_warm/1e6:.1f} MB -> "
-        f"{mem_after_long/1e6:.1f} MB  growth={growth:.1%}  gate={VRAM_GROWTH_GATE:.0%}"
+        f"\n[vram] persistent: warm_frame={WARM_FRAME}  "
+        f"{persistent_after_warm/1e6:.1f} MB -> {persistent_after_long/1e6:.1f} MB  "
+        f"growth={persistent_growth:.1%}  gate={PERSISTENT_GROWTH_GATE:.0%}"
     )
-    assert growth <= VRAM_GROWTH_GATE, (
-        f"peak VRAM grew {growth:.1%} from frame {WARM_FRAME} "
-        f"({mem_after_warm/1e6:.1f} MB) to frame {N_LONG - 1} "
-        f"({mem_after_long/1e6:.1f} MB) -- not constant-VRAM (gate={VRAM_GROWTH_GATE:.0%})"
+    assert persistent_growth <= PERSISTENT_GROWTH_GATE, (
+        f"persistent VRAM grew {persistent_growth:.1%} from frame {WARM_FRAME} "
+        f"({persistent_after_warm/1e6:.1f} MB) to frame {N_LONG - 1} "
+        f"({persistent_after_long/1e6:.1f} MB) -- forgetful bank leak detected "
+        f"(gate={PERSISTENT_GROWTH_GATE:.0%})"
+    )
+
+    # SECONDARY: peak sanity bound (catches runaway temporaries)
+    peak_growth = (peak_after_long - peak_after_warm) / peak_after_warm
+    print(
+        f"[vram] peak:       warm_frame={WARM_FRAME}  "
+        f"{peak_after_warm/1e6:.1f} MB -> {peak_after_long/1e6:.1f} MB  "
+        f"growth={peak_growth:.1%}  gate={VRAM_GROWTH_GATE:.0%}"
+    )
+    assert peak_growth <= VRAM_GROWTH_GATE, (
+        f"peak VRAM grew {peak_growth:.1%} from frame {WARM_FRAME} "
+        f"({peak_after_warm/1e6:.1f} MB) to frame {N_LONG - 1} "
+        f"({peak_after_long/1e6:.1f} MB) -- not constant-VRAM (gate={VRAM_GROWTH_GATE:.0%})"
     )
 
 
