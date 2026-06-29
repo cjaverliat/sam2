@@ -49,6 +49,13 @@ _VARIANTS = {
         "sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt",
         "efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt",
     ),
+    # EfficientSAM3.1 MULTIPLEX VIDEO predictor (distilled RepViT-M1.1, MobileCLIP-S0, ctx16).
+    # Uses build_efficientsam3p1_video_predictor + _load_sam3_multiplex_video_checkpoint.
+    # 1672 keys strict: vision 707 (trunk 653) + MobileCLIP 111 + detector 397 + tracker 457.
+    "sam3p1-repvit-m-s0-ctx16": (
+        "stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt",
+        "efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt",
+    ),
 }
 
 

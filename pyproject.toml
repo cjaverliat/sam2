@@ -396,6 +396,10 @@ outputs = ["checkpoints/sam3_litetext_mobileclip_s0_ctx16.pt"]
 cmd = "python tools/download_efficientsam3.py --variant sam3p1-litetext-s0-ctx16 --out-dir checkpoints"
 outputs = ["checkpoints/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt"]
 
+[tool.pixi.tasks.download-efficientsam3p1-repvit-m-s0-ctx16]
+cmd = "python tools/download_efficientsam3.py --variant sam3p1-repvit-m-s0-ctx16 --out-dir checkpoints"
+outputs = ["checkpoints/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt"]
+
 # --- EfficientSAM3: all checkpoints ---
 [tool.pixi.tasks.download-efficientsam3]
 depends-on = ["download-efficientsam3-repvit", "download-efficientsam3-tinyvit", "download-efficientsam3-efficientvit"]

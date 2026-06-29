@@ -1,0 +1,189 @@
+# @package _global_
+# SPDX-License-Identifier: LicenseRef-SAM
+# EfficientSAM3.1 multiplex VIDEO predictor, distilled RepViT-M1.1 trunk, stage1-only.
+#
+# Clone of configs/efficientsam3/sam3p1_litetext_s0_ctx16.yaml with ONLY the
+# vision_encoder.vision_backbone.trunk node changed from pe_vitdet.ViT to the
+# DISTILLED EfficientSam3Trunk (backbone_type=repvit, model_name=m1_1).
+# ALL other nodes are verbatim from sam3p1_litetext_s0_ctx16.yaml:
+#   * text_encoder: MobileCLIP-S0 (ctx16, 111 keys) — identical
+#   * detector: DETR + supervise_joint_box_scores=true + geometry — identical
+#   * vision_encoder: neck config + scalp=0 (present-but-unused by the video builder,
+#     which builds the tri-neck via _build_efficientsam3p1_video_vision_encoder_module)
+#
+# Consumed by build_efficientsam3p1_video_predictor (reads model.text_encoder +
+# model.detector; builds the tri-neck distilled vision encoder + 457 multiplex tracker
+# in Python from backbone_type/model_name -- so the vision_encoder node here accurately
+# documents the distilled trunk the builder builds, not decorative-wrong).
+# Strict load = 1672 keys: vision 707 (RepViT trunk 653 + convs 18 + interactive_convs 18
+# + sam2_convs 18) + MobileCLIP 111 + detector head 397 + tracker 457
+# (0 missing / 0 unexpected).
+# Checkpoint: Simon7108528/EfficientSAM3 (public, no token)
+#   stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt
+
+model:
+  _target_: sam.models.sam3_predictor.Sam3MultiplexPredictor
+
+  # --- EfficientSAM3.1 distilled tri-neck vision encoder (RepViT-M1.1 trunk) ---
+  # trunk: EfficientSam3Trunk (distilled RepViT-M1.1, channel_list=[1024], 653 keys).
+  # scale_factors=[4,2,1] (no 0.5 level) + scalp=0 -> the [288,144,72] pyramid the
+  # detector consumes (add_sam2_neck=false: the image detector needs only the detection
+  # neck).
+  # NOTE: present-but-unused by the multiplex video builder (tri-neck is built in Python
+  # by _build_efficientsam3p1_video_vision_encoder_module with backbone_type/model_name).
+  vision_encoder:
+    _target_: sam.modeling.encoders.perception_encoder.Sam3VisionEncoder
+    scalp: 0
+    vision_backbone:
+      _target_: sam.modeling.encoders.necks.Sam3DualViTDetNeck
+      d_model: 256
+      scale_factors: [4.0, 2.0, 1.0]
+      add_sam2_neck: false
+      trunk:
+        _target_: sam.modeling.encoders.efficientsam3_trunk.EfficientSam3Trunk
+        backbone_type: repvit
+        model_name: m1_1
+      position_encoding:
+        _target_: sam.modeling.position_encoding.PositionEmbeddingSine
+        num_pos_feats: 256
+        normalize: true
+        scale: null
+        temperature: 10000
+        warmup_cache: false
+
+  # --- text tower (MobileCLIP-S0 transformer + d_model projector) ----------------------
+  text_encoder:
+    _target_: sam.modeling.text.mobileclip_text_encoder.MobileClipTextEncoder
+    variant: MobileCLIP-S0
+    context_length: 16
+    output_dim: 256
+    tokenizer:
+      _target_: sam.modeling.text.tokenizer.Sam3Tokenizer
+
+  # --- DETR detector — identical arch to base + supervise_joint_box_scores=true ---------
+  detector:
+    _target_: sam.modeling.decoders.detr_decoder.Sam3DetrDetector
+    num_feature_levels: 1
+    o2m_mask_predict: true
+    supervise_joint_box_scores: true
+
+    transformer:
+      _target_: sam.modeling.decoders.detr_decoder.TransformerWrapper
+      d_model: 256
+      encoder:
+        _target_: sam.modeling.decoders.detr_decoder.TransformerEncoderFusion
+        num_layers: 6
+        d_model: 256
+        num_feature_levels: 1
+        add_pooled_text_to_img_feat: false
+        pool_text_with_mask: true
+        layer:
+          _target_: sam.modeling.decoders.detr_decoder.TransformerEncoderLayer
+          activation: relu
+          d_model: 256
+          dim_feedforward: 2048
+          dropout: 0.1
+          pos_enc_at_attn: true
+          pos_enc_at_cross_attn_keys: false
+          pos_enc_at_cross_attn_queries: false
+          pre_norm: true
+          self_attention:
+            _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+            num_heads: 8
+            dropout: 0.1
+            embed_dim: 256
+            batch_first: true
+          cross_attention:
+            _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+            num_heads: 8
+            dropout: 0.1
+            embed_dim: 256
+            batch_first: true
+      decoder:
+        _target_: sam.modeling.decoders.detr_decoder.TransformerDecoder
+        d_model: 256
+        num_layers: 6
+        num_queries: 200
+        return_intermediate: true
+        box_refine: true
+        num_o2m_queries: 0
+        dac: true
+        boxRPB: log
+        dac_use_selfatt_ln: true
+        resolution: 1008
+        stride: 14
+        presence_token: true
+        layer:
+          _target_: sam.modeling.decoders.detr_decoder.TransformerDecoderLayer
+          activation: relu
+          d_model: 256
+          dim_feedforward: 2048
+          dropout: 0.1
+          n_heads: 8
+          use_text_cross_attention: true
+          cross_attention:
+            _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+            num_heads: 8
+            dropout: 0.1
+            embed_dim: 256
+
+    geometry_encoder:
+      _target_: sam.modeling.decoders.detr_decoder.Sam3GeometryEncoder
+      d_model: 256
+      num_layers: 3
+      layer:
+        _target_: sam.modeling.decoders.detr_decoder.TransformerEncoderLayer
+        activation: relu
+        d_model: 256
+        dim_feedforward: 2048
+        dropout: 0.1
+        pos_enc_at_attn: false
+        pos_enc_at_cross_attn_keys: true
+        pos_enc_at_cross_attn_queries: false
+        pre_norm: true
+        self_attention:
+          _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+          num_heads: 8
+          dropout: 0.1
+          embed_dim: 256
+          batch_first: false
+        cross_attention:
+          _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+          num_heads: 8
+          dropout: 0.1
+          embed_dim: 256
+          batch_first: false
+
+    segmentation_head:
+      _target_: sam.modeling.decoders.maskformer_segmentation.UniversalSegmentationHead
+      hidden_dim: 256
+      upsampling_stages: 3
+      aux_masks: false
+      presence_head: false
+      dot_product_scorer: null
+      cross_attend_prompt:
+        _target_: sam.modeling.decoders.detr_decoder.MultiheadAttention
+        num_heads: 8
+        dropout: 0
+        embed_dim: 256
+      pixel_decoder:
+        _target_: sam.modeling.decoders.maskformer_segmentation.PixelDecoder
+        num_upsampling_stages: 3
+        interpolation_mode: nearest
+        hidden_dim: 256
+
+    dot_prod_scoring:
+      _target_: sam.modeling.decoders.detr_decoder.DotProductScoring
+      d_model: 256
+      d_proj: 256
+      prompt_mlp:
+        _target_: sam.modeling.decoders.detr_decoder.MLP
+        input_dim: 256
+        hidden_dim: 2048
+        output_dim: 256
+        num_layers: 2
+        dropout: 0.1
+        residual: true
+        out_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: 256

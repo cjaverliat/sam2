@@ -1604,6 +1604,140 @@ def build_efficientsam3p1_litetext_video_predictor_hf(
     )
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- EfficientSAM3.1 (distilled RepViT) MULTIPLEX VIDEO predictor (F1a) ------
+# EfficientSAM3.1 = SAM 3.1 multiplex stack (457 tracker, tri-neck, DETR detector +
+# trained geometry, MobileCLIP-S0 text) with vision trunk swapped to DISTILLED
+# EfficientSam3Trunk (RepViT-M1.1).  Only the vision builder differs from E1
+# (SAM3.1-LiteText); the multiplex tracker, text encoder, and detector are unchanged.
+# 1672 keys = vision 707 (trunk 653 + convs 18 + interactive_convs 18 + sam2_convs 18)
+#           + MobileCLIP 111 + detector head 397 + tracker 457.
+# Checkpoint: Simon7108528/EfficientSAM3 (public, no token).
+
+
+def _build_efficientsam3p1_video_vision_encoder_module(
+    backbone_type="repvit", model_name="m1_1"
+):
+    """Construct the EfficientSAM3.1 TRI-neck vision encoder (distilled RepViT trunk).
+
+    Identical to :func:`_build_sam3_multiplex_video_vision_encoder_module` except the
+    PE-ViT trunk is replaced by :class:`EfficientSam3Trunk` (backbone_type/model_name).
+    The distilled trunk exposes ``.channel_list=[1024]`` + ``forward(x)->[feat 1024@72]``,
+    satisfying the ``Sam3DualViTDetNeck`` VisionTrunk contract.
+    """
+    from sam.modeling.encoders.efficientsam3_trunk import EfficientSam3Trunk
+    from sam.modeling.encoders.necks import Sam3DualViTDetNeck
+    from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+
+    trunk = EfficientSam3Trunk(backbone_type=backbone_type, model_name=model_name)
+    position_encoding = PositionEmbeddingSine(
+        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
+    )
+    neck = Sam3DualViTDetNeck(
+        trunk=trunk, position_encoding=position_encoding, d_model=256,
+        scale_factors=[4.0, 2.0, 1.0], add_sam2_neck=True, add_interactive_neck=True,
+    )
+    return Sam3VisionEncoder(vision_backbone=neck, scalp=0)
+
+
+def build_efficientsam3p1_video_predictor(
+    config_file,
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+    backbone_type="repvit",
+    model_name="m1_1",
+    hydra_overrides_extra=[],
+    **kwargs,
+):
+    """Build an EfficientSAM3.1 distilled-RepViT multiplex streaming video predictor.
+
+    Mirrors :func:`build_sam3_multiplex_video_predictor` but builds the tri-neck vision
+    encoder with the DISTILLED :class:`EfficientSam3Trunk` (RepViT-M1.1) instead of the
+    PE-ViT trunk.  The text encoder (MobileCLIP-S0), DETR detector (trained geometry,
+    ``supervise_joint_box_scores=True``), and multiplex tracker (457 keys) are unchanged.
+    The :func:`_load_sam3_multiplex_video_checkpoint` loader then strict-loads all 1672
+    keys of the F1 checkpoint (0 missing / 0 unexpected):
+
+      - vision_backbone 707 keys (RepViT trunk 653 + convs 18 + interactive_convs 18
+        + propagation_convs 18 remapped to sam2_convs)
+      - MobileCLIP-S0 text encoder 111 keys
+      - DETR detector head 397 keys (incl. trained geometry encoder 76 keys)
+      - Sam3MultiplexTracker 457 keys
+    """
+    from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor
+
+    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
+    OmegaConf.resolve(cfg)
+    text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
+    detector = instantiate(cfg.model.detector, _recursive_=True)
+    vision_encoder = _build_efficientsam3p1_video_vision_encoder_module(
+        backbone_type, model_name
+    )
+    tracker = _build_sam3_multiplex_tracker_module()
+
+    model = Sam3MultiplexVideoPredictor(
+        vision_encoder=vision_encoder,
+        text_encoder=text_encoder,
+        detector=detector,
+        tracker=tracker,
+    )
+    _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+HF_EFFICIENTSAM3P1_MODEL_ID_TO_FILES = {
+    "repvit-m-s0-ctx16": (
+        "configs/efficientsam3/efficientsam3p1_repvit_m_mobileclip_s0_ctx16.yaml",
+        "stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt",
+    ),
+}
+
+
+def build_efficientsam3p1_video_predictor_hf(model_id="repvit-m-s0-ctx16", **kwargs):
+    """Build an EfficientSAM3.1 distilled-RepViT multiplex-video predictor from a HuggingFace model id.
+
+    Downloads the checkpoint from the PUBLIC repo ``Simon7108528/EfficientSAM3`` (no
+    token required) and delegates to :func:`build_efficientsam3p1_video_predictor` with
+    the matching hydra config.  The :func:`_load_sam3_multiplex_video_checkpoint` loader
+    performs the 4-group strict remap: 707 vision (RepViT trunk 653 + necks 54) +
+    111 MobileCLIP + 397 detector head + 457 multiplex tracker =
+    **1672 keys strict (0 missing / 0 unexpected)**.
+
+    Unlike SAM3.1-LiteText (E1, PE-ViT trunk 474 keys), the vision backbone here is the
+    DISTILLED :class:`EfficientSam3Trunk` (RepViT-M1.1, 653 trunk keys); the tri-neck,
+    text encoder, trained geometry encoder, and multiplex tracker are unchanged.
+
+    Args:
+        model_id: variant key (default ``"repvit-m-s0-ctx16"`` ->
+            ``stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt``).
+        **kwargs: forwarded to :func:`build_efficientsam3p1_video_predictor`
+            (``device``, ``mode``, ``hydra_overrides_extra``, ...).
+
+    Returns:
+        A ``Sam3MultiplexVideoPredictor`` in eval mode with MobileCLIP-S0 text encoder,
+        distilled RepViT-M1.1 trunk, Sam3MultiplexTracker (457 keys), and trained
+        geometry encoder.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_EFFICIENTSAM3P1_MODEL_ID_TO_FILES[model_id]
+    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
+    # repvit-m-s0-ctx16 -> backbone_type=repvit, model_name=m1_1
+    backbone_type, model_name = "repvit", "m1_1"
+    return build_efficientsam3p1_video_predictor(
+        config_file=config_file,
+        ckpt_path=ckpt_path,
+        backbone_type=backbone_type,
+        model_name=model_name,
+        **kwargs,
+    )
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
