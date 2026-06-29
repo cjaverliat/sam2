@@ -213,6 +213,35 @@ instantiated.
 only internal tests): same image/video + prompt through upstream and our predictor; compare masks (IoU),
 instance counts, scores. Fixtures captured once (the §4 golden) so CI runs without the upstream repo.
 
+### Performance reference (image path)
+
+Captured from the **upstream** EfficientSAM3 RepViT model on this machine (RTX 3080 Ti,
+torch 2.11+cu128), `dog_person.jpeg` 2048×1365, prompt "dog", threshold 0.1, 50 iters + 10 warmup,
+`torch.cuda.synchronize()` per timed call, TF32 on, `cudnn.benchmark` on. Script:
+`efficientsam3_reference/_bench.py`; data: `efficientsam3_reference/_golden/bench.json`.
+
+| Phase | fp32 (TF32) | autocast bf16 |
+|---|---|---|
+| vision (`set_image`: RepViT trunk + neck + backbone feats) | **31.5 ms · 31.7 fps** | 45.6 ms · 21.9 fps |
+| prompt (text + DETR detect + segmentation, 13 instances) | 97.4 ms · 10.3 fps | 119 ms · 8.4 fps |
+| end-to-end (image + 1 prompt) | **136.6 ms · 7.3 fps** | 188 ms · 5.3 fps |
+
+- The **distilled vision encoder (~31 ms)** is the EfficientSAM3 win; the **reused SAM 3 DETR
+  detector + per-instance mask head (~97 ms) dominates** end-to-end. Our integration reuses both, so
+  it should match these numbers.
+- autocast bf16 is **slower than fp32+TF32** on this Ampere GPU (RepViT is conv-heavy; TF32 already
+  saturates the tensor cores, so bf16 adds cast overhead). **Canonical reference = fp32+TF32.**
+- **Image path only** — the upstream image checkpoint has no tracker. Per-frame **video FPS** (text
+  cached once per concept + tracker step) is a separate reference captured in Phase B.
+- Prompt-phase cost scales with instance count (fixed prompt+threshold for comparability); absolute
+  ms shifts ±10–15% with GPU thermal/clock — the breakdown **ratio** (vision ⅓ / detector ⅔) is the
+  robust takeaway.
+
+**FPS parity gate.** The integrated `EfficientSam3` image predictor must reproduce this breakdown
+within ~15% per phase on the same GPU / input / precision (a regression guard, not a hard SLA), benched
+with identical methodology (`tools/benchmark_efficientsam3.py`, to be added). Video FPS gate set in
+Phase B against its own reference.
+
 ## 11. Licensing (extends D11)
 
 No single umbrella — extend the existing per-component scheme:
