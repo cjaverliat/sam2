@@ -1549,6 +1549,61 @@ def build_sam3_multiplex_video_predictor_hf(model_id, **kwargs):
     )
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM3.1-LiteText MULTIPLEX VIDEO predictor (E1) --------------------------
+# SAM3.1-LiteText is the SAM 3.1 MULTIPLEX video stack with only the text encoder
+# swapped from the PE text tower to MobileCLIP-S0 (ctx16).  The EXISTING
+# build_sam3_multiplex_video_predictor + _load_sam3_multiplex_video_checkpoint already
+# handle this path: the loader is text-encoder-agnostic (remaps language_backbone.*
+# onto whatever text_encoder the config instantiates — 111 keys for MobileCLIP).
+# 1439 keys = vision 474 + MobileCLIP 111 + detector head 397 + tracker 457.
+# Checkpoint: Simon7108528/EfficientSAM3 (public, no token).
+
+
+HF_EFFICIENTSAM3P1_LITETEXT_MODEL_ID_TO_FILES = {
+    "sam3p1-litetext-s0-ctx16": (
+        "configs/efficientsam3/sam3p1_litetext_s0_ctx16.yaml",
+        "sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt",
+    ),
+}
+
+
+def build_efficientsam3p1_litetext_video_predictor_hf(
+    model_id="sam3p1-litetext-s0-ctx16", **kwargs
+):
+    """Build a SAM3.1-LiteText multiplex-video predictor from a HuggingFace model id.
+
+    Downloads the checkpoint from the PUBLIC repo ``Simon7108528/EfficientSAM3`` (no
+    token required) and delegates to the existing
+    :func:`build_sam3_multiplex_video_predictor` with the matching hydra config.  The
+    ``_load_sam3_multiplex_video_checkpoint`` loader performs the 4-group strict remap:
+    474 vision + 111 MobileCLIP language + 397 detector head + 457 multiplex tracker =
+    **1439 keys strict (0 missing / 0 unexpected)**.
+
+    Unlike the PE tower variant (295 text keys), the text encoder here is MobileCLIP-S0
+    (ctx16) — only the text backbone is swapped; the tri-neck PE-ViT vision encoder,
+    trained geometry encoder (76 keys inside the 397-key head), and the full 457-key
+    multiplex tracker are kept unchanged.
+
+    Args:
+        model_id: variant key (default ``"sam3p1-litetext-s0-ctx16"`` ->
+            ``sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt``).
+        **kwargs: forwarded to :func:`build_sam3_multiplex_video_predictor`
+            (``device``, ``mode``, ``hydra_overrides_extra``, ...).
+
+    Returns:
+        A ``Sam3MultiplexVideoPredictor`` in eval mode with MobileCLIP-S0 text encoder,
+        Sam3MultiplexTracker (457 keys), and trained geometry encoder.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_EFFICIENTSAM3P1_LITETEXT_MODEL_ID_TO_FILES[model_id]
+    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
+    return build_sam3_multiplex_video_predictor(
+        config_file=config_file, ckpt_path=ckpt_path, **kwargs
+    )
+
+
 # SPDX-License-Identifier: Apache-2.0
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:

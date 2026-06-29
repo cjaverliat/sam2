@@ -43,6 +43,12 @@ _VARIANTS = {
         "sam3_litetext/sam3_litetext_mobileclip_s0_ctx16.pt",
         "sam3_litetext_mobileclip_s0_ctx16.pt",
     ),
+    # SAM3.1-LiteText MULTIPLEX VIDEO predictor (MobileCLIP-S0, context-length 16).
+    # Uses the EXISTING build_sam3_multiplex_video_predictor + _load_sam3_multiplex_video_checkpoint path.
+    "sam3p1-litetext-s0-ctx16": (
+        "sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt",
+        "efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt",
+    ),
 }
 
 
