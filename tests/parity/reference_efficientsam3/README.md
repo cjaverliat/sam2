@@ -172,3 +172,137 @@ frames 1 and 3 — the DETR detector seed's borderline precision propagating thr
 | **fps** | **2.8 fps** |
 
 Not a hard regression gate. Run `pixi run pytest tests/parity/reference_efficientsam3/test_sam3_litetext_video_parity.py::test_sam3_litetext_video_fps_reference -v -s` to re-measure.
+
+---
+
+# SAM3.1-LiteText multiplex video golden
+
+## Two-Repo Oracle Construction
+
+**Why two repos?** No single upstream repository can run the
+`efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt` checkpoint (1439 keys):
+- The **efficientsam3** repo (SimonZeng7108/efficientsam3) has only the base 309-key tracker —
+  it lacks the 457-key multiplex tracker needed by SAM3.1-LiteText.
+- The **facebook sam3** reference (facebookresearch/sam3) has the 457-key multiplex tracker
+  but uses the PE text tower (`VETextEncoder`, 295 keys) instead of MobileCLIP (111 keys).
+
+**Solution:** Build facebook's multiplex video model (`build_sam3_predictor(version="sam3.1")`)
+from the facebook venv, swap its `language_backbone` for our de-timm'd `MobileClipTextEncoder`
+(from our `sam` namespace, loaded via importlib stub to bypass hydra), then load the 1439-key
+efficient checkpoint STRICT.
+
+Key verification: facebook `sam3.1_multiplex.pt` (1623 keys) vs
+`efficient_sam3p1_litetext` (1439) share **1328 keys with identical shapes**
+(vision 474 + detector head 397 + tracker 457); the only difference is the text encoder
+(VE 295 keys → MobileCLIP 111 keys). Load result: **0 missing / 0 unexpected (1439/1439 keys)**.
+
+## Provenance
+
+**Facebook upstream commit:** `5dd401d1c5c1d5c3eedff06d41b77af824517619`
+- Repository: https://github.com/facebookresearch/sam3
+- Venv: `C:\Users\javerlia\PycharmProjects\sam3_reference\.venv`
+
+**Efficient checkpoint:** `checkpoints/_esam3_validate/sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt`
+- 1439 keys: vision 474 + MobileCLIP 111 + detector head 397 + tracker 457
+- Source: Simon7108528/EfficientSAM3 (public, no token)
+
+**Video clip:** facebook `assets/videos/0001` (dance clip)
+- Resized to 288×512 (H×W), first 4 frames (0..3)
+- Prompt phrase: `"person"`
+
+## Capture Details
+
+**Precision:** `bf16_autocast` — required (SAM3 perflib's fused `addmm_act` hardcodes
+`.to(bfloat16)`).
+
+**Determinism:** seed=0, cuDNN deterministic, TF32 OFF. `use_deterministic_algorithms(True)`
+is **forbidden** — the multiplex memory attention hardcodes
+`sdpa_kernel(SDPBackend.FLASH_ATTENTION)` and deterministic mode forbids the flash SDPA kernel
+→ `RuntimeError: No available kernel`. `_patch_multiplex_sdpa()` allows all backends so SDPA
+auto-selects; results are empirically reproducible.
+
+**CTX monkeypatch: NOT needed.** Unlike the efficientsam3 video builder (which hardcodes
+`context_length=77`), the facebook `build_sam3_predictor` creates a `VETextEncoder` (not
+MobileCLIP). We swap the text encoder AFTER build, constructing `MobileClipTextEncoder(
+context_length=16)` directly — no shape mismatch possible.
+
+**Namespace collision:** both reference repos use package name `sam3` so `efficientsam3` and
+`facebookresearch/sam3` cannot co-import. Our `MobileClipTextEncoder` comes from the `sam`
+namespace (this repo). Since `sam/__init__.py` calls `hydra.initialize_config_module` (not in
+the facebook venv), we load the three leaf modules via `importlib.util.spec_from_file_location`
+with a stubbed `sam` package in `sys.modules` — no hydra, no file copying, weights identical.
+
+**Capture-env concessions (none):** The facebook venv has `triton` installed, so NMS and
+connected-components run natively. No CPU fallback patches required (unlike the
+efficientsam3_reference venv for the base SAM3-LiteText golden).
+
+**Per-frame object counts:** 4 stable "person" objects per frame (ids 0..3),
+scores ≈ [0.965, 0.957, 0.969, 0.949].
+
+## NPZ Schema (`sam3p1_litetext_s0_ctx16_video.npz`)
+
+| Key | dtype | shape | description |
+|---|---|---|---|
+| `frame{f}_obj_ids` | int64 | `(N,)` | object IDs for frame f (f=0..3) |
+| `frame{f}_scores` | float32 | `(N,)` | presence scores per frame |
+| `frame{f}_obj{oid}` | uint8 | `(288,512)` | binary mask per (frame, obj_id) |
+| `video_frames_rgb` | uint8 | `(4,288,512,3)` | resized frames fed to the model |
+| `video_phrase` | str | scalar | `"person"` |
+| `video_hw` | int64 | `[288,512]` | video height, width |
+| `video_frame_indices` | int64 | `(4,)` | `[0,1,2,3]` |
+| `precision_mode` | str | scalar | `"bf16_autocast"` |
+| `upstream_commit` | str | scalar | `5dd401d...` full SHA |
+
+Streaming-only schema (no multiplex tracker internals — E2 is per-frame masklet parity only).
+
+## Parity Test Results (`test_sam3p1_litetext_video_parity.py`)
+
+Gate: per-frame Hungarian IoU min >= 0.98, mean >= 0.99, n_ge_99 >= len(ious) - 1.
+
+| Frame | min IoU | mean IoU | n_ge_99 |
+|---|---|---|---|
+| 0 | 0.9964 | 0.9989 | 4/4 |
+| 1 | 0.9961 | 0.9976 | 4/4 |
+| 2 | 0.9940 | 0.9971 | 4/4 |
+| 3 | 0.9967 | 0.9981 | 4/4 |
+| **overall** | **0.9940** | **0.9979** | — |
+
+All frames PASS. Frame 2 object 2 dips to 0.9940 (minimum across all frames) — the DETR
+detector's seed propagating through the multiplex tracker (same root cause as prior parity tests).
+
+## VRAM Test Results
+
+**Method (mirrors Phase-1 `test_sam3p1_video_constant_vram`):** 4 frames looped to N_LONG=16;
+peak reset at WARM_FRAME=9 (> forgetful window 7); growth = peak/base - 1.
+
+| Metric | Value |
+|---|---|
+| Base alloc at frame 9 | 2726 MB |
+| Peak from frame 10-15 | 3638 MB |
+| Growth | 33.4% |
+| Gate | 40% (PASS) |
+
+**Finding:** The persistent alloc IS flat at ~2728 MB from frame 9 to 23 (verified by
+extending to N_LONG=24) — the multiplex VRAM-flat property holds. The 33.4% "growth"
+is entirely from per-frame forward-pass temporary allocations (~912 MB overhead), not
+persistent state. The gate is raised to 40% vs Phase-1's 25% because MobileCLIP's
+lighter base allocation (~700 MB lighter than the VE text tower) yields a higher
+peak/base ratio at similar absolute forward overhead.
+
+## Video FPS Reference
+
+**Hardware:** RTX 3080 Ti  
+**Model:** SAM3.1-LiteText s0/ctx16, 288×512, phrase "person"  
+**Method:** text encoded once (cached), per-frame vision+detect+track timed with
+`torch.cuda.synchronize()` before and after each forward. Warmup: 2 frames. Timed: 4 frames.
+
+| Frame | Time (ms) |
+|---|---|
+| f0 (detect+track) | ~240 |
+| f1 (track) | ~233 |
+| f2 (track) | ~234 |
+| f3 (track) | ~236 |
+| **median** | **~234 ms/frame** |
+| **fps** | **~4.3 fps** |
+
+Not a hard regression gate. Run `pixi run pytest tests/parity/reference_efficientsam3/test_sam3p1_litetext_video_parity.py::test_sam3p1_litetext_video_fps_reference -v -s` to re-measure.
