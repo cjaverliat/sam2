@@ -4,6 +4,10 @@
 
 **Upstream Repository:** https://github.com/SimonZeng7108/efficientsam3
 
+**Upstream Commit:** `d063e00b1837f8dd285eb517d2dd40faabc34555` (short: `d063e00`)
+- Branch: `main`
+- Date: 2026-06-24
+
 **Checkpoint:** `efficientsam3_ft/efficientsam3_repvit.pt`
 - RepViT-M1.1 vision backbone
 - MobileCLIP-S0 language backbone
@@ -12,6 +16,31 @@
 **Image:** `sam3/assets/dog_person.jpeg` from upstream repo
 - Resolution: 2048 × 1365
 - Prompts: "dog", "person" (text-based semantic segmentation)
+
+## How Captured
+
+Built the upstream model via:
+```python
+build_efficientsam3_image_model(
+    checkpoint_path="efficientsam3_ft/efficientsam3_repvit.pt",
+    backbone_type="repvit",
+    model_name="m1_1",
+    text_encoder_type="MobileCLIP-S0",
+    text_encoder_context_length=16,
+    load_from_HF=False
+)
+```
+
+Then ran inference with:
+```python
+Sam3Processor(model, confidence_threshold=0.1).set_image(dog_person.jpeg)
+processor.set_text_prompt("dog")   # First prompt
+processor.set_text_prompt("person") # Second prompt
+```
+
+**Notes:**
+- Ran in float32 precision (no autocast)
+- Context length forced to 16: upstream `build_efficientsam3_image_model` builds the student text encoder at context_length=77, but the post-load truncation occurs after the load. The strict load would fail without this override.
 
 ## Generation Details
 
