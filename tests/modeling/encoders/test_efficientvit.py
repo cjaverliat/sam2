@@ -26,12 +26,10 @@ def test_triton_fallback_flag():
     """
     from sam.modeling.encoders.efficientvit.nn.norm import _TRITON_AVAILABLE
 
-    # Document the env expectation; the trunk forward test below exercises the
-    # pure-torch path regardless of this flag's value.
-    assert not _TRITON_AVAILABLE, (
-        "Expected no triton on this env; if triton is now installed the CPU "
-        "forward still uses the pure-torch fallback (x.is_cuda is False)"
-    )
+    # The flag must exist and be a bool; its value is env-dependent (False without
+    # triton, True with it). The pure-torch fallback is exercised regardless by the
+    # CPU forward test below (TritonRMSNorm2d.forward checks x.is_cuda first).
+    assert isinstance(_TRITON_AVAILABLE, bool)
 
 
 def test_efficientvit_trunk_channel_list():
