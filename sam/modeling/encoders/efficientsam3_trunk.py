@@ -62,6 +62,7 @@ class _TinyViTTrunk(nn.Module):
             x = layer(x)
         B, L, C = x.shape
         side = int(L ** 0.5)
+        assert side * side == L, f"TinyViT token count {L} is not a perfect square (img_size must be square)"
         return x.view(B, side, side, C).permute(0, 3, 1, 2).contiguous()
 
 
@@ -102,7 +103,7 @@ class EfficientSam3Trunk(nn.Module):
     Submodule nesting for strict checkpoint load:
       self.model               → trunk.model  (ImageStudentEncoder)
       self.model.backbone      → trunk.model.backbone  (RepViTAdapter wrapper)
-      self.model.backbone.model→ trunk.model.backbone.model  (RepViT with .features)
+      self.model.backbone.model→ trunk.model.backbone.model  (RepViT .features / TinyViT patch_embed+layers)
       self.model.head          → trunk.model.head  (projection Sequential)
     """
 
