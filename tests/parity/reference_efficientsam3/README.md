@@ -11,7 +11,7 @@
 **Checkpoint:** `efficientsam3_ft/efficientsam3_repvit.pt`
 - RepViT-M1.1 vision backbone
 - MobileCLIP-S0 language backbone
-- Context length: 16 instances
+- Context length: 16 tokens
 
 **Image:** `sam3/assets/dog_person.jpeg` from upstream repo
 - Resolution: 2048 × 1365
@@ -38,8 +38,15 @@ processor.set_text_prompt("dog")   # First prompt
 processor.set_text_prompt("person") # Second prompt
 ```
 
+**Geometry encoder DISABLED (text-only).** The non-geo headline checkpoint carries no trained
+geometry weights; upstream's inference otherwise runs the geometry encoder at *random init*, whose
+image-conditioned CLS token noise-inflates recall (seed-dependent). To capture a deterministic,
+apples-to-apples reference for our text-only model (`geometry_encoder: null`), the upstream geometry
+encoder's output was sliced to a zero-length sequence (`gf[:0], gm[..., :0]`), so the prompt is
+text-only. Resulting counts: **dog = 4, person = 9** instances.
+
 **Notes:**
-- Ran in float32 precision (no autocast)
+- Ran in float32 precision (no autocast).
 - Context length forced to 16: upstream `build_efficientsam3_image_model` builds the student text encoder at context_length=77, but the post-load truncation occurs after the load. The strict load would fail without this override.
 
 ## Generation Details
@@ -67,4 +74,7 @@ processor.set_text_prompt("person") # Second prompt
 
 ## Purpose
 
-These fixtures serve as the oracle for A6's parity test, verifying that the SAM2 port of EfficientSAM3 produces identical outputs (masks, boxes, scores) to the upstream reference implementation.
+These fixtures serve as the oracle for the A7 parity test
+(`test_efficientsam3_repvit_parity.py`), verifying that the `sam/` port of EfficientSAM3
+(text-only, geometry disabled) reproduces the upstream reference's masks/boxes/scores within
+tolerance (mask IoU >= 0.99).

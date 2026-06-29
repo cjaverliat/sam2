@@ -22,14 +22,20 @@ def _make_divisible(v, divisor=8):
 
 
 class SqueezeExcite(nn.Module):
-    """Squeeze-and-Excitation block (timm-compatible: gate after fc2, hard-sigmoid)."""
+    """Squeeze-and-Excitation block (timm-compatible: gate after fc2, sigmoid).
+
+    Uses ``nn.Sigmoid`` as the gate, matching ``timm.layers.SqueezeExcite`` default
+    (``gate_layer='sigmoid'``).  The upstream EfficientSAM3 RepViT checkpoint was
+    trained with timm's SE so the gate must match; ``Hardsigmoid`` produces
+    different channel attention and breaks parity (~13% norm difference).
+    """
     def __init__(self, channels: int, rd_ratio: float = 0.25):
         super().__init__()
         rd = _make_divisible(channels * rd_ratio)
         self.fc1 = nn.Conv2d(channels, rd, kernel_size=1, bias=True)
         self.act = nn.ReLU(inplace=True)
         self.fc2 = nn.Conv2d(rd, channels, kernel_size=1, bias=True)
-        self.gate = nn.Hardsigmoid()
+        self.gate = nn.Sigmoid()
 
     def forward(self, x):
         s = x.mean((2, 3), keepdim=True)

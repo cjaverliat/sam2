@@ -52,6 +52,7 @@ model:
     _target_: sam.modeling.decoders.detr_decoder.Sam3DetrDetector
     num_feature_levels: 1
     o2m_mask_predict: true
+    supervise_joint_box_scores: false
 
     transformer:
       _target_: sam.modeling.decoders.detr_decoder.TransformerWrapper
@@ -113,8 +114,12 @@ model:
             dropout: 0.1
             embed_dim: 256
 
-    # EfficientSAM3 student detector has NO geometry encoder (the checkpoint carries zero
-    # geometry params); forward_grounding uses the text prompt directly when this is None.
+    # EfficientSAM3 (non-geo) student detector has NO geometry encoder: the 1107-key checkpoint
+    # carries zero geometry params (the geometry encoder is untrained on this checkpoint).
+    # Running it untrained only injects a random image-conditioned CLS token that noise-inflates
+    # recall (seed-dependent); we omit it for a deterministic, text-only model defined entirely by
+    # the official checkpoint. ``forward_grounding`` uses the text prompt directly when this is None.
+    # Trained geometry / exemplar prompting lives in the ``*_geo_ft`` (video) variants.
     geometry_encoder: null
 
     segmentation_head:

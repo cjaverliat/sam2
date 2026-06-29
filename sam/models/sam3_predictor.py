@@ -130,7 +130,8 @@ class Sam3Predictor(nn.Module):
 
     @torch.inference_mode()
     def predict(
-        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5
+        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5,
+        dtype: torch.dtype = torch.bfloat16,
     ) -> "Sam3DetectionResult":
         """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
 
@@ -139,14 +140,25 @@ class Sam3Predictor(nn.Module):
                 (GPU resize -> 1008 + normalise; CPU resize fails parity).
             concept: the :class:`~sam.prompts.ConceptPrompt` (text [+ negatives]).
             confidence_threshold: presence-weighted score threshold (default 0.5).
+            dtype: autocast dtype (default ``torch.bfloat16``).  Pass
+                ``torch.float32`` to disable mixed-precision, e.g. when comparing
+                against a float32 golden (EfficientSAM3 parity).  The PE-ViTDet SAM 3
+                model requires ``bfloat16`` (its PE MLP path hardcodes bf16); the
+                EfficientSAM3 student works in either regime.
 
-        Runs under bf16 autocast + inference_mode — the only supported SAM 3 regime (the PE
-        MLP path hardcodes bf16). The shared encoder runs ONCE and its features are injected
-        into the detector.
+        Runs under autocast(*dtype*) + inference_mode.  When *dtype* is ``torch.float32``
+        the autocast context is a no-op (float32 is the native dtype of all ops).
         """
+        import contextlib
         device = self.device
         image_hw = (int(image.shape[0]), int(image.shape[1]))
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        # float32 → nullcontext (no mixed-precision); any other dtype → autocast.
+        ac = (
+            contextlib.nullcontext()
+            if dtype == torch.float32
+            else torch.autocast(device_type=device.type, dtype=dtype)
+        )
+        with ac:
             x = preprocess_to_1008(image, device=device)
             feats, pos = self.encode_image(x)
             text_emb, text_mask = self.encode_text(concept)
