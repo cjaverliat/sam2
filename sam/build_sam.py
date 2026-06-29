@@ -896,6 +896,10 @@ HF_EFFICIENTSAM3_MODEL_ID_TO_FILES = {
         "configs/efficientsam3/efficientsam3_repvit.yaml",
         "efficientsam3_ft/efficientsam3_repvit.pt",
     ),
+    "tinyvit": (
+        "configs/efficientsam3/efficientsam3_tinyvit.yaml",
+        "efficientsam3_ft/efficientsam3_tinyvit.pt",
+    ),
 }
 
 

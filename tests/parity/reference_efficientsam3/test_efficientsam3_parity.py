@@ -1,22 +1,23 @@
 # SPDX-License-Identifier: LicenseRef-SAM
-"""EfficientSAM3 RepViT end-to-end image parity vs upstream golden.
+"""EfficientSAM3 end-to-end image parity vs upstream golden (RepViT + TinyViT).
 
-Phase A acceptance gate (A7): the first full forward pass of the integrated model
+Phase A/B acceptance gate: the first full forward pass of each integrated variant
 (build_efficientsam3 -> Sam3Predictor.predict) validated numerically against the
-upstream EfficientSAM3 reference captured in ``golden/efficientsam3_repvit_*``.
+upstream EfficientSAM3 reference captured in ``golden/efficientsam3_{variant}_*``.
 
-The integrated model is the TEXT-ONLY EfficientSAM3 (geometry encoder disabled; the non-geo
-checkpoint carries no trained geometry weights -- see the config). The golden was captured
-from upstream with the geometry CLS token likewise disabled, so this is an apples-to-apples
+Each integrated model is TEXT-ONLY (geometry encoder disabled; the non-geo checkpoint
+carries no trained geometry weights -- see the configs). The golden was captured from
+upstream with the geometry CLS token likewise disabled, so this is an apples-to-apples
 comparison of the shared (trunk + neck + text + detector) pipeline.
 
-Acceptance criteria:
-  * Instance count == golden (4 dog / 9 person) for both prompts.
+Acceptance criteria (per variant/prompt):
+  * Instance count == golden (RepViT: 4 dog / 9 person; TinyViT: 5 dog / 7 person).
   * Every matched instance has mask IoU >= 0.99 (Hungarian-matched by mask IoU
     to handle any ordering difference between our detector output and the golden).
 
-Skip conditions (CI-safe): if the checkpoint or the test image is absent the test
-skips automatically.  All assertions run only when both are present.
+Skip conditions (CI-safe): if the checkpoint or the test image is absent for a given
+variant, that variant/prompt is skipped automatically.  All assertions run only when
+both are present.
 
 Regime: float32 (no autocast), matching the upstream golden capture. ``predict`` is called
 with ``dtype=torch.float32``; bf16 would round borderline scores and change the count.
@@ -42,14 +43,35 @@ if not torch.cuda.is_available():
 _REPO = Path(__file__).parents[3]
 _WORKSPACE = Path(__file__).parents[4]
 
-# Prefer the `download-efficientsam3-repvit` output; fall back to the local validation tree.
-_CKPT_CANDIDATES = [
-    _REPO / "checkpoints/efficientsam3_repvit.pt",
-    _REPO / "checkpoints/_esam3_validate/efficientsam3_ft/efficientsam3_repvit.pt",
-]
-CKPT = next((p for p in _CKPT_CANDIDATES if p.is_file()), _CKPT_CANDIDATES[0])
 GOLD_DIR = Path(__file__).parent / "golden"
 IMG = _WORKSPACE / "efficientsam3_reference/sam3/assets/dog_person.jpeg"
+
+# ---------------------------------------------------------------------------
+# Variant registry
+# ---------------------------------------------------------------------------
+VARIANTS: dict[str, dict] = {
+    "repvit": dict(
+        config="configs/efficientsam3/efficientsam3_repvit.yaml",
+        ckpts=[
+            _REPO / "checkpoints/efficientsam3_repvit.pt",
+            _REPO / "checkpoints/_esam3_validate/efficientsam3_ft/efficientsam3_repvit.pt",
+        ],
+        golden="efficientsam3_repvit",
+    ),
+    "tinyvit": dict(
+        config="configs/efficientsam3/efficientsam3_tinyvit.yaml",
+        ckpts=[
+            _REPO / "checkpoints/efficientsam3_tinyvit.pt",
+            _REPO / "checkpoints/_esam3_validate/efficientsam3_ft/efficientsam3_tinyvit.pt",
+        ],
+        golden="efficientsam3_tinyvit",
+    ),
+}
+
+
+def _resolve_ckpt(ckpts: list) -> Path | None:
+    """Return the first existing checkpoint path, or None."""
+    return next((p for p in ckpts if Path(p).is_file()), None)
 
 
 # ---------------------------------------------------------------------------
@@ -86,24 +108,24 @@ def _pairwise_iou(masks_a: np.ndarray, masks_b: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Parity test
+# Parity test (parametrized over variant x prompt)
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(
-    not (CKPT.is_file() and IMG.is_file()),
-    reason="EfficientSAM3 checkpoint or test image absent (CI-safe skip)",
-)
+@pytest.mark.parametrize("variant", list(VARIANTS))
 @pytest.mark.parametrize("prompt", ["dog", "person"])
-def test_efficientsam3_repvit_parity(prompt: str) -> None:
-    """End-to-end EfficientSAM3 RepViT image parity vs upstream golden (Phase A gate).
+def test_efficientsam3_parity(variant: str, prompt: str) -> None:
+    """End-to-end EfficientSAM3 image parity vs upstream golden (Phase A/B gate).
 
     Loads the model via ``build_efficientsam3``, runs ``Sam3Predictor.predict`` on
     dog_person.jpeg (2048x1365), then Hungarian-matches the predicted masks to the
-    committed golden masks (``efficientsam3_repvit_masks_{prompt}.npz``).
+    committed golden masks (``efficientsam3_{variant}_masks_{prompt}.npz``).
 
     Asserts:
-      1. Instance count == golden ``num_instances`` (4 dog / 9 person, text-only).
+      1. Instance count == golden ``num_instances`` (RepViT: 4 dog / 9 person;
+         TinyViT: 5 dog / 7 person).
       2. Every Hungarian-matched pair has mask IoU >= 0.99 (binary at logit=0 /
          prob=0.5 for ours; binary at prob=0.5 for the golden sigmoid outputs).
+
+    Skips per-variant when the checkpoint or test image is absent (CI-safe).
     """
     from scipy.optimize import linear_sum_assignment
     from PIL import Image
@@ -111,29 +133,40 @@ def test_efficientsam3_repvit_parity(prompt: str) -> None:
     from sam.build_sam import build_efficientsam3
     from sam.prompts import ConceptPrompt
 
+    cfg = VARIANTS[variant]
+    ckpt = _resolve_ckpt(cfg["ckpts"])
+    if ckpt is None or not IMG.is_file():
+        pytest.skip(
+            f"[{variant}] checkpoint or test image absent (CI-safe skip). "
+            f"Tried: {[str(p) for p in cfg['ckpts']]}"
+        )
+
     # ------------------------------------------------------------------ golden
-    summ_path = GOLD_DIR / "efficientsam3_repvit_summary.json"
+    golden_prefix = cfg["golden"]
+    summ_path = GOLD_DIR / f"{golden_prefix}_summary.json"
     summ = json.loads(summ_path.read_text())
     g_info = summ["prompts"][prompt]
     n_expected = int(g_info["num_instances"])
 
     # golden shape (N, 1, H, W) sigmoid probs; binarise at 0.5
-    gold_npz = np.load(GOLD_DIR / f"efficientsam3_repvit_masks_{prompt}.npz")
+    gold_npz = np.load(GOLD_DIR / f"{golden_prefix}_masks_{prompt}.npz")
     gold_masks_raw = gold_npz["masks"]               # (N, 1, 1365, 2048) float
     gold_masks_bin = (gold_masks_raw[:, 0] > 0.5).astype(np.uint8)  # (N, 1365, 2048)
 
     _determinism()
 
     # ------------------------------------------------------------------ model
-    model = build_efficientsam3(ckpt_path=str(CKPT), device="cuda", mode="eval")
+    model = build_efficientsam3(
+        config_file=cfg["config"], ckpt_path=str(ckpt), device="cuda", mode="eval"
+    )
 
     # predict() expects (H, W, 3) uint8 RGB numpy array
     image_rgb = np.array(Image.open(IMG).convert("RGB"))   # (1365, 2048, 3)
 
     threshold = float(summ["threshold"])   # 0.1 (matches the golden capture)
     # The upstream golden was captured in float32 (no autocast); pass dtype=float32
-    # so our predict() matches the golden's precision regime.  bfloat16 rounds 3
-    # borderline person scores below the threshold, producing 16 vs the expected 19.
+    # so our predict() matches the golden's precision regime.  bfloat16 rounds
+    # borderline scores below the threshold, changing the instance count.
     result = model.predict(
         image_rgb, ConceptPrompt(text=prompt), confidence_threshold=threshold,
         dtype=torch.float32,
@@ -142,7 +175,7 @@ def test_efficientsam3_repvit_parity(prompt: str) -> None:
     # ------------------------------------------------------------------ count
     n_actual = int(result.masks_logits.shape[0])
     assert n_actual == n_expected, (
-        f"[{prompt}] instance count {n_actual} != golden {n_expected}; "
+        f"[{variant}/{prompt}] instance count {n_actual} != golden {n_expected}; "
         f"threshold={threshold}, scores={result.scores.tolist()}"
     )
 
@@ -161,13 +194,14 @@ def test_efficientsam3_repvit_parity(prompt: str) -> None:
 
     # Tolerance: 0.99 (the spec acceptance gate).
     #
-    # Text-only (geometry disabled): all 4 dog instances match at IoU 1.0, and 8/9 person
-    # instances at 1.0; the single worst person instance is ~0.996. The residual sub-1.0 gap is
-    # inherent float32 non-determinism in the MobileCLIP text transformer -- two independent
-    # process runs on the same GPU accumulate ~0.001 max diff in text embeddings (even with
-    # cuDNN deterministic + strict algorithm mode), flipping a few boundary pixels. Backbone /
-    # neck features are bit-exact; a genuinely broken model would show < 0.90 IoU.
+    # Text-only (geometry disabled): all dog instances match at IoU 1.0, and most
+    # person instances at 1.0; occasional worst-case is ~0.996. The residual sub-1.0
+    # gap is inherent float32 non-determinism in the MobileCLIP text transformer --
+    # two independent process runs on the same GPU accumulate ~0.001 max diff in text
+    # embeddings (even with cuDNN deterministic + strict algorithm mode), flipping a
+    # few boundary pixels. Backbone / neck features are bit-exact; a genuinely broken
+    # model would show < 0.90 IoU.
     assert min_iou >= 0.99, (
-        f"[{prompt}] min matched mask IoU {min_iou:.4f} < 0.99. "
+        f"[{variant}/{prompt}] min matched mask IoU {min_iou:.4f} < 0.99. "
         f"Per-instance IoUs (sorted desc): {sorted(matched_ious, reverse=True)}"
     )

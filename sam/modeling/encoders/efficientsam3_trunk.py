@@ -53,8 +53,12 @@ class _TinyViTTrunk(nn.Module):
 
     def __init__(self, model_name: str, img_size: int = 1008):
         super().__init__()
-        self.model = _TINYVIT[model_name](img_size=img_size)
-        self.channel_list = [self.model.norm_head.normalized_shape[0]]
+        # num_classes=0 → norm_head/head become nn.Identity (zero params), so the
+        # trunk state_dict carries ONLY the feature layers (matching the EfficientSAM3
+        # checkpoint which has no classifier). forward() runs patch_embed+layers only.
+        self.model = _TINYVIT[model_name](img_size=img_size, num_classes=0)
+        # layers[-1].dim is embed_dims[-1] (the output channel count of the last layer).
+        self.channel_list = [self.model.layers[-1].dim]
 
     def forward(self, x):
         x = self.model.patch_embed(x)
