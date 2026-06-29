@@ -1044,12 +1044,19 @@ class Sam3DetrDetector(nn.Module):
         img_feat_seq = src.flatten(2).permute(2, 0, 1)  # (H*W, bs, c)
         img_pos_seq = pos[-1].flatten(2).permute(2, 0, 1)
 
-        # --- encode prompt: text features then the image-conditioned geometry cls token ---
-        geo_feats, geo_mask = self.geometry_encoder(
-            img_feats=[img_feat_seq], img_pos_embeds=[img_pos_seq], bs=bs
-        )
-        prompt = torch.cat([text_emb, geo_feats], dim=0)        # (seq+1, bs, c)
-        prompt_mask = torch.cat([text_mask, geo_mask], dim=1)   # (bs, seq+1)
+        # --- encode prompt: text features then the (optional) image-conditioned geometry cls
+        # token. The base SAM 3 detector cross-attends a learned cls token to the image and
+        # appends it to the text prompt; the EfficientSAM3 student detector has NO geometry
+        # encoder (geometry_encoder=None) -> the prompt is the text features alone.
+        if self.geometry_encoder is not None:
+            geo_feats, geo_mask = self.geometry_encoder(
+                img_feats=[img_feat_seq], img_pos_embeds=[img_pos_seq], bs=bs
+            )
+            prompt = torch.cat([text_emb, geo_feats], dim=0)        # (seq+1, bs, c)
+            prompt_mask = torch.cat([text_mask, geo_mask], dim=1)   # (bs, seq+1)
+        else:
+            prompt = text_emb                                       # (seq, bs, c)
+            prompt_mask = text_mask                                 # (bs, seq)
 
         # --- VL fusion encoder ---
         enc = self.transformer.encoder(

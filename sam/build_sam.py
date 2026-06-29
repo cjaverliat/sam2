@@ -880,6 +880,111 @@ def build_sam3_hf(model_id, **kwargs):
     return build_sam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- EfficientSAM3 image concept predictor (Phase A, Task A6) -------------------
+# Hydra-compose builder for the EfficientSAM3 Sam3Predictor (image): the SAME base SAM 3
+# lineage as build_sam3 (shared vision encoder + text tower + DETR detector composed from a
+# hydra config -> strict load), but with the lightweight EfficientSam3Trunk (RepViT-M1.1) vision
+# trunk and MobileClipTextEncoder (MobileCLIP-S0, ctx16) text tower, a SINGLE detection neck
+# (no SAM 2 neck) and NO geometry encoder. The EfficientSAM3 checkpoint is detector-ROOT (keys
+# begin ``backbone.`` / ``transformer.`` / ``dot_prod_scoring.`` / ``segmentation_head.`` --
+# one level shallower than base ``sam3.pt``'s ``detector.`` root), so the remap is the SAME
+# 3-group split as base but on the un-prefixed keys (see _load_efficientsam3_image_checkpoint).
+
+
+HF_EFFICIENTSAM3_MODEL_ID_TO_FILES = {
+    "repvit": (
+        "configs/efficientsam3/efficientsam3_repvit.yaml",
+        "efficientsam3_ft/efficientsam3_repvit.pt",
+    ),
+}
+
+
+def _load_efficientsam3_image_checkpoint(model, ckpt_path):
+    """Strict-load the EfficientSAM3 image checkpoint (1107 keys) into a ``Sam3Predictor``.
+
+    The checkpoint is ``{'model': state_dict, ...}`` and is **detector-root**: its keys begin
+    ``backbone.`` / ``transformer.`` / ``dot_prod_scoring.`` / ``segmentation_head.`` (NO
+    ``detector.`` prefix -- one level shallower than base ``sam3.pt``). ``Sam3Predictor`` OWNS
+    the vision encoder + text tower separately from the detector (spec §5), so -- exactly like
+    base :func:`_load_sam3_image_checkpoint`, but on the un-prefixed keys -- the load is remapped
+    in three groups:
+
+      ``backbone.vision_backbone.*``   -> ``vision_encoder.vision_backbone.*``  (675: RepViT trunk + single neck convs)
+      ``backbone.language_backbone.*`` -> ``text_encoder.*``                    (111: MobileCLIP encoder + projector)
+      everything else                  -> ``detector.*``                        (321: transformer / dot_prod_scoring / segmentation_head)
+
+    = **1107 keys, strict (0 missing / 0 unexpected)**. There is NO geometry encoder, NO SAM 2 /
+    interactive neck and NO tracker in this checkpoint, so the config builds none of them. The
+    load is loud: ``strict=False`` followed by assertions on the missing / unexpected sets, so a
+    drift surfaces as a clear "N missing / N unexpected" message rather than a silent partial load.
+    """
+    if ckpt_path is None:
+        return
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    vb_prefix = "backbone.vision_backbone."
+    lb_prefix = "backbone.language_backbone."
+    remapped = {}
+    for k, v in ckpt.items():
+        if k.startswith(vb_prefix):
+            remapped["vision_encoder.vision_backbone." + k[len(vb_prefix):]] = v
+        elif k.startswith(lb_prefix):
+            remapped["text_encoder." + k[len(lb_prefix):]] = v
+        else:
+            remapped["detector." + k] = v  # transformer / dot_prod_scoring / segmentation_head
+    missing, unexpected = model.load_state_dict(remapped, strict=False)
+    assert not missing, (
+        f"EfficientSAM3 strict load: {len(missing)} missing key(s) "
+        f"(model params not in the {len(remapped)}-key checkpoint), e.g. {missing[:5]}"
+    )
+    assert not unexpected, (
+        f"EfficientSAM3 strict load: {len(unexpected)} unexpected key(s) "
+        f"(checkpoint params not in the model), e.g. {unexpected[:5]}"
+    )
+
+
+def build_efficientsam3(
+    config_file="configs/efficientsam3/efficientsam3_repvit.yaml",
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+    hydra_overrides_extra=[],
+    **kwargs,
+):
+    """Build an EfficientSAM3 image concept predictor (``Sam3Predictor``) and load weights.
+
+    Mirrors :func:`build_sam3`: hydra-compose ``config_file`` (default
+    ``"configs/efficientsam3/efficientsam3_repvit.yaml"``) -> instantiate the owned
+    EfficientSam3Trunk vision encoder / MobileCLIP text tower / DETR detector via their
+    ``_target_``s -> strict-load the 1107-key EfficientSAM3 checkpoint (detector-root 3-group
+    remap). Returns the predictor on ``device``, in eval mode when ``mode == "eval"``.
+    """
+    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
+    OmegaConf.resolve(cfg)
+    model = instantiate(cfg.model, _recursive_=True)
+    _load_efficientsam3_image_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+def build_efficientsam3_hf(model_id="repvit", **kwargs):
+    """Build an EfficientSAM3 image predictor from a HuggingFace model id (downloads the ckpt).
+
+    The hydra config is OURS; only the weights are pulled from HF
+    (``Simon7108528/EfficientSAM3``). ``model_id`` selects the variant (default ``"repvit"`` ->
+    ``efficientsam3_ft/efficientsam3_repvit.pt``). Mirrors :func:`build_sam3_hf`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_EFFICIENTSAM3_MODEL_ID_TO_FILES[model_id]
+    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
+    return build_efficientsam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+
+
 # --- SAM 3 streaming video concept predictor (Phase 1, Task 9) -----------------
 # Mirrors build_sam2_video_predictor: hydra-compose the shared encoder/text/detector from
 # configs/sam3/sam3.yaml, build the proven 309-key tracker module, wrap them in

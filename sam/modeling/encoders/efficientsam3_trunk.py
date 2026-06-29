@@ -24,7 +24,10 @@ class _RepViTTrunk(nn.Module):
 
     def __init__(self, model_name: str):
         super().__init__()
-        self.model = _REPVIT[model_name](distillation=False)
+        # num_classes=0 -> the unused ImageNet head is an nn.Identity (zero params), so the
+        # trunk state_dict carries ONLY the features (matching the EfficientSAM3 checkpoint,
+        # which has no classifier). forward() runs model.features directly, never the head.
+        self.model = _REPVIT[model_name](num_classes=0, distillation=False)
         dummy = torch.zeros(1, 3, 224, 224)
         with torch.no_grad():
             for f in self.model.features:
