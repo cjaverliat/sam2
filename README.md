@@ -27,6 +27,7 @@ This fork keeps the original SAM 2 models and weights bit-for-bit, and adds:
   - [Custom memory bank](#custom-memory-bank)
   - [ONNX / TensorRT inference](#onnx--tensorrt-inference)
 - [EfficientTAM](#efficienttam)
+- [EfficientSAM3](#efficientsam3--lightweight-concept-segmentation)
 - [Benchmarks](#benchmarks)
 - [License](#license)
 - [Citation](#citation)
@@ -363,6 +364,71 @@ for frame_idx, frame in enumerate(frames):
 
 ---
 
+## EfficientSAM3 — Lightweight Concept Segmentation
+
+EfficientSAM3 is a distilled, mobile-friendly version of SAM 3 (same DETR detector
+and text-conditioned concept API, lighter vision backbone and text encoder).
+It identifies and segments all instances of a text concept in an image.
+
+### Download
+
+EfficientSAM3 weights are **publicly available** (no HF login required):
+
+```bash
+pixi run download-efficientsam3        # RepViT-M1.1 variant (efficientsam3_repvit.pt)
+```
+
+Or download manually:
+
+```python
+from sam.build_sam import build_efficientsam3_hf
+model = build_efficientsam3_hf("repvit", device="cuda")  # downloads on first call
+```
+
+### Image — detect all instances of a concept
+
+```python
+import numpy as np
+from PIL import Image
+from sam.build_sam import build_efficientsam3
+from sam.prompts import ConceptPrompt
+
+model = build_efficientsam3(
+    "configs/efficientsam3/efficientsam3_repvit.yaml",
+    "./checkpoints/efficientsam3_repvit.pt",
+    device="cuda",
+)
+
+image = np.array(Image.open("dog_person.jpeg").convert("RGB"))  # (H, W, 3) uint8
+
+result = model.predict(image, ConceptPrompt(text="dog"), confidence_threshold=0.1)
+# result.masks_logits: (N, H, W)  — per-instance logits  (> 0 → foreground)
+# result.boxes:        (N, 4)     — xyxy pixel boxes
+# result.scores:       (N,)       — per-instance confidence
+
+binary_masks = result.masks_logits > 0.0
+```
+
+### Variant matrix
+
+| Vision backbone | Text encoder | Context | Image | Video |
+|---|---|---|---|---|
+| RepViT-M1.1 | MobileCLIP-S0 | 16 | **Phase A** ✓ | Phase F |
+| TinyViT-11M | MobileCLIP-S0 | 16 | Phase B | Phase F |
+| EfficientViT | MobileCLIP-S0 | 16 | Phase C | Phase F |
+| PE-ViT (base SAM 3) | MobileCLIP-S0 | 16/32 | Phase D | Phase E |
+
+### FPS reference (RTX 3080 Ti, 2048×1365 dog/person image, `tools/benchmark_efficientsam3.py`)
+
+| Mode | Vision | Prompt+detect | End-to-end |
+|---|---|---|---|
+| fp32 (TF32 on) | 33 ms / 30 FPS | 76 ms | 108 ms / 9 FPS |
+| bfloat16 autocast | 28 ms / 36 FPS | 47 ms | 75 ms / 13 FPS |
+
+Upstream reference (_bench.py, fp32): vision 31.5 ms, e2e 136.6 ms.
+
+---
+
 ## Benchmarks
 
 Per-frame **streaming** throughput of `Sam2VideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
@@ -418,6 +484,8 @@ The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0
 | SAM 2 | Apache-2.0 |
 | EfficientTAM | Apache-2.0 |
 | SAM 3 (+ derivatives) | SAM License |
+| RepViT backbone (`sam/modeling/encoders/repvit.py`) | Apache-2.0 ([LICENSE_repvit](./LICENSE_repvit)) |
+| MobileCLIP text transformer (`sam/modeling/text/mobile_clip.py`) | Apple ML Research License — **non-commercial** ([LICENSE_mobileclip](./LICENSE_mobileclip)) |
 | CUDA connected-components ext (`csrc`) | BSD-3-Clause |
 | This fork's code | Apache-2.0 |
 
