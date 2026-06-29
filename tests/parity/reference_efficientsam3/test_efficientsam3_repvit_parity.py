@@ -42,7 +42,12 @@ if not torch.cuda.is_available():
 _REPO = Path(__file__).parents[3]
 _WORKSPACE = Path(__file__).parents[4]
 
-CKPT = _REPO / "checkpoints/_esam3_validate/efficientsam3_ft/efficientsam3_repvit.pt"
+# Prefer the `download-efficientsam3-repvit` output; fall back to the local validation tree.
+_CKPT_CANDIDATES = [
+    _REPO / "checkpoints/efficientsam3_repvit.pt",
+    _REPO / "checkpoints/_esam3_validate/efficientsam3_ft/efficientsam3_repvit.pt",
+]
+CKPT = next((p for p in _CKPT_CANDIDATES if p.is_file()), _CKPT_CANDIDATES[0])
 GOLD_DIR = Path(__file__).parent / "golden"
 IMG = _WORKSPACE / "efficientsam3_reference/sam3/assets/dog_person.jpeg"
 

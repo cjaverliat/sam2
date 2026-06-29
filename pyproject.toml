@@ -146,7 +146,6 @@ curl = "*"
 pixi-pycharm = "*"
 huggingface_hub = ">=1.21.0,<2"
 pytest = ">=9.1.1,<10"
-einops = ">=0.8.2,<0.9"
 
 # CUDA build toolchain: nvcc + dev libs + ninja (CUDAExtension build / JIT) and,
 # on linux, the g++ host compiler so the extension builds with zero system

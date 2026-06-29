@@ -19,6 +19,7 @@ Guard contract (spec §9):
 """
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -149,7 +150,6 @@ class Sam3Predictor(nn.Module):
         Runs under autocast(*dtype*) + inference_mode.  When *dtype* is ``torch.float32``
         the autocast context is a no-op (float32 is the native dtype of all ops).
         """
-        import contextlib
         device = self.device
         image_hw = (int(image.shape[0]), int(image.shape[1]))
         # float32 → nullcontext (no mixed-precision); any other dtype → autocast.
