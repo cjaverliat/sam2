@@ -30,22 +30,26 @@ heavy encoders with lightweight ones — vision (PE ViT-H → EfficientViT / Rep
 
 ## 2. Scope
 
-**In scope (this plan):**
+**In scope (this plan) — all four published families** (the 2×2 matrix of §4a):
 - Vendor the lightweight backbones: `repvit`, `tiny_vit`, `efficientvit` (package), `mobile_clip`.
 - `EfficientSam3Trunk` — adapts a lightweight backbone + projection into the existing
   `Sam3DualViTDetNeck` (trunk contract: `.channel_list` + `forward(x) -> List[Tensor]`).
 - `MobileClipTextEncoder` — wraps MobileCLIP, reusing the existing `Sam3Tokenizer`, with the same
   `(mask, memory, embeds)` output contract as `Sam3TextEncoder`.
+- **EfficientSAM3** (base, image) · **SAM3-LiteText** (base, image) · **SAM3.1-LiteText** (multiplex,
+  video) · **EfficientSAM3.1** (multiplex, video) — each = a config assembly over
+  {distilled trunk | PE trunk} × {base `Sam3Predictor` | multiplex `Sam3MultiplexVideoPredictor`} ×
+  shared `MobileClipTextEncoder`. All map onto **predictors that already exist in the repo** (§4, §4a).
 - `configs/efficientsam3/*.yaml`, `build_efficientsam3_*` builders, `tools/download_efficientsam3.py`
   (public HF, **not gated**), pixi tasks.
-- Image predictor + streaming video predictor; reference parity; build smoke; docs; D11 license
-  extension (SPDX + README table + license texts; weights never vendored).
+- Image predictor (base lineage) + streaming video predictor (multiplex lineage); reference parity;
+  build smoke; docs; D11 license extension (SPDX + README table + license texts; weights never vendored).
 
 **Deferred (follow-up specs):**
 - ONNX / TRT export of the EfficientSAM3 encoders (SAM 3 ONNX itself is still deferred).
 - Training / distillation (stage1/stage3) — we consume pretrained distilled checkpoints only.
-- SAM 3.1 (multiplex) EfficientSAM3 variants (`efficient_sam3p1_*` checkpoints exist upstream) —
-  structurally supported, sequenced after the base-lineage slice.
+- A base-lineage *distilled video* model — **not published** upstream (base EfficientSAM3 ships
+  image-only; the distilled video model is the multiplex EfficientSAM3.1). No checkpoint → out of scope.
 
 ## 3. Decision log
 
@@ -54,12 +58,15 @@ heavy encoders with lightweight ones — vision (PE ViT-H → EfficientViT / Rep
 | E1 | **Swap encoders only; reuse all SAM 3 internals.** New code = vendored backbones + one trunk adapter + one text adapter | Validated: every EfficientSAM3 weight maps onto SAM 3's detector with the two encoders swapped (§4) |
 | E2 | **Reuse `Sam3DualViTDetNeck` unchanged** — `EfficientSam3Trunk` plugs into the existing neck as its `trunk` | The neck is trunk-agnostic (`dim = trunk.channel_list[-1]`, `xs = trunk(x); x = xs[-1]`); the upstream student encoder projects to **1024-ch @ 72×72**, byte-identical to the PE trunk output the neck expects |
 | E3 | **Reuse `Sam3Tokenizer` unchanged** | EfficientSAM3's student text encoder uses the same CLIP-BPE `bpe_simple_vocab_16e6.txt.gz` (vocab 49408) we already vendor |
-| E4 | **Base SAM 3 lineage** for the headline EV-M/RV-M/TV-M checkpoints (→ `Sam3Predictor` / `Sam3VideoPredictor`, **not** multiplex) | Validated: the RV-M checkpoint has no `multiplex`/`mux`/`bucket`/`tracker` keys; multiplex variants are separate `efficient_sam3p1_*` files |
+| E4 | **Base SAM 3 lineage, image-only** for the headline EV-M/RV-M/TV-M checkpoints (→ `Sam3Predictor`, **not** multiplex; no base video model published) | Validated: the RV-M checkpoint has no `multiplex`/`mux`/`bucket`/`tracker` keys; multiplex + all video models are separate `*_sam3p1_*` files (§4a) |
 | E5 | **Vertical slice first (RepViT), spec covers all variants** | Lowest risk: prove the full image+video+parity pipeline on one pure-torch backbone before fanning out to EfficientViT (Triton) / TinyViT / LiteText |
 | E6 | **Public, ungated checkpoint download** via HF `Simon7108528/EfficientSAM3` | Differs from SAM 3 (gated). No login/token; simpler than `download_sam3.py` |
 | E7 | **Builder builds the text encoder at the checkpoint's context length directly** (16/32), not "build-at-77-then-truncate" | The upstream `build_efficientsam3_image_model` builds text at ctx 77 then truncates *after* load — but the strict `load_state_dict` raises on the pos-embed size mismatch first, so the truncation is dead code (upstream bug for ctx16 checkpoints). We build at the right ctx up front |
 | E8 | **Extend D11 per-component licensing** | MobileCLIP (Apple ML), EfficientViT / RepViT / TinyViT each carry their own terms; per-file SPDX + README rows + shipped license texts; weights never vendored |
 | E9 | **No new third-party deps. Avoid `timm`** (and `einops`) by vendoring two tiny utilities; EfficientViT Triton RMSNorm kernel behind a **pure-torch fallback** | timm is used only for small layer helpers — vendor `SqueezeExcite` + `to_2tuple`, reuse the **existing local `DropPath`** (`pe_vitdet.py:34`) and `torch.nn.init.trunc_normal_`, drop `@register_model` / `build_model_with_cfg` (call factories directly, no pretrained-cfg path). `einops` is not used by any vendored file. `iopath`, `ftfy`, `regex`, `torchvision` (CUDA `roi_align`) already present. This matches the repo's existing no-timm discipline (PE ViT already vendors `DropPath`) |
+| E10 | **Cover all four families** (EfficientSAM3, SAM3-LiteText, SAM3.1-LiteText, EfficientSAM3.1) in this spec, sequenced base-first | They are a clean 2×2 (trunk × lineage) over a shared text encoder; the repo already has both lineages' predictors, so each family is config assembly, not new architecture (§4a) |
+| E11 | **SAM 3.1 families reuse the existing multiplex video stack unchanged** — `Sam3MultiplexVideoPredictor` + tri-neck (`Sam3DualViTDetNeck` `add_interactive_neck` / `forward_all`) + the 457-key multiplex tracker | Validated: both `efficient_sam3p1_repvit_m` and `efficient_sam3p1_litetext` carry `tracker.model.*` = **457 keys** (byte-matching `build_sam3_multiplex_video_predictor`) and a `convs`/`interactive_convs`/`propagation_convs` tri-neck; only `trunk` differs (RepViT vs PE ViT) |
+| E12 | **Two checkpoint roots → two remaps.** Base EfficientSAM3 image ckpt is **detector-root** (prepend `detector.`); SAM 3.1 ckpts are **full-model-root** (`detector.*` + `tracker.model.*`, load directly via the multiplex video builder) | Validated by key inspection (§4); both load `strict=True` after their respective trivial remap |
 
 ### Naming map
 ```
@@ -114,6 +121,43 @@ imports only the inference path. The files we actually vendor (`repvit`, `tiny_v
 `mobile_clip`, `text_encoder_student`) use **no `einops`** and only small `timm` layer helpers, so the
 integration adds **no new third-party deps** (→ E9); the geometry/box-exemplar path uses
 `torchvision.ops.roi_align` (CUDA build required — already satisfied here).
+
+**SAM 3.1 lineage validation (key inspection).** Downloaded and inspected
+`stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt` (EfficientSAM3.1) and
+`sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt` (SAM3.1-LiteText). Both are
+**full multiplex video models** (full-model-root: `detector.*` + `tracker.model.*`):
+- `detector.backbone.vision_backbone.trunk.*` — EfficientSAM3.1 = RepViT (`trunk.model.…features.0.0.c.weight
+  (32,3,3,3)`, identical to base RV-M); SAM3.1-LiteText = PE ViT-H (`trunk.{blocks,patch_embed,
+  pos_embed (1,577,1024),ln_pre}`). **Only the trunk differs.**
+- `detector.backbone.vision_backbone.{convs,interactive_convs,propagation_convs}` — the SAM 3.1
+  **tri-neck** (detection + interactive + propagation), already supported by `Sam3DualViTDetNeck`
+  (`add_interactive_neck` / `forward_all`).
+- `detector.backbone.language_backbone.{encoder,projector}` — MobileCLIP, identical across both.
+- `tracker.model.*` = **457 keys** (`maskmem_tpos_enc`, …) — **byte-matches our existing
+  `build_sam3_multiplex_video_predictor` tracker**, reused unchanged.
+
+So both SAM 3.1 families are a **pure trunk swap** into the existing tri-neck + multiplex tracker +
+`Sam3MultiplexVideoPredictor`. EfficientSAM3.1 ships **stage1-only** (no `_ft`); SAM3.1-LiteText ships
+full.
+
+## 4a. Variant matrix & checkpoint inventory
+
+Every variant = **(vision trunk) × (lineage)**, all with a MobileCLIP text encoder. All four cells map
+onto predictors that already exist in the repo — the integration adds the distilled `EfficientSam3Trunk`
+and the shared `MobileClipTextEncoder`, nothing else architectural.
+
+| vision ↓ / lineage → | **base SAM 3** (`Sam3Predictor` / `Sam3VideoPredictor`) | **SAM 3.1 multiplex** (`Sam3MultiplexPredictor` / `Sam3MultiplexVideoPredictor`) |
+|---|---|---|
+| **distilled** trunk (`EfficientSam3Trunk`) | **EfficientSAM3** — `efficientsam3_ft/efficientsam3_{efficientvit,repvit,tinyvit}.pt` · image (detector-root) · MobileCLIP-S0 ctx16 · **✅ validated (RV-M, 1107/1107)** | **EfficientSAM3.1** — `stage1_sam3p1/efficient_sam3p1_{efficientvit,repvit,tinyvit}_{s,m,l}_mobileclip_s0_ctx16.pt` · video · **stage1-only** · **✅ key-validated (repvit_m)** |
+| **PE ViT-H** trunk (existing `Sam3VisionEncoder`) | **SAM3-LiteText** — `sam3_litetext/sam3_litetext_mobileclip_{s0,s1,2_l}_ctx{16,32}.pt` · MobileCLIP-{S0,S1,2-L} | **SAM3.1-LiteText** — `sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_{s0,s1,l}_ctx{16,32}.pt` · video · full · **✅ key-validated (s0)** |
+
+**Backbone `model_name` mapping** (distilled cells): EfficientViT `{b1,b2,b3}` ≈ `{s,m,l}`, RepViT
+`{m0_9,m1_1,m2_3}` ≈ `{s,m,l}`, TinyViT `{5m,11m,21m}` ≈ `{s,m,l}`; RV-M validated as `m1_1`. Exact
+per-checkpoint mapping is pinned from the trunk channel signature at vendor time (the method used for RV-M).
+
+**Per-variant work** once the slice (Phase A) lands: a new config yaml + a download entry + a parity/build
+test. No new modules (the distilled trunk handles all three backbones; LiteText reuses the PE trunk; all
+reuse `MobileClipTextEncoder` and the existing predictors).
 
 ## 5. Architecture — new vs reused
 
@@ -184,30 +228,51 @@ instantiated.
 
 ## 10. Phasing + verification gates
 
-**Phase A — RepViT image slice**
+Sequenced base-image first (lowest risk, already validated), then LiteText, then the multiplex video
+families. Phase A carries the shared scaffolding (trunk, text encoder, `TextEncoder` Protocol, builders,
+download tool, licensing) that every later phase reuses. **Streaming video first appears in Phase E**
+(the multiplex lineage owns the only published video/tracker checkpoints).
+
+**Phase A — EfficientSAM3 RepViT image (slice; the scaffolding phase)**
 - Vendor `repvit.py` + `mobile_clip.py` (de-timm'd: vendor `SqueezeExcite`/`to_2tuple`, reuse local
   `DropPath` + torch `trunc_normal_`); add `EfficientSam3Trunk`, `MobileClipTextEncoder`, the
-  `TextEncoder` Protocol, `configs/efficientsam3/efficientsam3_repvit.yaml`, `build_efficientsam3*`, the
-  download tool, SPDX headers + README rows. No new pixi deps.
+  `TextEncoder` Protocol, `configs/efficientsam3/efficientsam3_repvit.yaml`, `build_efficientsam3*`
+  (image; detector-root remap = prepend `detector.`), the download tool, SPDX headers + README rows. No
+  new pixi deps.
 - **Verify:** checkpoint loads **strict (1107/1107)**; image masks match the captured upstream golden
   (`dog`/`person` on `dog_person.jpeg`) within tolerance (mask IoU + instance count + score ordering);
-  build smoke (meta-build + forward on a dummy image).
+  build smoke (meta-build + forward); FPS within ~15%/phase of the §10 reference.
 
-**Phase B — RepViT streaming video**
-- Wire the RepViT EfficientSAM3 encoders into `Sam3VideoPredictor` (reused). Acquire/locate the
-  matching video/tracker checkpoint.
-- **Verify:** streaming masklets reproduce the upstream video example within tolerance; **peak VRAM flat
-  vs video length** with the forgetful bank.
+**Phase B — EfficientSAM3 TinyViT image**
+- Vendor `tiny_vit.py` (de-timm'd); extend `EfficientSam3Trunk` to TinyViT; add
+  `efficientsam3_tinyvit.yaml` + download entry.
+- **Verify:** strict load (pin `model_name` from the trunk channel signature) + golden parity + build smoke.
 
-**Phase C — TinyViT + EfficientViT backbones**
-- Vendor `tiny_vit.py` and `efficientvit/` (de-timm'd; + Triton fallback); add their trunks/configs/download.
-- **Verify:** strict load + golden parity per backbone.
+**Phase C — EfficientSAM3 EfficientViT image**
+- Vendor `efficientvit/` (its own `nn/` package; **Triton RMSNorm behind a lazy pure-torch fallback**);
+  extend the trunk; add `efficientsam3_efficientvit.yaml` + download entry.
+- **Verify:** strict load + golden parity + build smoke; fallback path exercised on CPU/Windows.
 
-**Phase D — SAM 3.1 / LiteText variants**
-- LiteText keeps the PE `Sam3VisionEncoder` (vision unchanged) and swaps only the text encoder — reuses
-  `MobileClipTextEncoder` directly. Multiplex (`efficient_sam3p1_*`) variants route through the existing
-  multiplex predictor.
-- **Verify:** strict load + golden parity per variant/context-length.
+**Phase D — SAM3-LiteText image (base lineage, PE vision)**
+- No new vision code — pair the **existing PE `Sam3VisionEncoder`** with `MobileClipTextEncoder`; add
+  `sam3_litetext_*.yaml` per {S0,S1,2-L}×{ctx16,ctx32} + download entries.
+- **Verify:** strict load + golden parity per text variant/context length.
+
+**Phase E — SAM3.1-LiteText streaming video (multiplex lineage; introduces video)**
+- Wire the **existing PE vision encoder** + `MobileClipTextEncoder` into the **existing
+  `Sam3MultiplexVideoPredictor`** (tri-neck + 457-key multiplex tracker, both reused unchanged);
+  `build_efficientsam3_litetext_video_predictor*` (full-model-root remap = load `detector.*`/`tracker.model.*`
+  directly); add `sam3p1_litetext_*.yaml` + download entries.
+- **Verify:** strict load (incl. `tracker.model` 457/457); streaming masklets reproduce the upstream video
+  example within tolerance; **peak VRAM flat vs video length** with the forgetful bank; capture the
+  Phase-B-style **video FPS reference** (text cached once + per-frame vision+detect+track).
+
+**Phase F — EfficientSAM3.1 streaming video (multiplex lineage, distilled trunk; stage1)**
+- Reuse the Phase A–C `EfficientSam3Trunk` in the multiplex video predictor (the only new thing vs Phase
+  E is the distilled trunk in place of PE); add `efficientsam3p1_{repvit,tinyvit,efficientvit}_*.yaml` +
+  download entries.
+- **Verify:** strict load + streaming parity + VRAM-flat + video FPS. **Note:** stage1-only checkpoints
+  (no `_ft`) — parity tolerance vs upstream stage1, not vs a finetuned model.
 
 **Reference parity (acceptance gate).** Each phase compares against the **upstream** EfficientSAM3 (not
 only internal tests): same image/video + prompt through upstream and our predictor; compare masks (IoU),
@@ -232,7 +297,7 @@ torch 2.11+cu128), `dog_person.jpeg` 2048×1365, prompt "dog", threshold 0.1, 50
 - autocast bf16 is **slower than fp32+TF32** on this Ampere GPU (RepViT is conv-heavy; TF32 already
   saturates the tensor cores, so bf16 adds cast overhead). **Canonical reference = fp32+TF32.**
 - **Image path only** — the upstream image checkpoint has no tracker. Per-frame **video FPS** (text
-  cached once per concept + tracker step) is a separate reference captured in Phase B.
+  cached once per concept + tracker step) is a separate reference captured in Phase E.
 - Prompt-phase cost scales with instance count (fixed prompt+threshold for comparability); absolute
   ms shifts ±10–15% with GPU thermal/clock — the breakdown **ratio** (vision ⅓ / detector ⅔) is the
   robust takeaway.
@@ -240,7 +305,7 @@ torch 2.11+cu128), `dog_person.jpeg` 2048×1365, prompt "dog", threshold 0.1, 50
 **FPS parity gate.** The integrated `EfficientSam3` image predictor must reproduce this breakdown
 within ~15% per phase on the same GPU / input / precision (a regression guard, not a hard SLA), benched
 with identical methodology (`tools/benchmark_efficientsam3.py`, to be added). Video FPS gate set in
-Phase B against its own reference.
+Phase E against its own reference.
 
 ## 11. Licensing (extends D11)
 
@@ -262,8 +327,11 @@ No single umbrella — extend the existing per-component scheme:
 4. **ctx16/77 pos-embed (E7)** — build text at the checkpoint's ctx; assert pos-embed shape pre-load.
 5. **MobileCLIP licensing** — SPDX + README table + legal-review note.
 6. **No-weights CI** — skip-if-absent tests + the captured golden fixtures (mirror SAM 3.1).
-7. **Video checkpoint availability** — confirm the EfficientSAM3 video/tracker checkpoint in Phase B;
-   the image model alone has no tracker keys.
+7. **Video checkpoint availability** — **resolved** by §4/§4a: video/tracker checkpoints exist only in
+   the SAM 3.1 lineage (`sam3p1_litetext/*`, `stage1_sam3p1/*`), validated to carry the 457-key multiplex
+   tracker. Base EfficientSAM3 is image-only → streaming video is delivered via Phases E/F.
+8. **EfficientSAM3.1 maturity** — distilled-on-multiplex ships **stage1-only** (no `_ft`); parity is
+   measured against upstream stage1 output, and the README notes the lower maturity vs the base `_ft` models.
 
 ## 13. References
 
