@@ -12,6 +12,11 @@ import torch
 import torch.nn as nn
 from sam.modeling.encoders.repvit import repvit_m0_9, repvit_m1_1, repvit_m2_3
 from sam.modeling.encoders.tiny_vit import tiny_vit_5m_224, tiny_vit_11m_224, tiny_vit_21m_224
+from sam.modeling.encoders.efficientvit.efficientvit.backbone import (
+    efficientvit_backbone_b0,
+    efficientvit_backbone_b1,
+    efficientvit_backbone_b2,
+)
 
 _REPVIT = {
     "m0_9": repvit_m0_9, "m0.9": repvit_m0_9,
@@ -23,6 +28,12 @@ _TINYVIT = {
     "5m": tiny_vit_5m_224,
     "11m": tiny_vit_11m_224,
     "21m": tiny_vit_21m_224,
+}
+
+_EFFICIENTVIT = {
+    "b0": efficientvit_backbone_b0,
+    "b1": efficientvit_backbone_b1,
+    "b2": efficientvit_backbone_b2,
 }
 
 
@@ -68,6 +79,20 @@ class _TinyViTTrunk(nn.Module):
         side = int(L ** 0.5)
         assert side * side == L, f"TinyViT token count {L} is not a perfect square (img_size must be square)"
         return x.view(B, side, side, C).permute(0, 3, 1, 2).contiguous()
+
+
+class _EfficientViTTrunk(nn.Module):
+    """Runs EfficientViTBackbone; returns stage_final feature map; exposes channel_list.
+    (Upstream: EfficientViTTrunkWrapper.)"""
+
+    def __init__(self, model_name: str):
+        super().__init__()
+        self.model = _EFFICIENTVIT[model_name]()
+        # width_list[-1] is the channel count at the final stage
+        self.channel_list = [self.model.width_list[-1]]
+
+    def forward(self, x):
+        return self.model(x)["stage_final"]
 
 
 class _ImageStudentEncoder(nn.Module):
@@ -124,9 +149,11 @@ class EfficientSam3Trunk(nn.Module):
             bk = _RepViTTrunk(model_name)
         elif backbone_type == "tinyvit":
             bk = _TinyViTTrunk(model_name, img_size=img_size)
+        elif backbone_type == "efficientvit":
+            bk = _EfficientViTTrunk(model_name)
         else:
             raise NotImplementedError(
-                f"backbone_type={backbone_type!r} is not supported; expected 'repvit' or 'tinyvit'"
+                f"backbone_type={backbone_type!r} is not supported; expected 'repvit', 'tinyvit', or 'efficientvit'"
             )
         self.model = _ImageStudentEncoder(bk, bk.channel_list[0], embed_dim, embed_size)
         self.channel_list = [embed_dim]
