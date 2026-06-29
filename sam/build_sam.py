@@ -992,6 +992,53 @@ def build_efficientsam3_hf(model_id="repvit", **kwargs):
     return build_efficientsam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM3-LiteText base-lineage VIDEO predictor (D1) --------------------------
+# SAM3-LiteText is the base SAM 3 lineage VIDEO model: PE-ViT vision encoder
+# (unchanged, add_sam2_neck=True), TRAINED geometry encoder (kept), base Sam3Tracker,
+# and a MobileCLIP text encoder instead of SAM 3's PE text tower.  The EXISTING
+# build_sam3_video_predictor + _load_sam3_video_checkpoint already handle this path
+# because _load_sam3_video_checkpoint is text-encoder-agnostic: it remaps the 111
+# language_backbone keys onto whichever text_encoder the config instantiates.
+# 1281 keys = 464 vision + 111 MobileCLIP language + 397 detector head (incl. geo 76)
+# + 309 tracker.  Checkpoint: Simon7108528/EfficientSAM3 (public, no token).
+
+
+HF_EFFICIENTSAM3_LITETEXT_MODEL_ID_TO_FILES = {
+    "litetext-s0-ctx16": (
+        "configs/efficientsam3/sam3_litetext_s0_ctx16.yaml",
+        "sam3_litetext/sam3_litetext_mobileclip_s0_ctx16.pt",
+    ),
+}
+
+
+def build_efficientsam3_litetext_video_predictor_hf(model_id="litetext-s0-ctx16", **kwargs):
+    """Build a SAM3-LiteText base-video predictor from a HuggingFace model id.
+
+    Downloads the checkpoint from the PUBLIC repo ``Simon7108528/EfficientSAM3`` (no
+    token required) and delegates to the existing :func:`build_sam3_video_predictor`
+    with the matching hydra config.  The ``_load_sam3_video_checkpoint`` loader
+    performs the same 3-group remap as the base ``sam3.pt`` path, remapping the 111
+    MobileCLIP ``language_backbone`` keys onto the ``MobileClipTextEncoder`` submodule
+    (strict=True, 0 missing / 0 unexpected).
+
+    Args:
+        model_id: variant key (default ``"litetext-s0-ctx16"`` ->
+            ``sam3_litetext/sam3_litetext_mobileclip_s0_ctx16.pt``).
+        **kwargs: forwarded to :func:`build_sam3_video_predictor`
+            (``device``, ``mode``, ``hydra_overrides_extra``, ...).
+
+    Returns:
+        A ``Sam3VideoPredictor`` in eval mode with MobileCLIP-S0 text encoder,
+        base Sam3Tracker, and trained geometry encoder.
+    """
+    from huggingface_hub import hf_hub_download
+
+    config_file, ckpt_name = HF_EFFICIENTSAM3_LITETEXT_MODEL_ID_TO_FILES[model_id]
+    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
+    return build_sam3_video_predictor(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+
+
 # --- SAM 3 streaming video concept predictor (Phase 1, Task 9) -----------------
 # Mirrors build_sam2_video_predictor: hydra-compose the shared encoder/text/detector from
 # configs/sam3/sam3.yaml, build the proven 309-key tracker module, wrap them in

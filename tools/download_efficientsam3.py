@@ -37,6 +37,12 @@ _VARIANTS = {
         "efficientsam3_ft/efficientsam3_efficientvit.pt",
         "efficientsam3_efficientvit.pt",
     ),
+    # SAM3-LiteText base-lineage VIDEO predictor (MobileCLIP-S0, context-length 16).
+    # Uses the EXISTING build_sam3_video_predictor + _load_sam3_video_checkpoint path.
+    "litetext-s0-ctx16": (
+        "sam3_litetext/sam3_litetext_mobileclip_s0_ctx16.pt",
+        "sam3_litetext_mobileclip_s0_ctx16.pt",
+    ),
 }
 
 
