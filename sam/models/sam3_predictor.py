@@ -991,13 +991,9 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
     def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
         """Seed new detector instances JOINTLY (multiplex ``mask_as_output`` cond frame).
 
-        Resize each detector mask to ``image_size`` + BINARIZE, then stack all new objects into
-        ONE multiplex ``track_step`` (cond-frame interactive head + joint memory encoder).
-        Seeding at ``image_size`` (not ``input_mask_size``) matches facebook's detector-seed path
-        ``_consolidate_temp_output_across_obj``, which interpolates the seed logits to ``image_size``
-        before the memory encoder; the tracker's ``SimpleMaskDownSampler`` then resizes
-        ``image_size``->``input_mask_size`` internally. (Empirically the two seed resolutions give
-        near-identical masks, but ``image_size`` is the upstream-faithful choice.) Builds the persistent ``MultiplexState`` for the
+        Mirrors the base ``_seed_object`` (resize each detector mask to ``input_mask_size`` +
+        BINARIZE) but stacks all new objects into ONE multiplex ``track_step`` (cond-frame
+        interactive head + joint memory encoder). Builds the persistent ``MultiplexState`` for the
         tracked set (the committed scenario seeds once, on the cond frame, then co-tracks), records
         the obj-index -> obj_id map, registers the ids on the bank (lifecycle), and stores the
         cond-frame output in ``output_dict``.
@@ -1013,7 +1009,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         mux_state = self.tracker.multiplex_controller.get_state(
             len(new_ids), device, torch.float32, random=False
         )
-        ims = self.tracker.image_size  # seed at image_size (1008) to match upstream consolidation
+        ims = self.tracker.input_mask_size
         masks = []
         for _oid, det_idx in new_objects:
             m = F.interpolate(
