@@ -368,7 +368,8 @@ for frame_idx, frame in enumerate(frames):
 
 EfficientSAM3 is a distilled, mobile-friendly version of SAM 3 (same DETR detector
 and text-conditioned concept API, lighter vision backbone and text encoder).
-It identifies and segments all instances of a text concept in an image.
+It identifies and segments all instances of a text concept in images and across
+streaming video (per-object and multiplex tracking) — see the [variant matrix](#variant-matrix).
 
 ### Download
 
@@ -411,12 +412,23 @@ binary_masks = result.masks_logits > 0.0
 
 ### Variant matrix
 
-| Vision backbone | Text encoder | Context | Image | Video |
+All four published EfficientSAM3 families are integrated (image + streaming video). Parity is
+measured against **efficientsam3's own reference** (its `build_efficientsam3_*` builders / the
+`stage1_sam3.1` multiplex code), not facebook SAM 3.
+
+| Family | Vision backbone | Text encoder | Tracker | Parity vs efficientsam3 reference |
 |---|---|---|---|---|
-| RepViT-M1.1 | MobileCLIP-S0 | 16 | **Phase A** ✓ | Phase F |
-| TinyViT-11M | MobileCLIP-S0 | 16 | Phase B | Phase F |
-| EfficientViT | MobileCLIP-S0 | 16 | Phase C | Phase F |
-| PE-ViT (base SAM 3) | MobileCLIP-S0 | 16/32 | Phase D | Phase E |
+| **EfficientSAM3** (image) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | MobileCLIP-S0 (ctx16) | — | ✅ mask IoU ≥ 0.99 |
+| **EfficientSAM3** (video) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | PE text (ctx32) | base, 309 + geometry | build + detection ✅; propagation drift ~1–3% ⚠️ |
+| **SAM3-LiteText** (video) | PE-ViT (SAM 3) | MobileCLIP-S0 (ctx16) | base, 309 | ✅ streaming IoU ≥ 0.99 |
+| **SAM3.1-LiteText** (video) | PE-ViT (SAM 3) | MobileCLIP-S0 (ctx16) | multiplex, 457 | ✅ min 0.994 / mean 0.998 |
+| **EfficientSAM3.1** (video) | RepViT-M1.1 (stage1) | MobileCLIP-S0 (ctx16) | multiplex, 457 | build + detection ✅; propagation drift ⚠️ |
+
+⚠️ The distilled-vision **video** variants reproduce the reference's per-frame **detection** exactly
+(≥ 0.99) and instance counts match, but tracker **propagation** drifts ~1–3% for distilled features
+(numerical-grade — PE-vision video matches at 0.994 on the same predictor; the distillation itself
+differs from full SAM 3 by ~24%). Tracked as `xfail` in the parity suite — see
+[`tests/parity/reference_efficientsam3/`](tests/parity/reference_efficientsam3/).
 
 ### FPS reference (RTX 3080 Ti, 2048×1365 dog/person image, `tools/benchmark_efficientsam3.py`)
 
