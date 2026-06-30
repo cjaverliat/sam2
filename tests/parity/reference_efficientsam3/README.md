@@ -220,20 +220,16 @@ is **forbidden** — the multiplex memory attention hardcodes
 → `RuntimeError: No available kernel`. `_patch_multiplex_sdpa()` allows all backends so SDPA
 auto-selects; results are empirically reproducible.
 
-**CTX monkeypatch: NOT needed.** Unlike the efficientsam3 video builder (which hardcodes
-`context_length=77`), the facebook `build_sam3_predictor` creates a `VETextEncoder` (not
-MobileCLIP). We swap the text encoder AFTER build, constructing `MobileClipTextEncoder(
-context_length=16)` directly — no shape mismatch possible.
+**Native build (no swap, no monkeypatch):** `build_efficientsam3_multiplex_video_model(
+backbone_type="sam3", text_encoder_type="MobileCLIP-S0", text_encoder_context_length=16)` builds
+the PE-ViT vision + MobileCLIP-S0 text encoder at ctx16 DIRECTLY on the stage1_sam3.1 worktree;
+the checkpoint loads strict as-is (no post-build encoder swap, no namespace tricks, no ctx
+monkeypatch).
 
-**Namespace collision:** both reference repos use package name `sam3` so `efficientsam3` and
-`facebookresearch/sam3` cannot co-import. Our `MobileClipTextEncoder` comes from the `sam`
-namespace (this repo). Since `sam/__init__.py` calls `hydra.initialize_config_module` (not in
-the facebook venv), we load the three leaf modules via `importlib.util.spec_from_file_location`
-with a stubbed `sam` package in `sys.modules` — no hydra, no file copying, weights identical.
-
-**Capture-env concessions (none):** The facebook venv has `triton` installed, so NMS and
-connected-components run natively. No CPU fallback patches required (unlike the
-efficientsam3_reference venv for the base SAM3-LiteText golden).
+**Capture-env concessions:** the reference venv has NO `triton`, so (identical to the
+EfficientSAM3.1 and base SAM3-LiteText captures): an `edt` scipy CPU stub (`sam3.model.edt`) +
+CPU NMS / connected-components fallbacks + all-backend SDPA. Kernel/dep dispatch only — no
+weights/logic change.
 
 **Per-frame object counts:** 4 stable "person" objects per frame (ids 0..3),
 scores ≈ [0.965, 0.957, 0.969, 0.949].
@@ -250,7 +246,7 @@ scores ≈ [0.965, 0.957, 0.969, 0.949].
 | `video_hw` | int64 | `[288,512]` | video height, width |
 | `video_frame_indices` | int64 | `(4,)` | `[0,1,2,3]` |
 | `precision_mode` | str | scalar | `"bf16_autocast"` |
-| `upstream_commit` | str | scalar | `5dd401d...` full SHA |
+| `upstream_commit` | str | scalar | `6056958...` (efficientsam3 stage1_sam3.1) |
 
 Streaming-only schema (no multiplex tracker internals — E2 is per-frame masklet parity only).
 
@@ -261,13 +257,13 @@ Gate: per-frame Hungarian IoU min >= 0.98, mean >= 0.99, n_ge_99 >= len(ious) - 
 | Frame | min IoU | mean IoU | n_ge_99 |
 |---|---|---|---|
 | 0 | 0.9964 | 0.9989 | 4/4 |
-| 1 | 0.9961 | 0.9976 | 4/4 |
-| 2 | 0.9940 | 0.9971 | 4/4 |
-| 3 | 0.9967 | 0.9981 | 4/4 |
-| **overall** | **0.9940** | **0.9979** | — |
+| 1 | 0.9959 | 0.9976 | 4/4 |
+| 2 | 0.9944 | 0.9972 | 4/4 |
+| 3 | 0.9969 | 0.9981 | 4/4 |
+| **overall** | **0.9944** | **0.9980** | — |
 
-All frames PASS. Frame 2 object 2 dips to 0.9940 (minimum across all frames) — the DETR
-detector's seed propagating through the multiplex tracker (same root cause as prior parity tests).
+All frames PASS (no xfail). vs the native efficientsam3 stage1_sam3.1 reference. Frame 2 object 2
+dips to 0.9944 (minimum across all frames) — well within the >=0.98 gate.
 
 ## VRAM Test Results
 

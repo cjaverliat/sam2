@@ -102,7 +102,7 @@ def video_fixture():
 def test_sam3p1_litetext_video_parity(video_fixture):
     """End-to-end SAM3.1-LiteText MULTIPLEX streaming video parity.
 
-    Replicates the two-repo oracle golden (``sam3p1_litetext_s0_ctx16_video.npz``):
+    Reproduces the native efficientsam3 stage1_sam3.1 golden (``sam3p1_litetext_s0_ctx16_video.npz``):
       ``set_concept(ConceptPrompt("person"))`` -> stream frames 0..3 via
       ``predictor.forward(state, frame_idx, frame)`` -> collect per-object masks.
 
