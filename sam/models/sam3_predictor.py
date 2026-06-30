@@ -332,6 +332,13 @@ class Sam3VideoPredictor(nn.Module):
         # Output-mask hole-fill / sprinkle-removal area (upstream build_sam3_video_model uses 16);
         # applied to the low-res OUTPUT masks only (not to seeding / memory, matching upstream).
         self.fill_hole_area = 16
+        # New-tracklet spawn threshold (upstream Sam3VideoInferenceWithInstanceInteractivity
+        # new_det_thresh=0.7): on frames AFTER the initial detection frame, an unmatched detection
+        # must clear this score to spawn a new tracklet. The initial (prompt) frame spawns the
+        # detection set at the detection threshold (0.5, applied in _detect) -- so borderline
+        # later detections (0.5-0.7) are suppressed, matching upstream (which additionally hides
+        # newly-spawned objects via the hotstart-delay buffer).
+        self.new_det_thresh = 0.7
 
     @property
     def device(self) -> torch.device:
@@ -536,13 +543,16 @@ class Sam3VideoPredictor(nn.Module):
         else:
             trk_stack = det_masks.new_zeros((0, *det_masks.shape[-2:]))
 
+        # The prompt frame (first forward) spawns the initial detection set at the detection
+        # threshold; subsequent frames gate new (unmatched) detections at new_det_thresh (0.7).
+        spawn_thresh = 0.0 if state.num_frames_processed == 1 else self.new_det_thresh
         new_dets, unmatched_tracks, det2track, _scores = associate_det_trk(
             det_masks=det_masks,
             track_masks=trk_stack,
             iou_threshold=0.5,
             iou_threshold_trk=0.5,
             det_scores=det.scores,
-            new_det_thresh=0.0,
+            new_det_thresh=spawn_thresh,
         )
 
         # det2track values are TRACK INDICES -> map to obj_ids via the active_ids ordering.
