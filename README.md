@@ -497,6 +497,8 @@ The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0
 | EfficientTAM | Apache-2.0 |
 | SAM 3 (+ derivatives) | SAM License |
 | RepViT backbone (`sam/modeling/encoders/repvit.py`) | Apache-2.0 ([LICENSE_repvit](./LICENSE_repvit)) |
+| TinyViT backbone (`sam/modeling/encoders/tiny_vit.py`) | MIT ([LICENSE_tinyvit](./LICENSE_tinyvit)) |
+| EfficientViT backbone (`sam/modeling/encoders/efficientvit/`) | Apache-2.0 ([LICENSE_apache2](./LICENSE_apache2)) |
 | MobileCLIP text transformer (`sam/modeling/text/mobile_clip.py`) | Apple ML Research License — **non-commercial** ([LICENSE_mobileclip](./LICENSE_mobileclip)) |
 | CUDA connected-components ext (`csrc`) | BSD-3-Clause |
 | This fork's code | Apache-2.0 |

@@ -922,9 +922,9 @@ def _load_efficientsam3_image_checkpoint(model, ckpt_path):
       everything else                  -> ``detector.*``                        (321: transformer / dot_prod_scoring / segmentation_head)
 
     = **1107 keys, strict (0 missing / 0 unexpected)**. There is NO geometry encoder, NO SAM 2 /
-    interactive neck and NO tracker in this checkpoint, so the config builds none of them. The
-    load is loud: ``strict=False`` followed by assertions on the missing / unexpected sets, so a
-    drift surfaces as a clear "N missing / N unexpected" message rather than a silent partial load.
+    interactive neck and NO tracker in this checkpoint, so the config builds none of them. Loaded
+    with ``strict=True`` (matching every sibling loader) so any drift raises a hard ``RuntimeError``
+    rather than a silent partial load -- robust even under ``python -O`` (assert-stripped).
     """
     if ckpt_path is None:
         return
@@ -941,15 +941,7 @@ def _load_efficientsam3_image_checkpoint(model, ckpt_path):
             remapped["text_encoder." + k[len(lb_prefix):]] = v
         else:
             remapped["detector." + k] = v  # transformer / dot_prod_scoring / segmentation_head
-    missing, unexpected = model.load_state_dict(remapped, strict=False)
-    assert not missing, (
-        f"EfficientSAM3 strict load: {len(missing)} missing key(s) "
-        f"(model params not in the {len(remapped)}-key checkpoint), e.g. {missing[:5]}"
-    )
-    assert not unexpected, (
-        f"EfficientSAM3 strict load: {len(unexpected)} unexpected key(s) "
-        f"(checkpoint params not in the model), e.g. {unexpected[:5]}"
-    )
+    model.load_state_dict(remapped, strict=True)
 
 
 def build_efficientsam3(
