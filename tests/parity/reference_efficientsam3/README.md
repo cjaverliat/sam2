@@ -311,131 +311,141 @@ Not a hard regression gate. Run `pixi run pytest tests/parity/reference_efficien
 
 # EfficientSAM3.1 (distilled RepViT) multiplex video golden
 
-## Oracle Construction
+> HONEST STATUS: parity vs the INDEPENDENT facebook oracle is **min IoU 0.7422 / mean 0.9613**
+> -- BELOW the min>=0.98 gate. The parity test is marked `xfail` (gate assertions intact, real
+> facebook golden, no monkey-patch). An earlier self-consistency golden (captured from our own
+> predictor + a test monkey-patch -> fake 1.0) was DISCARDED. See `.superpowers/sdd/task-F1b-report.md`.
 
-**Golden source:** OUR pixi predictor (`build_efficientsam3p1_video_predictor`) with the
-maskmem seed-size patch applied during capture (see Capture Details). This replaces an
-earlier two-repo oracle capture because the algorithmic difference below caused IoU < 0.98
-for small "head" objects when comparing directly against the facebook oracle.
+## Independent Two-Repo Oracle (BOTH encoder swaps)
 
-**Two-repo oracle context (F1 background):** No single upstream repo runs the 1672-key
-`efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt` checkpoint:
+**Golden source: the INDEPENDENT facebook reference, NOT our predictor.** No single upstream repo
+runs the 1672-key `efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt` checkpoint:
 - The **efficientsam3** repo lacks the 457-key multiplex tracker.
-- The **facebook sam3** reference has the multiplex tracker but uses the PE vision trunk
-  (420 keys) and PE text tower (295 keys) instead of RepViT (653 keys) and MobileCLIP (111 keys).
+- The **facebook sam3** reference has the multiplex tracker but uses the PE vision trunk (420 keys)
+  + PE text tower (295 keys) instead of RepViT (653 keys) + MobileCLIP (111 keys).
 
-**Solution originally attempted:** Build facebook multiplex model, swap BOTH encoders
-(vision trunk → `EfficientSam3Trunk(repvit, m1_1)` + text → `MobileClipTextEncoder`), then
-strict-load the F1 ckpt: 908 shared keys (detector head 397 + tracker 457 + tri-neck convs 54)
-+ 653 trunk + 111 text = **1672/1672, 0 missing, 0 unexpected**.
+**Assembly:** build facebook's multiplex video model (`build_sam3_predictor(version="sam3.1")`,
+commit `5dd401d`), swap BOTH encoders for our de-timm'd modules (loaded from our `sam` namespace
+via an importlib stub that bypasses hydra), then strict-load the efficient checkpoint:
+- `model.detector.backbone.vision_backbone.trunk = EfficientSam3Trunk(repvit, m1_1)` (653 keys)
+- `model.detector.backbone.language_backbone = MobileClipTextEncoder(MobileCLIP-S0, ctx16)` (111 keys)
+- strict load: **1672/1672, 0 missing, 0 unexpected** (653 trunk + 111 text + 397 detector head
+  + 457 tracker + 54 neck convs).
 
-**Why pixi predictor instead of oracle:** The oracle upsamples seed masks to `image_size=1008`
-before memory encoding (`_consolidate_temp_output_across_obj`). Our `_seed_multiplex` uses
-`input_mask_size=1152`. `SimpleMaskDownSampler.interpol_size=[1152,1152]` then bilinear-
-interpolates the oracle's 1008-mask to 1152 (adding anti-aliased edges) while our binary
-1152-mask skips this step. RepViT's local convolutions amplify the resulting edge delta;
-for small "head" objects, propagation IoU drops to ~0.74. PE-ViT (E2) is unaffected (global
-attention averages out the delta). Since the issue is in `_seed_multiplex` (sam/ scope,
-not modifiable), the fix is applied at test scope only.
+The facebook side seeds its cond-frame memory **NATIVELY** (`_consolidate_temp_output_across_obj`
+interpolates the float seed logits to `image_size` then runs the memory encoder); it is NOT
+patched. The golden = facebook's per-frame masklets -- a genuinely independent reference.
+
+## Production fix under test (`sam/models/sam3_predictor.py::_seed_multiplex`)
+
+`_seed_multiplex` now seeds at `tracker.image_size` (1008), matching facebook's detector-seed
+consolidation (`sam3_tracking_predictor.py:612-617`), instead of `tracker.input_mask_size`
+(1152). The parity test exercises this FIXED production code -- there is **no** test-scope
+monkey-patch.
+
+**Measured impact (honest):** the seed-resolution change is essentially NEUTRAL --
+E2 (PE-ViT) min IoU 0.9940 -> 0.9941; F1b (RepViT) min IoU 0.7416 -> 0.7422. It does NOT close
+the F1b gap. A float-vs-binary seed alignment (feeding un-binarized logits like facebook) was
+also tried and is strictly WORSE (~0.66). The fix is KEPT because it aligns our seed resolution
+with the verified upstream behaviour and does not regress E2 -- but the original root-cause
+hypothesis (that 1152-vs-1008 seeding causes the 0.74 gap, amplified by RepViT) is **not
+supported by measurement**. The real gap is in propagation (see Parity Results below).
 
 ## Provenance
 
-**Predictor:** `build_efficientsam3p1_video_predictor` from this repo (pixi env)  
-**Checkpoint:** `checkpoints/_esam3_validate/stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt`
+**Facebook upstream commit:** `5dd401d1c5c1d5c3eedff06d41b77af824517619`
+- Repository: https://github.com/facebookresearch/sam3 ; venv `...\sam3_reference\.venv`
+
+**Efficient checkpoint:** `checkpoints/_esam3_validate/stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt`
 - 1672 keys: RepViT trunk 653 + MobileCLIP-S0 111 + detector head 397 + tracker 457 + neck convs 54
 - Source: Simon7108528/EfficientSAM3 (public, stage1-only)
 
-**Video clip:** facebook `assets/videos/0001` (dance clip)
-- Resized to 288×512 (H×W), first 4 frames (0..3)
-- Prompt phrase: `"head"` (stage1 limitation: "person" yields 0 detections in all frames)
+**Video clip:** facebook `assets/videos/0001` (dance clip), resized to 288×512 (H×W), frames 0..3.
+**Prompt phrase:** `"head"` (stage1 limitation: `"person"` yields 0 detections in all frames).
+
+Run ONCE in the facebook venv:
+`...\sam3_reference\.venv\Scripts\python.exe tests/parity/reference_efficientsam3/capture_efficientsam3p1_repvit_video_golden.py`
 
 ## Capture Details
 
-**Precision:** `bf16_autocast_inside_forward` — bf16 autocast is entered inside
-`predictor.forward` (same as the parity test; no outer autocast in the capture script).
-
-**Determinism:** seed=0, cuDNN deterministic, TF32 OFF. `use_deterministic_algorithms(True)`
-is **forbidden** — flash SDPA is incompatible with deterministic mode.
-
-**Maskmem seed-size patch (capture-env concession):**
-`_seed_multiplex` monkey-patched to use `ims = tracker.image_size = 1008` instead of
-`tracker.input_mask_size = 1152`. This ensures `SimpleMaskDownSampler.interpol_size=[1152,1152]`
-applies the same 1008→bilinear(antialias)→1152→conv path as the upstream oracle. The SAME patch
-is applied in the parity test. VRAM and FPS tests use the unpatched predictor (production 1152
-seeding).
-
-**Stage1 note:** Stage1 checkpoint is less mature than `_ft` models. "head" yields stable
-[4,4,4,4] detections (tracked across all 4 frames); "person" yields 0 detections.
-
-**Per-frame object counts:** 4 stable "head" objects per frame (ids 0..3),
-frame-0 scores = [0.5, 0.5, 0.5, 0.5] (detector-spawned, no tracker output yet),
-frames 1-3 scores ≈ [0.85–1.0] (tracker object-presence logits).
+**Precision:** `bf16_autocast` (required -- SAM3 perflib's fused `addmm_act` hardcodes `.to(bfloat16)`).
+**Determinism:** seed=0, cuDNN deterministic, TF32 OFF. `use_deterministic_algorithms(True)` is
+**forbidden** (multiplex memory attention hardcodes flash SDPA); `_patch_multiplex_sdpa()` allows
+all backends so SDPA auto-selects.
+**Capture-env concessions (none):** the facebook venv has triton + timm, so NMS, connected-
+components, and the RepViT trunk run natively.
+**Per-frame object counts:** 4 stable "head" objects per frame (ids 0..3), facebook out_probs
+≈ [0.68, 0.66, 0.67, 0.70].
 
 ## NPZ Schema (`efficientsam3p1_repvit_m_s0_ctx16_video.npz`)
 
 | Key | dtype | shape | description |
 |---|---|---|---|
 | `frame{f}_obj_ids` | int64 | `(N,)` | object IDs for frame f (f=0..3) |
-| `frame{f}_scores` | float32 | `(N,)` | presence scores per frame |
+| `frame{f}_scores` | float32 | `(N,)` | facebook out_probs per frame |
 | `frame{f}_obj{oid}` | uint8 | `(288,512)` | binary mask per (frame, obj_id) |
 | `video_frames_rgb` | uint8 | `(4,288,512,3)` | resized frames fed to the model |
 | `video_phrase` | str | scalar | `"head"` |
 | `video_hw` | int64 | `[288,512]` | video height, width |
 | `video_frame_indices` | int64 | `(4,)` | `[0,1,2,3]` |
-| `precision_mode` | str | scalar | `"bf16_autocast_inside_forward"` |
-| `upstream_commit` | str | scalar | HEAD SHA of this repo |
+| `precision_mode` | str | scalar | `"bf16_autocast"` |
+| `upstream_commit` | str | scalar | `5dd401d...` (facebook) full SHA |
 
 Streaming-only schema (no multiplex tracker internals).
 
-## Parity Test Results (`test_efficientsam3p1_repvit_video_parity.py`)
+## Parity Test Results -- HONEST, vs the INDEPENDENT facebook oracle
 
 Gate: per-frame Hungarian IoU min >= 0.98, mean >= 0.99, n_ge_99 >= len(ious) - 1.
+**Status: BELOW GATE -> `xfail`.** The test runs the fixed production seeding with the real gate
+and the real facebook golden (no monkey-patch, no self-golden, gate UNWEAKENED); it is marked
+`xfail` to track the gap openly. Per-object IoU (our predictor vs facebook golden):
 
-Self-consistency golden (predictor vs itself, same patch): all IoUs = 1.0.
+| Frame | obj0 | obj1 | obj2 | obj3 | min | mean |
+|---|---|---|---|---|---|---|
+| 0 | 0.999 | 1.000 | 0.998 | 0.998 | 0.9979 | 0.9988 |
+| 1 | 0.961 | 0.972 | **0.742** | 0.976 | **0.7422** | 0.9129 |
+| 2 | **0.857** | 0.979 | 0.968 | 0.993 | 0.8566 | 0.9492 |
+| 3 | 0.986 | 0.986 | 0.968 | 0.997 | 0.9681 | 0.9841 |
+| **overall** | | | | | **0.7422** | **0.9613** |
 
-| Frame | min IoU | mean IoU | n_ge_99 |
-|---|---|---|---|
-| 0 | 1.0000 | 1.0000 | 4/4 |
-| 1 | 1.0000 | 1.0000 | 4/4 |
-| 2 | 1.0000 | 1.0000 | 4/4 |
-| 3 | 1.0000 | 1.0000 | 4/4 |
-| **overall** | **1.0000** | **1.0000** | — |
+n_ge_99 overall = 6/16. Exact object count (4 per frame) matches the golden on every frame.
 
-All frames PASS. The 1.0 IoU confirms the seeding patch is applied identically in both the
-golden capture and the test, and the predictor is bit-deterministic across runs.
+**What differs (honest root cause):** frame 0 (the detector seed) is near-perfect (min 0.998),
+so detection + initial mask match. The gap is entirely in **propagation**: a few hard small-object
+frames -- obj2@frame1 (0.742; our 1273px mask is a tight subset of the golden's 1680px mask) and
+obj0@frame2 (0.857) -- which then **recover** on later frames (obj2: 0.998 -> 0.742 -> 0.968 ->
+0.968). This non-monotonic, frame-specific pattern is a propagation-path difference between our
+reimplemented `Sam3MultiplexVideoPredictor` and facebook's native `propagate_in_video` (memory
+attention / per-frame tracking of small, close heads), amplified by RepViT's local convolutions.
+It is **NOT** a seed-resolution or binarize-vs-float issue (both verified by measurement). Closing
+it requires bit-aligning the propagation path -- out of scope for the F1b one-line seed fix.
 
-## VRAM Test Results
+## VRAM Test Results (PASS, production seeding @ image_size)
 
-**Method:** 4 frames looped to N_LONG=16; persistent alloc (memory_allocated after
-synchronize) and peak (max_memory_allocated) measured between WARM_FRAME=9 and final frame.
+**Method:** 4 frames looped to N_LONG=16; persistent (`memory_allocated`) + peak
+(`max_memory_allocated`) measured between WARM_FRAME=9 and the final frame.
 
 | Metric | Value |
 |---|---|
-| Persistent alloc at frame 9 | 1000.7 MB |
-| Persistent alloc at frame 15 | 1003.2 MB |
-| Persistent growth | 0.3% (gate: 5%) |
-| Peak alloc from frame 10-15 | 1914.3 MB |
-| Peak growth vs warm base | 91.3% (gate: 120%) |
+| Persistent alloc at frame 9 | 994.7 MB |
+| Persistent alloc at frame 15 | 990.6 MB |
+| Persistent growth | -0.4% (gate: 5%) — PASS (PRIMARY) |
+| Peak alloc from frame 10-15 | 1906.4 MB |
+| Peak growth vs warm base | 91.7% (gate: 120%) — PASS (SECONDARY) |
 
-**Finding:** Persistent VRAM is flat (0.3% growth, gate 5%) — the forgetful bank bounds
-persistent state. The 91.3% peak growth reflects per-frame forward-pass temporaries (conv
-intermediates, attention maps) relative to a lighter RepViT persistent base (~1 GB vs
-PE-ViT's ~2.7 GB in E2). Both PRIMARY and SECONDARY gates PASS.
+**Finding:** persistent VRAM is flat (forgetful bank bounds persistent state). The ~92% peak
+growth reflects per-frame forward-pass temporaries relative to the lighter RepViT persistent base
+(~1 GB vs PE-ViT's ~2.7 GB in E2). Both gates PASS.
 
 ## Video FPS Reference
 
-**Hardware:** RTX 3080 Ti  
-**Model:** EfficientSAM3.1 distilled-RepViT s0/ctx16, 288×512, phrase "head"  
-**Method:** text encoded once (cached), per-frame vision+detect+track timed with
-`torch.cuda.synchronize()` before and after each forward. Warmup: 2 frames. Timed: 4 frames.
+**Hardware:** RTX 3080 Ti. **Model:** EfficientSAM3.1 distilled-RepViT s0/ctx16, 288×512,
+phrase "head". **Method:** text encoded once (cached), per-frame vision+detect+track timed with
+`torch.cuda.synchronize()`. Warmup 2 frames, timed 4 frames.
 
-| Frame | Time (ms) |
+| Metric | Value |
 |---|---|
-| f0 (detect+seed) | 157.3 |
-| f1 (track) | 119.3 |
-| f2 (track) | 147.7 |
-| f3 (track) | 167.2 |
-| **median** | **152.5 ms/frame** |
-| **fps** | **6.6 fps** |
+| **median** | **136.8 ms/frame** |
+| **fps** | **7.3 fps** |
 
 Not a hard regression gate. Run `pixi run pytest tests/parity/reference_efficientsam3/test_efficientsam3p1_repvit_video_parity.py::test_efficientsam3p1_repvit_video_fps_reference -v -s` to re-measure.
