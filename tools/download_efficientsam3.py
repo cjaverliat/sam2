@@ -56,6 +56,21 @@ _VARIANTS = {
         "stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt",
         "efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt",
     ),
+    # EfficientSAM3 base-lineage (NON-multiplex) VIDEO predictors: distilled trunk + PE text
+    # tower + base 309 tracker + trained geometry. Use build_sam3_video_predictor +
+    # _load_sam3_video_checkpoint (1698 keys). Configs: efficientsam3_<bb>_video.yaml.
+    "video-repvit-m": (
+        "stage1_all_converted/efficient_sam3_repvit_m_geo_ft.pt",
+        "efficient_sam3_repvit_m_geo_ft.pt",
+    ),
+    "video-tinyvit-m": (
+        "stage1_all_converted/efficient_sam3_tinyvit_m_geo_ft.pt",
+        "efficient_sam3_tinyvit_m_geo_ft.pt",
+    ),
+    "video-efficientvit-m": (
+        "stage1_all_converted/efficient_sam3_efficientvit_m_geo_ft.pt",
+        "efficient_sam3_efficientvit_m_geo_ft.pt",
+    ),
 }
 
 
