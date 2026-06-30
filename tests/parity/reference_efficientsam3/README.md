@@ -177,38 +177,37 @@ Not a hard regression gate. Run `pixi run pytest tests/parity/reference_efficien
 
 # SAM3.1-LiteText multiplex video golden
 
-## Two-Repo Oracle Construction
+## Native reference (efficientsam3's OWN sam3.1)
 
-**Why two repos?** No single upstream repository can run the
-`efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt` checkpoint (1439 keys):
-- The **efficientsam3** repo (SimonZeng7108/efficientsam3) has only the base 309-key tracker —
-  it lacks the 457-key multiplex tracker needed by SAM3.1-LiteText.
-- The **facebook sam3** reference (facebookresearch/sam3) has the 457-key multiplex tracker
-  but uses the PE text tower (`VETextEncoder`, 295 keys) instead of MobileCLIP (111 keys).
+The golden is captured from efficientsam3's OWN sam3.1 multiplex code on the
+**`stage1_sam3.1` branch** (worktree at `C:\Users\javerlia\PycharmProjects\efficientsam3_sam3p1`,
+commit `6056958`). `build_efficientsam3_multiplex_video_model(backbone_type="sam3",
+text_encoder_type="MobileCLIP-S0", text_encoder_context_length=16)` builds the multiplex video
+model with the FULL PE-ViT vision encoder + MobileCLIP text NATIVELY, and the 1439-key
+`efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt` (detector 982 + tracker 457) loads STRICT
+(**0 missing / 0 unexpected**) with NO encoder swapping.
 
-**Solution:** Build facebook's multiplex video model (`build_sam3_predictor(version="sam3.1")`)
-from the facebook venv, swap its `language_backbone` for our de-timm'd `MobileClipTextEncoder`
-(from our `sam` namespace, loaded via importlib stub to bypass hydra), then load the 1439-key
-efficient checkpoint STRICT.
-
-Key verification: facebook `sam3.1_multiplex.pt` (1623 keys) vs
-`efficient_sam3p1_litetext` (1439) share **1328 keys with identical shapes**
-(vision 474 + detector head 397 + tracker 457); the only difference is the text encoder
-(VE 295 keys → MobileCLIP 111 keys). Load result: **0 missing / 0 unexpected (1439/1439 keys)**.
+This is the apples-to-apples reference (the efficientsam3.1-LiteText weights run through
+efficientsam3's OWN sam3.1 runtime). It REPLACES an earlier facebook-derived two-repo oracle
+(facebook sam3.1 + a MobileCLIP swap), which was the wrong reference — comparing against the
+non-distilled facebook sam3.1 rather than efficientsam3's own model. (Same correction applied to
+the EfficientSAM3.1 F1 golden.)
 
 ## Provenance
 
-**Facebook upstream commit:** `5dd401d1c5c1d5c3eedff06d41b77af824517619`
-- Repository: https://github.com/facebookresearch/sam3
-- Venv: `C:\Users\javerlia\PycharmProjects\sam3_reference\.venv`
+**efficientsam3 stage1_sam3.1 commit:** `6056958418438beccd4f0782f9b73a1fbcca3e5a`
+- Repository: https://github.com/SimonZeng7108/efficientsam3 (branch `stage1_sam3.1`)
+- Worktree: `C:\Users\javerlia\PycharmProjects\efficientsam3_sam3p1`; reference venv:
+  `C:\Users\javerlia\PycharmProjects\efficientsam3_reference\.venv`
 
-**Efficient checkpoint:** `checkpoints/_esam3_validate/sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt`
+**Checkpoint:** `checkpoints/_esam3_validate/sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt`
 - 1439 keys: vision 474 + MobileCLIP 111 + detector head 397 + tracker 457
 - Source: Simon7108528/EfficientSAM3 (public, no token)
 
-**Video clip:** facebook `assets/videos/0001` (dance clip)
+**Video clip:** `assets/videos/0001` (dance clip)
 - Resized to 288×512 (H×W), first 4 frames (0..3)
-- Prompt phrase: `"person"`
+- Prompt phrase: `"person"` → 4 objects, scores 0.95–0.97
+- Parity result: min 0.9944 / mean 0.9980, 4/4 objects ≥0.99 every frame (PASS, no xfail)
 
 ## Capture Details
 

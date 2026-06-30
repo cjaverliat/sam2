@@ -2,13 +2,16 @@
 """SAM3.1-LiteText (s0/ctx16) MULTIPLEX streaming video parity + VRAM-flat + FPS.
 
 Phase E2 acceptance gate: ``build_sam3_multiplex_video_predictor`` (OUR side) must
-reproduce the SAM3.1-LiteText facebook-multiplex oracle per-frame masks within IoU
-tolerance, then prove constant-VRAM growth and record FPS.
+reproduce the SAM3.1-LiteText oracle per-frame masks within IoU tolerance, then prove
+constant-VRAM growth and record FPS.
 
-Golden: ``golden/sam3p1_litetext_s0_ctx16_video.npz`` captured from the TWO-REPO oracle
-(facebook multiplex model @ commit ``5dd401d`` + our MobileClipTextEncoder swapped in)
-via ``capture_sam3p1_litetext_video_golden.py`` -- 4 frames of the dance clip resized to
-288x512, phrase "person", under bf16 autocast.
+Golden: ``golden/sam3p1_litetext_s0_ctx16_video.npz`` captured from efficientsam3's OWN
+sam3.1 (the ``stage1_sam3.1`` branch @ commit ``6056958``,
+``build_efficientsam3_multiplex_video_model(backbone_type="sam3", text_encoder_type="MobileCLIP-S0")``
+run NATIVELY -- the correct apples-to-apples reference, NOT the earlier facebook two-repo
+oracle) via ``capture_sam3p1_litetext_video_golden.py`` -- 4 frames of the dance clip
+resized to 288x512, phrase "person", under bf16 autocast. Result: min 0.9944 / mean 0.9980,
+4/4 objects >=0.99 every frame.
 
 Parity gate (verbatim from spec §E2):
   * Per-frame exact object count == golden.
