@@ -306,3 +306,120 @@ peak/base ratio at similar absolute forward overhead.
 | **fps** | **~4.3 fps** |
 
 Not a hard regression gate. Run `pixi run pytest tests/parity/reference_efficientsam3/test_sam3p1_litetext_video_parity.py::test_sam3p1_litetext_video_fps_reference -v -s` to re-measure.
+
+---
+
+# EfficientSAM3.1 (distilled RepViT-M) multiplex video golden — NATIVE reference
+
+## Why a NATIVE (not facebook) reference
+
+This is the **distilled** EfficientSAM3.1 model (RepViT-M trunk). A facebook sam3.1 oracle
+would be **distilled vs non-distilled** — not apples-to-apples. The prior facebook-oracle F1
+attempt was reverted for exactly this reason. The correct reference is **efficientsam3's OWN
+sam3.1 multiplex code**, which lives on the `stage1_sam3.1` branch (the clone's `main` lacks
+it). It builds the multiplex video model with the distilled RepViT trunk + MobileCLIP-S0 text
+NATIVELY and strict-loads `efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt` with **no encoder
+swapping, no namespace tricks** — i.e. the efficientsam3.1 weights run through efficientsam3's
+own runtime. This is the independent oracle for our production predictor.
+
+## Provenance
+
+**Upstream (efficientsam3) commit:** `6056958418438beccd4f0782f9b73a1fbcca3e5a` (short `6056958`)
+- Branch: `stage1_sam3.1`
+- Worktree: `C:\Users\javerlia\PycharmProjects\efficientsam3_sam3p1` (package `.../sam3/sam3/`)
+- Venv: `C:\Users\javerlia\PycharmProjects\efficientsam3_reference\.venv` (torch 2.11.0+cu128; NO triton)
+
+**Native builder:** `build_efficientsam3_multiplex_video_model(checkpoint_path=None,
+backbone_type="repvit", model_name="m1.1", text_encoder_type="MobileCLIP-S0",
+text_encoder_context_length=16, text_encoder_pos_embed_table_size=16, multiplex_count=16,
+use_fa3=False, use_rope_real=False, device="cuda")` → `_NotebookSam31VideoAdapter`; its `._model`
+is the `Sam3MultiplexTrackingWithInteractivity` exposing `init_state` / `add_prompt(text_str=)` /
+`propagate_in_video`. (`model_name="m1.1"` mirrors `infer_model_args_from_checkpoint`, inlined
+because `sam3p1_demo_utils` imports matplotlib, absent from this venv.)
+
+**Efficient checkpoint:** `checkpoints/_esam3_validate/stage1_sam3p1/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt`
+- 1672 keys: detector 1215 (vision RepViT trunk + tri-neck convs + MobileCLIP text + DETR head) + tracker 457
+- Strict load: **0 missing / 0 unexpected (1672/1672)** — already in `detector.*`/`tracker.*` namespace (no remap)
+- Source: Simon7108528/EfficientSAM3 (public, no token)
+
+**Video clip:** worktree `sam3/assets/videos/0001` (dance clip), 288×512 (H×W), frames 0..3.
+
+**Concept:** `"head"` — `"person"` yields 0 detections for this stage1 distilled checkpoint;
+`"head"` gives 4 stable objects/frame (ids 0..3, scores ≈ [0.68, 0.66, 0.67, 0.70]).
+
+## Capture Details (`capture_efficientsam3p1_repvit_video_golden.py`)
+
+**Precision:** `bf16_autocast` + `inference_mode`. **Determinism:** seed=0, cuDNN deterministic,
+TF32 OFF (re-asserted after `model_builder` import). `use_deterministic_algorithms(True)` is
+**forbidden** (forced-flash SDPA is non-deterministic → `No available kernel`).
+
+**Env concessions (kernel/dep dispatch only — NO weights/logic change).** This venv has no
+`triton`; a *global* triton stub breaks torchvision→`torch._dynamo`, so each of efficientsam3's
+four triton imports is handled surgically:
+- **edt stub** — `sam3.model.edt` does a top-level `import triton` with no fallback and is pulled
+  in by `sam3_tracker_utils`. A pure-scipy `edt_triton` (`scipy.ndimage.distance_transform_edt`,
+  the exact CPU equivalent of `cv2.distanceTransform(x, DIST_L2, 0)`) is inserted into
+  `sys.modules["sam3.model.edt"]` **before any sam3 import**. It is only used by
+  `sample_one_point_from_error_center` (RITM point refinement) — NOT on the text-concept tracking
+  path — so it must merely import; it is never actually called here.
+- **NMS** — `perflib.nms.generic_nms` CUDA path → triton when `torch_generic_nms` absent;
+  pointed at the bundled `generic_nms_cpu` (same greedy NMS). (Same as the base SAM3-LiteText D golden.)
+- **connected_components** — CUDA path → triton when `cc_torch` absent; pointed at the skimage CPU
+  fallback (wrapped for (B,H,W) and B=0). (Same as the D golden.)
+- **SDPA** — `decoder.functional_attention` forces `sdpa_kernel(FLASH_ATTENTION)` when
+  `use_fa3=False`; `_patch_multiplex_sdpa` lets it permit all backends so SDPA auto-selects
+  (math == exact reference). (Same as E2.)
+- `efficientvit/triton_rms_norm` and `train/loss/sigmoid_focal_loss` import triton too, but
+  neither is on the repvit inference path, so neither is touched.
+
+## NPZ Schema (`efficientsam3p1_repvit_m_s0_ctx16_video.npz`)
+
+Same streaming schema as the other video goldens (`frame{f}_obj_ids` i64, `frame{f}_scores` f32,
+`frame{f}_obj{oid}` u8 `(288,512)`, `video_frames_rgb` u8 `(4,288,512,3)`, `video_phrase`="head",
+`video_hw`=[288,512], `video_frame_indices`=[0,1,2,3], `precision_mode`="bf16_autocast",
+`upstream_commit`=`6056958...`).
+
+## Parity Test Results (`test_efficientsam3p1_repvit_video_parity.py`) — **BLOCKED**
+
+Predictor (production, unchanged): `build_efficientsam3p1_video_predictor(
+config_file="configs/efficientsam3/efficientsam3p1_repvit_m_mobileclip_s0_ctx16.yaml",
+ckpt_path=<ckpt>, device="cuda", backbone_type="repvit", model_name="m1_1")`. NO monkey-patch.
+Production loader strict-loads the same **1672/1672** keys (0/0), so the weights are identical to
+the native oracle. Gate: per-frame Hungarian IoU min ≥ 0.98, mean ≥ 0.99, n_ge_99 ≥ len−1.
+
+| Frame | min IoU | mean IoU | n_ge_99 | note |
+|---|---|---|---|---|
+| 0 (detect) | 0.9942 | 0.9969 | 4/4 | detection path matches |
+| 1 (propagate) | **0.7412** | 0.9186 | 0/4 | obj 2 mask undershoots: 1272 vs 1681 px |
+| 2 (propagate) | 0.8453 | 0.9435 | 2/4 | obj 0 undershoots: 1040 vs 1226 px |
+| 3 (propagate) | 0.9632 | 0.9827 | 2/4 | partial recovery |
+| **overall** | **0.7412** | **0.9604** | 9/16 | — |
+
+**Honest result: min 0.7412, mean 0.9604 < gate.** The **detection frame matches** the native
+oracle (frame 0: 0.9942, 4/4 ≥ 0.99), but **propagation undershoots** masks intermittently
+(masks consistently smaller than the golden), worst at frame 1 obj 2. Identical weights + matching
+detection isolate the gap to the **production propagation/tracking path** with the distilled RepViT
+features — exactly the propagation question the task probed. The test is marked `xfail(strict=True)`
+with the gate assertions **unchanged** (not weakened); it records the gap loudly for triage. No
+`sam/` edits were made (the reverted `_seed_multiplex` change stays reverted).
+
+## VRAM Test Results — PASS (forgetful-bank property holds)
+
+| Metric | Value | Gate | Result |
+|---|---|---|---|
+| Persistent growth (primary) | **−0.1%** (1005.2 → 1004.6 MB) | 5% | PASS |
+| Peak growth (secondary) | 91.0% (1005.2 → 1919.8 MB) | 120% | PASS |
+
+The persistent allocation is **flat** (−0.1%) frames 9→15 — the multiplex forgetful-bank VRAM-flat
+property holds. The secondary peak gate is set to 120% (vs E2's 40%): the distilled RepViT-M trunk
+makes the persistent base very light (~1005 MB vs E2's ~2726 MB PE-ViT), while the per-frame forward
+temporary is similar in absolute terms (~915 MB) → a much higher peak RATIO over a smaller base
+(same lighter-base phenomenon E2 documented, more pronounced). Persistent-flatness is the
+authoritative property; the peak gate is a secondary sanity bound only.
+
+## Video FPS Reference
+
+**Hardware:** RTX 3080 Ti. **Model:** EfficientSAM3.1 RepViT-M s0/ctx16, 288×512, concept "head".
+**Method:** text encoded once (cached), per-frame forward timed with `cuda.synchronize()`. Warmup 2,
+timed 4 frames. **Median ≈ 168.5 ms/frame ≈ 5.9 fps** (bf16 autocast) — faster than SAM3.1-LiteText
+(~4.3 fps) thanks to the lighter distilled trunk. Not a hard gate.
