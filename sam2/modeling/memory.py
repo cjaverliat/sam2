@@ -15,6 +15,7 @@ class ObjectMemory:
         memory_pos_embeddings: torch.Tensor,
         ptr: torch.Tensor,
         is_conditional: bool = False,
+        score: float | None = None,
     ):
         self.obj_id = obj_id
         self.frame_idx = frame_idx
@@ -22,7 +23,8 @@ class ObjectMemory:
         self.memory_pos_embeddings = memory_pos_embeddings
         self.ptr = ptr
         self.is_conditional = is_conditional
-    
+        self.score = score
+
     @abstractmethod
     def to(self, device: torch.device) -> ObjectMemory:
         return ObjectMemory(
@@ -31,6 +33,8 @@ class ObjectMemory:
             memory_embeddings=self.memory_embeddings.to(device),
             memory_pos_embeddings=self.memory_pos_embeddings.to(device),
             ptr=self.ptr.to(device),
+            is_conditional=self.is_conditional,
+            score=self.score,
         )
 
 class ObjectMemorySelection:
