@@ -215,12 +215,11 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             )
 
             selected_obj_non_conditional_memories = (
-                _select_N_last_non_conditional_memories(
+                self._select_non_conditional_memories(
                     non_conditional_memories=selected_obj_non_conditional_memories,
                     N=max_non_conditional_memories,
                     current_frame_idx=current_frame_idx,
                     reverse_tracking=reverse_tracking,
-                    temporal_stride=self.memory_temporal_stride,
                 )
             )
 
@@ -249,12 +248,11 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
 
             if remaining_ptr_slots > 0:
                 selected_obj_ptrs_memories.extend(
-                    _select_N_last_non_conditional_memories(
+                    self._select_non_conditional_memories(
                         non_conditional_memories=selected_obj_non_conditional_memories,
                         N=remaining_ptr_slots,
                         current_frame_idx=current_frame_idx,
                         reverse_tracking=reverse_tracking,
-                        temporal_stride=self.memory_temporal_stride,
                     )
                 )
 
@@ -265,6 +263,28 @@ class SAM2ObjectMemoryBank(ObjectMemoryBank):
             )
 
         return ret
+
+    def _select_non_conditional_memories(
+            self,
+            non_conditional_memories: list[ObjectMemory],
+            N: int,
+            current_frame_idx: int,
+            reverse_tracking: bool,
+    ) -> list[ObjectMemory]:
+        """
+        Select up to `N` non-conditional memories to attend to for the current frame.
+
+        Overridable hook so that subclasses using a non-per-frame storage strategy
+        (e.g. periodic storage) can select by recency instead of exact frame-index
+        probing. The default matches the original SAM2 stride-based selection.
+        """
+        return _select_N_last_non_conditional_memories(
+            non_conditional_memories=non_conditional_memories,
+            N=N,
+            current_frame_idx=current_frame_idx,
+            reverse_tracking=reverse_tracking,
+            temporal_stride=self.memory_temporal_stride,
+        )
 
     def clear_all_conditional_memories(self) -> list[ObjectMemory]:
         removed_memories = []
