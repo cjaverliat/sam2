@@ -101,9 +101,33 @@ def test_recency_selection_over_sparse_storage():
     assert picked == [30, 25, 20]
 
 
+def test_memory_window_pruning():
+    # storage_period=1 stores every frame; window keeps only frames within +/-10.
+    bank = SAM2ScoredPeriodicObjectMemoryBank(
+        score_threshold=0.0, storage_period=1, memory_window_size=10
+    )
+    for f in range(30):
+        _add(bank, f, logit=3.0)
+        bank.prune_memories(obj_ids=[OBJ_ID], current_frame_idx=f)
+
+    kept = [m.frame_idx for m in bank.non_conditional_memories[OBJ_ID]]
+    # at frame 29, window is [19, 39] -> frames 19..29 survive
+    assert kept == list(range(19, 30)), kept
+
+
+def test_no_window_keeps_all():
+    bank = SAM2ScoredPeriodicObjectMemoryBank(score_threshold=0.0, storage_period=1)
+    for f in range(20):
+        _add(bank, f, logit=3.0)
+        assert bank.prune_memories([OBJ_ID], current_frame_idx=f) == {}
+    assert bank.count_object_non_conditional_memories(OBJ_ID) == 20
+
+
 if __name__ == "__main__":
     test_period_and_score_gates()
     test_probe_each_frame_after_period()
     test_conditional_always_stored()
     test_recency_selection_over_sparse_storage()
+    test_memory_window_pruning()
+    test_no_window_keeps_all()
     print("all tests passed")

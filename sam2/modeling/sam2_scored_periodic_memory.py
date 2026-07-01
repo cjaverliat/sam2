@@ -31,6 +31,12 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
     recency (the N most-recent stored memories) instead of the base class's exact
     frame-index / stride probing.
 
+    Old non-conditional memories are forgotten like ``SAM2ForgetfulObjectMemoryBank``:
+    if ``memory_window_size`` is set, any non-conditional memory whose frame index is
+    outside ``[current_frame_idx - memory_window_size, current_frame_idx +
+    memory_window_size]`` is pruned each frame. ``None`` keeps them indefinitely.
+    Conditional memories are never pruned.
+
     Note: gating is symmetric for forward and reverse tracking (uses absolute frame
     distance). Selection is direction-aware.
     """
@@ -39,6 +45,7 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
             self,
             score_threshold: float = 0.5,
             storage_period: int = 1,
+            memory_window_size: int | None = None,
             memory_temporal_stride: int = 1,
             storage_device: torch.device = torch.device("cpu"),
     ):
@@ -50,8 +57,12 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
         assert (
             0.0 <= score_threshold <= 1.0
         ), f"score_threshold is a probability in [0, 1], got {score_threshold}"
+        assert (
+            memory_window_size is None or memory_window_size >= 0
+        ), f"memory_window_size must be >= 0 or None, got {memory_window_size}"
         self.score_threshold = score_threshold
         self.storage_period = storage_period
+        self.memory_window_size = memory_window_size
         # Per-object frame index of the last stored non-conditional memory.
         self._last_stored_non_cond_frame: dict[int, int] = {}
 
@@ -129,6 +140,33 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
                 ret.append((False, memory))
 
         return ret
+
+    def prune_memories(
+            self, obj_ids: list[int], current_frame_idx: int
+    ) -> dict[int, list[ObjectMemory]]:
+        """Forget non-conditional memories outside the window
+        ``[current - memory_window_size, current + memory_window_size]``.
+        No-op when ``memory_window_size`` is None. Conditional memories are kept."""
+        if self.memory_window_size is None:
+            return {}
+
+        removed_memories: dict[int, list[ObjectMemory]] = {}
+        lo = current_frame_idx - self.memory_window_size
+        hi = current_frame_idx + self.memory_window_size
+
+        for obj_id in obj_ids:
+            non_cond_obj_memories = self.non_conditional_memories.get(obj_id, [])
+            kept, removed = [], []
+            for m in non_cond_obj_memories:
+                if lo <= m.frame_idx <= hi:
+                    kept.append(m)
+                else:
+                    removed.append(m)
+            if removed:
+                removed_memories[obj_id] = removed
+            self.non_conditional_memories[obj_id] = kept
+
+        return removed_memories
 
     @staticmethod
     def _insert_memory(
