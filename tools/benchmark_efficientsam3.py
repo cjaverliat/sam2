@@ -67,7 +67,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="EfficientSAM3 image-inference latency benchmark."
     )
-    ap.add_argument("--ckpt", required=True, help="Path to efficientsam3_repvit.pt")
+    ap.add_argument("--ckpt", required=True, help="Path to the checkpoint (.pt)")
+    ap.add_argument(
+        "--config",
+        default="configs/efficientsam3/efficientsam3_repvit.yaml",
+        help="Hydra config: efficientsam3_{repvit,tinyvit,efficientvit}.yaml (default: repvit), "
+             "or configs/sam3/sam3.yaml with --sam3.",
+    )
+    ap.add_argument(
+        "--sam3",
+        action="store_true",
+        help="Benchmark base SAM 3 (build_sam3) instead of EfficientSAM3 — for the vs-SAM3 "
+             "comparison. Note: base SAM 3 is bf16-only, so its fp32 mode is expected to fail.",
+    )
     ap.add_argument(
         "--image",
         default=None,
@@ -92,10 +104,13 @@ def main() -> None:
     print(f"device={device}  gpu={gpu}  torch={torch.__version__}")
 
     # ------------------------------------------------------------------ model
-    from sam.build_sam import build_efficientsam3
-
-    model = build_efficientsam3(ckpt_path=args.ckpt, device=str(device), mode="eval")
-    print(f"Model built from {args.ckpt}")
+    if args.sam3:
+        from sam.build_sam import build_sam3
+        model = build_sam3(config_file=args.config, ckpt_path=args.ckpt, device=str(device), mode="eval")
+    else:
+        from sam.build_sam import build_efficientsam3
+        model = build_efficientsam3(config_file=args.config, ckpt_path=args.ckpt, device=str(device), mode="eval")
+    print(f"Model built from {args.ckpt} (config={args.config}, sam3={args.sam3})")
 
     # ------------------------------------------------------------------ image
     if args.image is not None:
@@ -149,39 +164,39 @@ def main() -> None:
         else:
             ctx = contextlib.nullcontext()
 
-        with torch.inference_mode(), ctx:
-            # pre-process once so timing excludes CPU-Python overhead not in the model
-            x = preprocess_to_1008(image_np, device=device)
-            feats, pos = model.encode_image(x)
-            text_emb, text_mask = model.encode_text(concept)
+        dt = torch.bfloat16 if mode == "autocast" else torch.float32
+        try:
+            with torch.inference_mode(), ctx:
+                # pre-process once so timing excludes CPU-Python overhead not in the model
+                x = preprocess_to_1008(image_np, device=device)
+                feats, pos = model.encode_image(x)
+                text_emb, text_mask = model.encode_text(concept)
 
-            def vision():
-                _x = preprocess_to_1008(image_np, device=device)
-                model.encode_image(_x)
+                def vision():
+                    _x = preprocess_to_1008(image_np, device=device)
+                    model.encode_image(_x)
 
-            def prompt_only():
-                _t, _m = model.encode_text(concept)
-                model.detect(feats, pos, _t, _m, image_hw,
-                             confidence_threshold=args.threshold)
+                def prompt_only():
+                    _t, _m = model.encode_text(concept)
+                    model.detect(feats, pos, _t, _m, image_hw,
+                                 confidence_threshold=args.threshold)
 
-            def e2e():
-                if mode == "fp32":
+                def e2e():
                     model.predict(image_np, concept,
-                                  confidence_threshold=args.threshold,
-                                  dtype=torch.float32)
-                else:
-                    model.predict(image_np, concept,
-                                  confidence_threshold=args.threshold,
-                                  dtype=torch.bfloat16)
+                                  confidence_threshold=args.threshold, dtype=dt)
 
-            r = {
-                "vision_set_image": _bench(vision, args.warmup, args.iters),
-                "prompt_text_detect_seg": _bench(prompt_only, args.warmup, args.iters),
-                "end_to_end": _bench(e2e, args.warmup, args.iters),
-            }
+                r = {
+                    "vision_set_image": _bench(vision, args.warmup, args.iters),
+                    "prompt_text_detect_seg": _bench(prompt_only, args.warmup, args.iters),
+                    "end_to_end": _bench(e2e, args.warmup, args.iters),
+                }
+        except Exception as e:
+            # e.g. base SAM 3 fp32 (perflib hardcodes bf16) -> report the mode as failed, continue.
+            print(f"\n=== mode={mode}: FAILED ({str(e)[:100]}) ===")
+            report["modes"][mode] = {"error": str(e)}
+            continue
 
         report["modes"][mode] = r
-        dt = torch.bfloat16 if mode == "autocast" else torch.float32
         print(f"\n=== mode={mode} (dtype~{dt}) ===")
         for phase, s in r.items():
             print(

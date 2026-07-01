@@ -430,14 +430,24 @@ measured against **efficientsam3's own reference** (its `build_efficientsam3_*` 
 differs from full SAM 3 by ~24%). Tracked as `xfail` in the parity suite — see
 [`tests/parity/reference_efficientsam3/`](tests/parity/reference_efficientsam3/).
 
-### FPS reference (RTX 3080 Ti, 2048×1365 dog/person image, `tools/benchmark_efficientsam3.py`)
+### Image benchmark — EfficientSAM3 vs SAM 3 (image only)
 
-| Mode | Vision | Prompt+detect | End-to-end |
+RTX 3080 Ti, `dog_person.jpeg` (2048×1365), prompt `"dog"`, 30 iters (`tools/benchmark_efficientsam3.py`). **autocast (bfloat16)** — the deployment path (works for every model; base SAM 3 is bf16-only):
+
+| Model | Vision | Prompt+detect | **End-to-end** |
 |---|---|---|---|
-| fp32 (TF32 on) | 33 ms / 30 FPS | 76 ms | 108 ms / 9 FPS |
-| bfloat16 autocast | 28 ms / 36 FPS | 47 ms | 75 ms / 13 FPS |
+| EfficientSAM3 · EfficientViT-B1 | 25.3 ms · 39.5 FPS | 40.5 ms | **65.1 ms · 15.4 FPS** |
+| EfficientSAM3 · RepViT-M1.1 | 27.4 ms · 36.6 FPS | 40.2 ms | **67.7 ms · 14.8 FPS** |
+| EfficientSAM3 · TinyViT-11M | 29.3 ms · 34.2 FPS | 40.3 ms | **69.4 ms · 14.4 FPS** |
+| **SAM 3 · PE ViT-H** | **147.2 ms · 6.8 FPS** | 52.0 ms | **200.1 ms · 5.0 FPS** |
 
-Upstream reference (_bench.py, fp32): vision 31.5 ms, e2e 136.6 ms.
+fp32 (TF32) — EfficientSAM3 only (base SAM 3 fp32 is unsupported — perflib hardcodes bf16): EfficientViT 99.4 ms · 10.1 FPS · RepViT 101.5 ms · 9.8 FPS · TinyViT 104.9 ms · 9.5 FPS end-to-end. (Matches upstream `_bench.py`: fp32 vision ~31.5 ms.)
+
+- **Distilled vision encoder is ~5–6× faster** than SAM 3's PE ViT-H (25–29 ms vs 147 ms) — the EfficientSAM3 win.
+- **~3× faster end-to-end** (15 vs 5 FPS). The reused SAM 3 DETR detector (prompt phase, ~40–52 ms) now dominates (~⅔ of e2e) — the next speedup lever.
+- These are **image** numbers; streaming-video parity/throughput is separate (see the variant matrix + `tests/parity/reference_efficientsam3/`).
+
+Reproduce: `pixi run python tools/benchmark_efficientsam3.py --ckpt <ckpt> --config <cfg>` (add `--sam3` for the base SAM 3 model).
 
 ---
 
