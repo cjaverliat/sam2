@@ -19,6 +19,19 @@ from sam.prompts import GeometryPrompt
 from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 
+def add_common_bench_args(parser):
+    """Add the CLI args shared by the ONNX and torch video benchmarks."""
+    parser.add_argument("--video", default="notebooks/videos/bedroom.mp4")
+    parser.add_argument("--model-cfg", default="configs/sam2.1/sam2.1_hiera_b+.yaml")
+    parser.add_argument("--warmup-frames", type=int, default=5,
+                        help="propagation frames discarded before timing (engine/cache settle)")
+    parser.add_argument("--max-frames", type=int, default=200, help="stop after N frames (0=all)")
+    parser.add_argument("--memory-window", type=int, default=7,
+                        help="forgetful memory window in frames (0=infinite bank)")
+    parser.add_argument("--bank-device", default="cuda", choices=["cuda", "cpu"],
+                        help="device the memory bank stores memories on")
+
+
 def read_frame(cap, device):
     ret, frame = cap.read()
     if not ret:

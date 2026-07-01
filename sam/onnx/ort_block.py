@@ -7,7 +7,7 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from sam.onnx.trt_options import TensorRTOptions
+from sam.onnx.trt_options import FP16_SAFE_BLOCKS, TensorRTOptions
 
 logger = logging.getLogger(__name__)
 
@@ -136,15 +136,7 @@ class OrtBlock:
                     if trt_opts.cache_dir
                     else onnx_path.parent / "trt_cache"
                 )
-                if trt_opts.cache_enable:
-                    cache_dir.mkdir(parents=True, exist_ok=True)
-                timing_dir = (
-                    Path(trt_opts.timing_cache_dir)
-                    if trt_opts.timing_cache_dir
-                    else cache_dir
-                )
-                if trt_opts.timing_cache_enable:
-                    timing_dir.mkdir(parents=True, exist_ok=True)
+                cache_dir.mkdir(parents=True, exist_ok=True)
                 # trt_bf16_enable is only a valid TRT EP option from ORT 1.23 on. Older
                 # ORT rejects the unknown key and silently drops the TRT *and* CUDA EPs,
                 # falling back to CPU — a 10x-slower run that looks like it worked. Fail
@@ -156,7 +148,7 @@ class OrtBlock:
                         f"rejects trt_bf16_enable and silently falls back to CPU. Use "
                         f"the onnx-tensorrt-cu13 environment (ORT >= 1.23), or fp16."
                     )
-                fp16 = trt_opts.fp16_enable and onnx_path.stem in trt_opts.fp16_safe_blocks
+                fp16 = trt_opts.fp16_enable and onnx_path.stem in FP16_SAFE_BLOCKS
                 if trt_opts.fp16_enable:
                     if fp16:
                         logger.info(
@@ -165,10 +157,10 @@ class OrtBlock:
                     else:
                         logger.warning(
                             "TRT fp16 requested but HELD AT fp32 for %s: not in "
-                            "fp16_safe_blocks %s. fp16 error compounds through this block "
+                            "FP16_SAFE_BLOCKS %s. fp16 error compounds through this block "
                             "+ the recurrent memory loop and destroys the masklet. Use "
                             "bf16_enable (safe for all blocks) for full-speed fp16-range.",
-                            onnx_path.stem, sorted(trt_opts.fp16_safe_blocks),
+                            onnx_path.stem, sorted(FP16_SAFE_BLOCKS),
                         )
                 trt = {
                     "device_id": device_id,
@@ -179,28 +171,22 @@ class OrtBlock:
                     "trt_fp16_enable": fp16,
                     "trt_bf16_enable": trt_opts.bf16_enable,
                     "trt_cuda_graph_enable": trt_opts.cuda_graph_enable,
-                    "trt_engine_cache_enable": trt_opts.cache_enable,
+                    # Engine + timing caches are always enabled (both default off in ORT):
+                    # built engines and per-tactic kernel timings are reused across runs,
+                    # cutting the cost of the first build of each engine. Both share
+                    # cache_dir.
+                    "trt_engine_cache_enable": True,
                     "trt_engine_cache_path": cache_dir.as_posix(),
                     "trt_engine_cache_prefix": onnx_path.stem,
-                    # Timing cache: per-tactic kernel timings reused across builds,
-                    # cutting the cost of the first build of each engine.
-                    "trt_timing_cache_enable": trt_opts.timing_cache_enable,
-                    "trt_timing_cache_path": timing_dir.as_posix(),
-                    "trt_force_timing_cache": trt_opts.force_timing_cache,
+                    "trt_timing_cache_enable": True,
+                    "trt_timing_cache_path": cache_dir.as_posix(),
                     "trt_builder_optimization_level": trt_opts.builder_optimization_level,
                     "trt_max_workspace_size": trt_opts.max_workspace_size,
-                    "trt_force_sequential_engine_build": trt_opts.force_sequential_build,
-                    "trt_max_partition_iterations": trt_opts.max_partition_iterations,
-                    "trt_min_subgraph_size": trt_opts.min_subgraph_size,
                 }
                 if min_shapes and opt_shapes and max_shapes:
                     trt["trt_profile_min_shapes"] = _shape_str(min_shapes)
                     trt["trt_profile_opt_shapes"] = _shape_str(opt_shapes)
                     trt["trt_profile_max_shapes"] = _shape_str(max_shapes)
-                if trt_opts.ep_context_file_path is not None:
-                    trt["trt_ep_context_file_path"] = Path(
-                        trt_opts.ep_context_file_path
-                    ).as_posix()
                 providers.insert(0, ("TensorrtExecutionProvider", trt))
 
         so = ort.SessionOptions()

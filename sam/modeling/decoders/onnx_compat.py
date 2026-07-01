@@ -21,31 +21,11 @@ the ONNX Runtime TensorRT EP (TRT 10.16.x):
   Trade-off: decomposing loses the fused/flash attention kernel, so the decomposed TRT
   engine is actually a bit *slower* than letting the native op run on CUDA — but it's the
   only path that builds reliably. (Refs: NVIDIA/TensorRT #4739, #4705, #4743, #4715.)
-
-The opset >= 23 branches below are kept (disabled / commented) to re-enable once
-TensorRT+ORT support the opset-23 fused ops. ``set_export_opset`` declares the target
-opset before tracing; it has no effect in eager mode.
 """
 
 import torch
 import torch.nn.functional as F
-import torch.onnx.ops as _onnx_ops
 from torch import Tensor, nn
-
-from sam.modeling.utils import is_exporting
-
-_EXPORT_OPSET = 23
-
-
-def set_export_opset(opset: int) -> None:
-    """Declare which opset the upcoming ONNX export targets so the modules pick native
-    ops (>= 23) or the decomposed fallback (< 23). No effect outside export."""
-    global _EXPORT_OPSET
-    _EXPORT_OPSET = opset
-
-
-def _exporting_below_23() -> bool:
-    return is_exporting() and _EXPORT_OPSET < 23
 
 
 def _rope_interleaved(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -69,20 +49,14 @@ class ScaledDotProductAttention(nn.Module):
         # Always use F.scaled_dot_product_attention (flash in eager; decomposed
         # MatMul/Softmax/MatMul when exported), at every opset.
         #
-        # The native opset-23 ONNX Attention op (commented out below) is not placed on
-        # TensorRT by the ORT TensorRT EP (TRT 10.16.x): every Attention node falls back
-        # to the CUDA EP, so a Hiera image encoder with 24 attention blocks shatters into
-        # ~25 TRT subgraphs (TRT<->CUDA boundary copies + per-engine overhead) — and on
-        # the dynamic-shape memory-attention path it also hits the myelin SSA build bug.
-        # Same open opset-23-fused-op gap as RotaryEmbedding above.
+        # The native opset-23 ONNX Attention op is not placed on TensorRT by the ORT
+        # TensorRT EP (TRT 10.16.x): every Attention node falls back to the CUDA EP, so a
+        # Hiera image encoder with 24 attention blocks shatters into ~25 TRT subgraphs
+        # (TRT<->CUDA boundary copies + per-engine overhead) — and on the dynamic-shape
+        # memory-attention path it also hits the myelin SSA build bug. Same open
+        # opset-23-fused-op gap as RotaryEmbedding above.
         # Refs: NVIDIA/TensorRT #4739, #4705, #4743, #4715.
-        # Re-enable the native op (restore the block below, delete this line) once
-        # TensorRT/ORT place the opset-23 Attention op on TRT and it's verified.
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
-        # if is_exporting() and _EXPORT_OPSET >= 23:
-        #     # onnx_ops.attention returns (Y, present_key, present_value); keep Y.
-        #     return _onnx_ops.attention(q, k, v)[0]
-        # return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
 
 class RotaryEmbedding(nn.Module):
@@ -112,25 +86,15 @@ class RotaryEmbedding(nn.Module):
         k_rope = k[:, :, :n]
         # Always use the decomposed (real rotate-half) RoPE, at every opset.
         #
-        # The native opset-23 ONNX RotaryEmbedding op (commented out below) makes
-        # TensorRT 10.16.x fail the engine build with a myelin SSA error ("producer
-        # does not dominate the use") on the memory-attention block, where the memory
-        # length is dynamic: the op is fed shape-data-dependent position_ids (arange(n))
-        # plus a dynamically-repeated (rope_k_repeat) cos/sin cache, which TensorRT's
-        # importer lowers into unnamed internal helper layers that myelin cannot
-        # resolve. It's an open, unfixed TensorRT bug on our version (not fixed in
-        # 10.17 / 10.18 / 11.0); the static-shape image encoder is unaffected.
+        # The native opset-23 ONNX RotaryEmbedding op makes TensorRT 10.16.x fail the
+        # engine build with a myelin SSA error ("producer does not dominate the use") on
+        # the memory-attention block, where the memory length is dynamic: the op is fed
+        # shape-data-dependent position_ids (arange(n)) plus a dynamically-repeated
+        # (rope_k_repeat) cos/sin cache, which TensorRT's importer lowers into unnamed
+        # internal helper layers that myelin cannot resolve. It's an open, unfixed
+        # TensorRT bug on our version (not fixed in 10.17 / 10.18 / 11.0); the
+        # static-shape image encoder is unaffected.
         # Refs: NVIDIA/TensorRT #4739, #4705, #4743, #4715.
-        # Re-enable the native op (restore the block below, delete these two lines) once
-        # TensorRT fixes it AND a dynamic-shape memory_attention engine build verifies.
         q = _rope_interleaved(q, cos, sin)
         k_rope = _rope_interleaved(k_rope, cos_k, sin_k)
-        # if _exporting_below_23():
-        #     q = _rope_interleaved(q, cos, sin)
-        #     k_rope = _rope_interleaved(k_rope, cos_k, sin_k)
-        # else:
-        #     pq = torch.arange(q.size(-2), device=q.device).unsqueeze(0).expand(q.size(0), -1)
-        #     pk = torch.arange(n, device=k.device).unsqueeze(0).expand(k.size(0), -1)
-        #     q = _onnx_ops.rotary_embedding(q, cos, sin, pq, interleaved=True)
-        #     k_rope = _onnx_ops.rotary_embedding(k_rope, cos_k, sin_k, pk, interleaved=True)
         return q, torch.cat([k_rope, k[:, :, n:]], dim=-2)

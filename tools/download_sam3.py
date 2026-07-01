@@ -20,14 +20,10 @@ Usage:
 """
 
 import argparse
-import os
-import shutil
 import sys
 from pathlib import Path
 
-# The Xet transfer backend can hang on some setups; disable it for these downloads
-# unless the caller explicitly overrides. Must be set before any huggingface_hub import.
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+from _hf_download import download_to
 
 # version -> (repo_id, checkpoint filename)
 _REPOS = {
@@ -109,26 +105,19 @@ def main() -> None:
     args = parser.parse_args()
 
     repo_id, ckpt_name = _REPOS[args.version]
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    dst = out_dir / ckpt_name
+    dst = Path(args.out_dir) / ckpt_name
+    # Check up front so an already-present checkpoint skips authentication entirely
+    # (the shared helper re-checks, but authenticating first would prompt/fail needlessly).
     if dst.exists():
         print(f"{dst} already present, skipping download.")
         return
 
     _ensure_authenticated()
-
-    from huggingface_hub import hf_hub_download
-
-    try:
-        ckpt = hf_hub_download(repo_id=repo_id, filename=ckpt_name)
-    except Exception as e:  # gated access not granted / network -> fail loud
-        _fail(f"{type(e).__name__}: {e}", repo_id)
-
-    # hf_hub_download returns a cache path; copy the weights into the project checkpoints dir.
-    shutil.copyfile(ckpt, dst)
-    print(f"Downloaded {repo_id}:{ckpt_name} -> {dst}")
+    download_to(
+        repo_id, ckpt_name, dst,
+        on_error=lambda e: _fail(f"{type(e).__name__}: {e}", repo_id),
+        success_msg=lambda d: f"Downloaded {repo_id}:{ckpt_name} -> {d}",
+    )
 
 
 if __name__ == "__main__":

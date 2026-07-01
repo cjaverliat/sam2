@@ -10,14 +10,10 @@ Usage:
 """
 
 import argparse
-import shutil
 import sys
-import os
 from pathlib import Path
 
-# The Xet transfer backend can hang on some setups; disable it for these downloads
-# unless the caller explicitly overrides. Must be set before any huggingface_hub import.
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+from _hf_download import download_to
 
 _REPO_ID = "Simon7108528/EfficientSAM3"
 
@@ -92,27 +88,9 @@ def main() -> None:
     args = parser.parse_args()
 
     hf_filename, local_filename = _VARIANTS[args.variant]
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    dst = Path(args.out_dir) / local_filename
 
-    dst = out_dir / local_filename
-    if dst.exists():
-        print(f"{dst} already present, skipping download.")
-        return
-
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError:
-        print(
-            "ERROR: huggingface_hub is not installed (expected in the pixi env).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    print(f"Downloading {_REPO_ID}:{hf_filename} ...")
-    try:
-        cached = hf_hub_download(repo_id=_REPO_ID, filename=hf_filename)
-    except Exception as e:
+    def _on_error(e: Exception) -> None:
         print(
             "\n".join(
                 [
@@ -132,9 +110,12 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # hf_hub_download returns a cache path; copy the weights into the project dir.
-    shutil.copyfile(cached, dst)
-    print(f"Saved to {dst}")
+    download_to(
+        _REPO_ID, hf_filename, dst,
+        on_error=_on_error,
+        success_msg=lambda d: f"Saved to {d}",
+        announce=True,
+    )
 
 
 if __name__ == "__main__":

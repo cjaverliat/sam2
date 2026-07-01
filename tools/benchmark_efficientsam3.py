@@ -34,10 +34,11 @@ import numpy as np
 import torch
 from PIL import Image
 
+from bench_utils import sync
+
 
 def _sync() -> None:
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    sync(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
 
 def _bench(fn, warmup: int, iters: int) -> dict:

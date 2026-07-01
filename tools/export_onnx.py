@@ -13,9 +13,9 @@ Produces, in --out-dir:
 Works for both default SAM2 (Hiera) and EfficientTAM (ViT) configs — build_sam2_predictor
 overrides the model target and the block shapes are read off the built model.
 
-Exports at opset 18 (default): attention and RoPE are fully decomposed. The native
-opset-23 ONNX Attention / RotaryEmbedding ops are avoided because they break on the ONNX
-Runtime TensorRT EP (see sam.modeling.decoders.onnx_compat).
+Exports at opset 18: attention and RoPE are fully decomposed. The native opset-23 ONNX
+Attention / RotaryEmbedding ops are avoided because they break on the ONNX Runtime
+TensorRT EP (see sam.modeling.decoders.onnx_compat).
 
 Run from the repo root:
     pixi run python tools/export_onnx.py \
@@ -44,7 +44,6 @@ Two artifacts, one per runtime (both opset 18):
 import argparse
 import json
 import sys
-import warnings
 from pathlib import Path
 
 # torch.onnx logs ✅/❌ status glyphs; the default Windows console codec (cp1252)
@@ -60,7 +59,6 @@ import torch
 import torch.nn as nn
 
 from sam.build_sam import build_sam2_predictor
-from sam.modeling.decoders.onnx_compat import set_export_opset
 from sam.onnx import image_encoder_onnx as ienc
 from sam.onnx import mask_decoder_onnx as mdec
 from sam.onnx import memory_attention_onnx as mattn
@@ -68,6 +66,12 @@ from sam.onnx import memory_encoder_onnx as menc
 from sam.onnx import prompt_encoder_onnx as penc
 
 Dim = torch.export.Dim
+
+# All graphs export at opset 18: attention and RoPE are fully decomposed. The native
+# opset-23 ONNX Attention / RotaryEmbedding ops break on the ORT TensorRT EP (Attention
+# -> CUDA fallback / ~25-way fragmentation; dynamic RoPE -> myelin build crash); see
+# sam.modeling.decoders.onnx_compat. The opset is fixed, not a CLI knob.
+_EXPORT_OPSET = 18
 
 
 def _force_fp32_io(model) -> None:
@@ -147,7 +151,6 @@ def _export(
     print(f"  saved {path.name}")
     if mixed_precision:
         _to_mixed_precision(path)
-    return onnx_program
 
 
 def _parity(onnx_path, feeds: dict, torch_outs, names):
@@ -269,11 +272,6 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--ckpt", required=True)
     p.add_argument("--out-dir", required=True)
-    # opset 18: decomposed attention/RoPE. The native opset-23 ONNX Attention/
-    # RotaryEmbedding ops break on the ORT TensorRT EP (Attention -> CUDA fallback /
-    # ~25-way fragmentation; dynamic RoPE -> myelin build crash). See sam.modeling.sam.
-    # onnx_compat. Keep 18 unless TensorRT+ORT fix opset-23 fused-op support.
-    p.add_argument("--opset", type=int, default=18)
     p.add_argument("--no-parity", action="store_true", help="skip torch vs ORT check")
     p.add_argument(
         "--mixed-precision", action="store_true",
@@ -295,17 +293,6 @@ def main():
              "to leave the memory dim fully unbounded (no profile; ORT builds per shape).",
     )
     args = p.parse_args()
-
-    set_export_opset(args.opset)
-    if args.opset >= 23:
-        warnings.warn(
-            f"opset {args.opset} >= 23 emits the native ONNX RotaryEmbedding / Attention "
-            "ops. These break on the ONNX Runtime TensorRT EP (TRT 10.16.x): the dynamic "
-            "RoPE path fails the engine build with a myelin SSA error, and Attention is "
-            "not placed on TensorRT (CUDA fallback -> heavy subgraph fragmentation). Use "
-            "opset 18 (the default, fully decomposed) for the TensorRT path.",
-            stacklevel=2,
-        )
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -377,7 +364,7 @@ def main():
         onames,
         {"image": None},
         out / ienc.FILENAME,
-        args.opset,
+        _EXPORT_OPSET,
         mixed_precision=args.mixed_precision,
     )
 
@@ -398,12 +385,12 @@ def main():
     _export(
         pe_mod, (coords, labels), ["coords", "labels"], ["sparse"],
         {"coords": {1: npts}, "labels": {1: npts}},
-        out / penc.POINTS_FILE, args.opset,
+        out / penc.POINTS_FILE, _EXPORT_OPSET,
     )
     mask_in_t = torch.randn(1, 1, mask_in[0], mask_in[1], device=device)
     _export(
         _PromptMask(model.sam_prompt_encoder), (mask_in_t,), ["mask"], ["dense"],
-        {"mask": None}, out / penc.MASK_FILE, args.opset,
+        {"mask": None}, out / penc.MASK_FILE, _EXPORT_OPSET,
     )
     sparse, dense = model.sam_prompt_encoder(points=(coords, labels), boxes=None, masks=None)
     image_pe = model.sam_prompt_encoder.get_dense_pe()
@@ -452,7 +439,7 @@ def main():
         _export(
             _MaskDecoder(model.sam_mask_decoder, mm, use_hr),
             tuple(dec_args), dec_inputs, mdec.OUTPUT_NAMES, dyn,
-            out / mdec.filename(mm), args.opset,
+            out / mdec.filename(mm), _EXPORT_OPSET,
         )
 
     # ---------- memory attention ----------
@@ -481,7 +468,7 @@ def main():
             "mpos_rope": {0: mlen},
             "mpos_norope": {0: plen},
         },
-        out / mattn.FILENAME, args.opset,
+        out / mattn.FILENAME, _EXPORT_OPSET,
         mixed_precision=args.mixed_precision,
     )
 
@@ -493,7 +480,7 @@ def main():
         _MemoryEncoder(model.memory_encoder),
         (pix_feat, mask_for_mem), menc.INPUT_NAMES, menc.OUTPUT_NAMES,
         {"pix_feat": None, "masks": None},
-        out / menc.FILENAME, args.opset,
+        out / menc.FILENAME, _EXPORT_OPSET,
     )
 
     manifest = {
