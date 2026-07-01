@@ -1,22 +1,32 @@
 # SPDX-License-Identifier: LicenseRef-SAM
 # Vendored from facebookresearch/sam3 @ 5dd401d (sam3/model/memory.py): the SAM 3 tracker's
-# memory ENCODER -- ``SimpleMaskEncoder`` + its ``SimpleMaskDownSampler`` / ``SimpleFuser`` /
-# ``CXBlock`` building blocks. Kept under a DISTINCT filename from the shared (SAM 2, Apache)
-# ``memory/encoder.py`` (whose ``MaskDownSampler`` lacks the SAM 3 ``interpol_size``=1152
-# pre-interpolation and uses a different channel progression). Stripped: the timm ``DropPath``
-# import (reuse the Apache ``sam.modeling.utils.DropPath``; inert at inference, drop_path=0) and
-# the multiplex knobs are left at their per-object defaults. ``LayerNorm2d`` / ``get_clones`` are
-# reused from the shared Apache ``sam.modeling.utils``.
+# memory ENCODER. ``SimpleMaskDownSampler`` genuinely diverges from the shared (SAM 2, Apache)
+# ``memory/encoder.py`` ``MaskDownSampler`` (adds the SAM 3 ``interpol_size``=1152
+# pre-interpolation and a different channel progression / multiplex knobs) and is defined here.
+# ``SimpleFuser`` / ``SimpleMaskEncoder`` had implementations byte-identical to the shared Apache
+# ``Fuser`` / ``MemoryEncoder``, so they are re-exported (aliased) from ``memory/encoder.py``
+# instead of re-defined. ``CXBlock`` is kept local: its module is identical to the shared
+# ``CXBlock`` but the docstring/comment text differs. Stripped: the timm ``DropPath`` import
+# (reuse the Apache ``sam.modeling.utils.DropPath``; inert at inference, drop_path=0).
+# ``LayerNorm2d`` is reused from the shared Apache ``sam.modeling.utils``.
 """SAM 3 tracker memory encoder (mask + pixel-feature -> spatial memory)."""
 
 import math
-from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from sam.modeling.utils import DropPath, get_clones, LayerNorm2d
+from sam.modeling.memory.encoder import (
+    Fuser as SimpleFuser,
+    MemoryEncoder as SimpleMaskEncoder,
+)
+from sam.modeling.utils import DropPath, LayerNorm2d
+
+# ``SimpleFuser`` / ``SimpleMaskEncoder`` are re-exported from ``memory/encoder.py`` (identical
+# implementations); listed in ``__all__`` so callers keep importing them from this module (e.g.
+# ``sam.build_sam``).
+__all__ = ["SimpleMaskDownSampler", "SimpleMaskEncoder", "SimpleFuser", "CXBlock"]
 
 
 class SimpleMaskDownSampler(nn.Module):
@@ -126,67 +136,3 @@ class CXBlock(nn.Module):
 
         x = input + self.drop_path(x)
         return x
-
-
-class SimpleFuser(nn.Module):
-    def __init__(self, layer, num_layers, dim=None, input_projection=False):
-        super().__init__()
-        self.proj = nn.Identity()
-        self.layers = get_clones(layer, num_layers)
-
-        if input_projection:
-            assert dim is not None
-            self.proj = nn.Conv2d(dim, dim, kernel_size=1)
-
-    def forward(self, x):
-        # normally x: (N, C, H, W)
-        x = self.proj(x)
-        for layer in self.layers:
-            x = layer(x)
-        return x
-
-
-class SimpleMaskEncoder(nn.Module):
-    def __init__(
-        self,
-        out_dim,
-        mask_downsampler,
-        fuser,
-        position_encoding,
-        in_dim=256,  # in_dim of pix_feats
-    ):
-        super().__init__()
-
-        self.mask_downsampler = mask_downsampler
-
-        self.pix_feat_proj = nn.Conv2d(in_dim, in_dim, kernel_size=1)
-        self.fuser = fuser
-        self.position_encoding = position_encoding
-        self.out_proj = nn.Identity()
-        if out_dim != in_dim:
-            self.out_proj = nn.Conv2d(in_dim, out_dim, kernel_size=1)
-
-    def forward(
-        self,
-        pix_feat: torch.Tensor,
-        masks: torch.Tensor,
-        skip_mask_sigmoid: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        ## Process masks
-        # sigmoid, so that less domain shift from gt masks which are bool
-        if not skip_mask_sigmoid:
-            masks = F.sigmoid(masks)
-        masks = self.mask_downsampler(masks)
-
-        ## Fuse pix_feats and downsampled masks
-        # in case the visual features are on CPU, cast them to CUDA
-        pix_feat = pix_feat.to(masks.device)
-
-        x = self.pix_feat_proj(pix_feat)
-        x = x + masks
-        x = self.fuser(x)
-        x = self.out_proj(x)
-
-        pos = self.position_encoding(x).to(x.dtype)
-
-        return {"vision_features": x, "vision_pos_enc": [pos]}

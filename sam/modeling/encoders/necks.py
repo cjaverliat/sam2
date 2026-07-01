@@ -112,24 +112,10 @@ class Sam3DualViTDetNeck(nn.Module):
         Optional[List[torch.Tensor]],
         Optional[List[torch.Tensor]],
     ]:
-        xs = self.trunk(tensor_list)
-        sam3_out, sam3_pos = [], []
-        sam2_out, sam2_pos = None, None
-        if self.sam2_convs is not None:
-            sam2_out, sam2_pos = [], []
-        x = xs[-1]  # simpleFPN
-        for i in range(len(self.convs)):
-            sam3_x_out = self.convs[i](x)
-            sam3_pos_out = self.position_encoding(sam3_x_out).to(sam3_x_out.dtype)
-            sam3_out.append(sam3_x_out)
-            sam3_pos.append(sam3_pos_out)
-
-            if self.sam2_convs is not None:
-                sam2_x_out = self.sam2_convs[i](x)
-                sam2_pos_out = self.position_encoding(sam2_x_out).to(sam2_x_out.dtype)
-                sam2_out.append(sam2_x_out)
-                sam2_pos.append(sam2_pos_out)
-        return sam3_out, sam3_pos, sam2_out, sam2_pos
+        # ``forward_all`` is a superset: its interactive branch is a no-op (stays ``None``)
+        # unless the neck was built with ``add_interactive_neck``, so the base (detection +
+        # optional SAM 2) 4-tuple is exactly ``forward_all(...)[:4]``.
+        return self.forward_all(tensor_list)[:4]
 
     def forward_all(self, tensor_list: List[torch.Tensor]):
         """Tri-neck forward: ONE trunk pass -> ``(sam3_out, sam3_pos, sam2_out, sam2_pos,

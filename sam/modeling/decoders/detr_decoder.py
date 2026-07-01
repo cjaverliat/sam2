@@ -23,7 +23,6 @@
 # vision/language backbones) loads with ``strict=True``.
 """SAM 3 DETR detector (base, per-object): fusion encoder + set decoder + presence."""
 
-import copy
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -32,6 +31,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+
+from sam.modeling.utils import get_activation_fn, get_clones
 
 
 # =====================================================================================
@@ -42,20 +43,6 @@ def inverse_sigmoid(x, eps=1e-3):
     x1 = x.clamp(min=eps)
     x2 = (1 - x).clamp(min=eps)
     return torch.log(x1 / x2)
-
-
-def get_clones(module, N):
-    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
-
-
-def get_activation_fn(activation):
-    if activation == "relu":
-        return F.relu
-    if activation == "gelu":
-        return F.gelu
-    if activation == "glu":
-        return F.glu
-    raise RuntimeError(f"activation should be relu/gelu, not {activation}.")
 
 
 def get_valid_ratio(mask):

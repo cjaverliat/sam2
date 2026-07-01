@@ -835,23 +835,3 @@ class Sam3MultiplexTracker(Sam3Tracker):
             current_out["image_pos_enc"] = propagation_vision_pos_embeds[-1]
 
         return current_out
-
-    # --- inherited alias overrides (data-space seams from Sam3Tracker) ---------------------
-    # The base per-object aliases (encode_memory / condition_on_memories / decode) require the
-    # standard per-object signature and would raise an opaque TypeError here because the multiplex
-    # overrides require an additional ``multiplex_state`` kwarg.  Override all three to give a
-    # clear diagnostic; callers should use track_step() directly.
-    def encode_memory(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Sam3MultiplexTracker: use track_step(); the data-space aliases require multiplex_state"
-        )
-
-    def condition_on_memories(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Sam3MultiplexTracker: use track_step(); the data-space aliases require multiplex_state"
-        )
-
-    def decode(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Sam3MultiplexTracker: use track_step(); the data-space aliases require multiplex_state"
-        )

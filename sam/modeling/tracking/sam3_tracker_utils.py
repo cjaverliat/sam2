@@ -64,7 +64,6 @@ def fill_holes_in_mask_scores(
     fill_holes=True,
     remove_sprinkles=True,
     fill_hole_area=None,
-    sprinkle_removal_area=None,
 ):
     """Fill small holes / remove small sprinkles in mask score maps (areas under ``max_area``).
     A no-op when ``max_area <= 0`` (the tracker's ``fill_hole_area=0`` default)."""

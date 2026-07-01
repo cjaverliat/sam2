@@ -2,10 +2,10 @@
 # Vendored from facebookresearch/sam3 @ 5dd401d (sam3/model/sam3_tracker_base.py): the
 # per-object SAM 2-lineage tracker network -- memory-conditioned RoPE attention + SAM-style
 # prompt encoder / mask decoder + memory encoder. Kept under a DISTINCT name from the shared
-# (SAM 2, Apache) ``tracking/tracker_base.py::SamTrackerBase``. The data-space block methods the
-# Sam3Predictor (Task 9) composes are exposed as thin aliases (``encode_memory`` /
-# ``condition_on_memories`` / ``decode``); base SAM 3 is per-object so there is no multiplex
-# mux/demux here. Stripped: training (loss/teacher-forcing/dropout/DDP), ``torch.compile`` /
+# (SAM 2, Apache) ``tracking/tracker_base.py::SamTrackerBase``. The Sam3Predictor (Task 9)
+# composes the underscore block methods directly (``_encode_new_memory`` /
+# ``_prepare_memory_conditioned_features`` / ``_forward_sam_heads``); base SAM 3 is per-object so
+# there is no multiplex mux/demux here. Stripped: training (loss/teacher-forcing/dropout/DDP), ``torch.compile`` /
 # ``_maybe_clone`` / activation checkpointing, CPU-offload + past-output trimming, the
 # train-data ``forward`` / ``forward_tracking`` collator path, and the on-the-fly per-frame
 # backbone (the predictor / parity test feed pre-computed features). flash-attn-3 -> torch SDPA
@@ -171,7 +171,6 @@ class Sam3Tracker(torch.nn.Module):
             **(self.sam_mask_decoder_extra_args or {}),
         )
         # a linear projection on SAM output tokens to turn them into object pointers
-        self.obj_ptr_proj = torch.nn.Linear(self.hidden_dim, self.hidden_dim)
         self.obj_ptr_proj = MLP(self.hidden_dim, self.hidden_dim, self.hidden_dim, 3)
         # a linear projection on the temporal positional encoding in object pointers
         self.obj_ptr_tpos_proj = torch.nn.Linear(self.hidden_dim, self.mem_dim)
@@ -708,63 +707,3 @@ class Sam3Tracker(torch.nn.Module):
         keep = max_obj_inds == batch_obj_inds
         pred_masks = torch.where(keep, pred_masks, torch.clamp(pred_masks, max=-10.0))
         return pred_masks
-
-    # --- data-space block methods (composed by the Sam3Predictor in Task 9) ----------------
-    def encode_memory(
-        self,
-        current_vision_feats,
-        feat_sizes,
-        pred_masks_high_res,
-        object_score_logits,
-        is_mask_from_pts,
-        image=None,
-    ):
-        """Encode (pix_feat, mask) -> (maskmem_features, maskmem_pos_enc)."""
-        return self._encode_new_memory(
-            image=image,
-            current_vision_feats=current_vision_feats,
-            feat_sizes=feat_sizes,
-            pred_masks_high_res=pred_masks_high_res,
-            object_score_logits=object_score_logits,
-            is_mask_from_pts=is_mask_from_pts,
-        )
-
-    def condition_on_memories(
-        self,
-        frame_idx,
-        is_init_cond_frame,
-        current_vision_feats,
-        current_vision_pos_embeds,
-        feat_sizes,
-        output_dict,
-        num_frames,
-        track_in_reverse=False,
-    ):
-        """Fuse the current frame features with the per-object memory bank."""
-        return self._prepare_memory_conditioned_features(
-            frame_idx=frame_idx,
-            is_init_cond_frame=is_init_cond_frame,
-            current_vision_feats=current_vision_feats,
-            current_vision_pos_embeds=current_vision_pos_embeds,
-            feat_sizes=feat_sizes,
-            output_dict=output_dict,
-            num_frames=num_frames,
-            track_in_reverse=track_in_reverse,
-        )
-
-    def decode(
-        self,
-        backbone_features,
-        point_inputs=None,
-        mask_inputs=None,
-        high_res_features=None,
-        multimask_output=False,
-    ):
-        """Run the SAM prompt encoder + mask decoder on memory-conditioned features."""
-        return self._forward_sam_heads(
-            backbone_features=backbone_features,
-            point_inputs=point_inputs,
-            mask_inputs=mask_inputs,
-            high_res_features=high_res_features,
-            multimask_output=multimask_output,
-        )
