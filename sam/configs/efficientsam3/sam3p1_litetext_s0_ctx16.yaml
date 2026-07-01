@@ -5,67 +5,22 @@
 # Clone of configs/sam3/sam3.1.yaml with ONLY the text_encoder node swapped from
 # Sam3TextEncoder (PE text tower, 295 keys) to MobileClipTextEncoder (MobileCLIP-S0,
 # ctx16, 111 keys).  ALL other nodes are verbatim:
-#   * PE vision encoder (scale_factors=[4,2,1] + scalp=0 + add_sam2_neck=false —
-#     present-but-unused by build_sam3_multiplex_video_predictor, which builds the
-#     tri-neck vision encoder + 457 multiplex tracker directly in Python; kept only to
-#     mirror the structure of sam3.1.yaml)
 #   * geometry encoder (trained, kept — 76 keys inside the 397-key detector head)
 #   * DETR detector body incl. supervise_joint_box_scores=true (SAM 3.1 joint box score)
 #
-# Consumed by build_sam3_multiplex_video_predictor (reads model.text_encoder +
-# model.detector; builds the tri-neck vision encoder + 457 multiplex tracker in Python —
-# so the vision_encoder node here is present-but-unused, kept only to mirror sam3.1.yaml).
+# Consumed by build_sam3_multiplex_video_predictor, which reads ONLY model.text_encoder +
+# model.detector and builds the tri-neck vision encoder + 457 multiplex tracker directly in
+# Python. There is therefore no vision_encoder node and no predictor `_target_` here (both
+# would be present-but-unused).
 # Strict load = 1439 keys: vision 474 + MobileCLIP 111 + detector head 397 + tracker 457
 # (0 missing / 0 unexpected).
 # Checkpoint: Simon7108528/EfficientSAM3 (public, no token)
 #   sam3p1_litetext/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt
 
 model:
-  _target_: sam.models.sam3_predictor.Sam3MultiplexPredictor
-
-  # --- SAM 3.1 PE vision encoder (ViTDet trunk + DETECTION Simple-FPN neck, 3 levels) ---
-  # scale_factors=[4,2,1] (no 0.5 level) + scalp=0 -> the [288,144,72] pyramid the detector
-  # consumes (add_sam2_neck=false: the image detector needs only the detection neck).
-  # NOTE: present-but-unused by the multiplex video builder (tri-neck is built in Python).
-  vision_encoder:
-    _target_: sam.modeling.encoders.perception_encoder.Sam3VisionEncoder
-    scalp: 0
-    vision_backbone:
-      _target_: sam.modeling.encoders.necks.Sam3DualViTDetNeck
-      d_model: 256
-      scale_factors: [4.0, 2.0, 1.0]
-      add_sam2_neck: false
-      trunk:
-        _target_: sam.modeling.encoders.pe_vitdet.ViT
-        img_size: 1008
-        pretrain_img_size: 336
-        patch_size: 14
-        embed_dim: 1024
-        depth: 32
-        num_heads: 16
-        mlp_ratio: 4.625
-        norm_layer: LayerNorm
-        drop_path_rate: 0.1
-        qkv_bias: true
-        use_abs_pos: true
-        tile_abs_pos: true
-        global_att_blocks: [7, 15, 23, 31]
-        use_rope: true
-        use_interp_rope: true
-        window_size: 24
-        pretrain_use_cls_token: true
-        retain_cls_token: false
-        ln_pre: true
-        ln_post: false
-        return_interm_layers: false
-        bias_patch_embed: false
-      position_encoding:
-        _target_: sam.modeling.position_encoding.PositionEmbeddingSine
-        num_pos_feats: 256
-        normalize: true
-        scale: null
-        temperature: 10000
-        warmup_cache: false
+  # NOTE: no predictor `_target_` and no `vision_encoder` node — build_sam3_multiplex_video_predictor
+  # reads ONLY model.text_encoder + model.detector and builds the tri-neck vision encoder +
+  # 457-key multiplex tracker in Python.
 
   # --- text tower (MobileCLIP-S0 transformer + d_model projector) ----------------------
   text_encoder:
