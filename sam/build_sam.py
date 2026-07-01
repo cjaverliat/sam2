@@ -349,6 +349,98 @@ def build_sam2_predictor_hf(model_id, **kwargs):
 # sam3/model_builder.py::_create_vit_backbone / _create_vit_neck (the SAM 3 image model).
 
 
+# SPDX-License-Identifier: LicenseRef-SAM
+# --- SAM 3 / EfficientSAM3 shared build helpers -------------------------------
+# Every SAM 3-family builder below has the same shape: hydra-compose a config, instantiate
+# the model, strict-load a remapped checkpoint subtree, then move/eval. These helpers factor
+# out that boilerplate so each builder/loader carries only what differs (its config, its
+# key-remap rule, its module wiring). The PE-ViT trunk + sinusoidal position encoding are
+# identical across every PE-ViT vision encoder, so they get one constructor each.
+
+
+def _load_and_unwrap(ckpt_path):
+    """Load a checkpoint and unwrap the optional ``{'model': state_dict}`` envelope."""
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    if "model" in ckpt and isinstance(ckpt["model"], dict):
+        ckpt = ckpt["model"]
+    return ckpt
+
+
+def _remap_strict_load(model, ckpt_path, remap):
+    """Strict-load ``ckpt_path`` into ``model``, remapping keys via ``remap``.
+
+    ``remap(key) -> new_key`` returns the destination key for a checkpoint entry, or ``None``
+    to drop it. No-op when ``ckpt_path`` is ``None``. The load is ``strict=True`` so any drift
+    (missing / unexpected keys) raises a hard ``RuntimeError`` rather than a silent partial load.
+    """
+    if ckpt_path is None:
+        return
+    sub = {}
+    for k, v in _load_and_unwrap(ckpt_path).items():
+        nk = remap(k)
+        if nk is not None:
+            sub[nk] = v
+    model.load_state_dict(sub, strict=True)
+
+
+def _compose(config_file, hydra_overrides_extra=()):
+    """Hydra-compose ``config_file`` (with extra overrides) and resolve interpolations."""
+    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
+    OmegaConf.resolve(cfg)
+    return cfg
+
+
+def _finalize(model, device, mode):
+    """Move ``model`` to ``device``; put it in eval mode when ``mode == 'eval'``."""
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+def _compose_instantiate_load(
+    config_file, ckpt_path, loader, device, mode, hydra_overrides_extra
+):
+    """compose -> ``instantiate(cfg.model)`` -> ``loader(model, ckpt_path)`` -> finalize.
+
+    The shared body of the SAM 3-family *image* builders (whole-model configs).
+    """
+    model = instantiate(_compose(config_file, hydra_overrides_extra).model, _recursive_=True)
+    loader(model, ckpt_path)
+    return _finalize(model, device, mode)
+
+
+def _build_from_hf(repo_id, config_file, ckpt_name, builder, **kwargs):
+    """Download ``ckpt_name`` from HF ``repo_id`` and delegate to ``builder`` (config is ours)."""
+    from huggingface_hub import hf_hub_download
+
+    ckpt_path = hf_hub_download(repo_id=repo_id, filename=ckpt_name)
+    return builder(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+
+
+def _pe_sine():
+    """The SAM 3-family sinusoidal position encoding (identical across every encoder/neck)."""
+    from sam.modeling.position_encoding import PositionEmbeddingSine
+
+    return PositionEmbeddingSine(
+        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
+    )
+
+
+def _build_pe_vit_trunk():
+    """The shared SAM 3 PE-ViT trunk (identical config in every PE-ViT vision encoder)."""
+    from sam.modeling.encoders.pe_vitdet import ViT
+
+    return ViT(
+        img_size=1008, pretrain_img_size=336, patch_size=14, embed_dim=1024, depth=32,
+        num_heads=16, mlp_ratio=4.625, norm_layer="LayerNorm", drop_path_rate=0.1,
+        qkv_bias=True, use_abs_pos=True, tile_abs_pos=True, global_att_blocks=(7, 15, 23, 31),
+        use_rope=True, use_interp_rope=True, window_size=24, pretrain_use_cls_token=True,
+        retain_cls_token=False, ln_pre=True, ln_post=False, return_interm_layers=False,
+        bias_patch_embed=False,
+    )
+
+
 def build_sam3_vision_encoder(ckpt_path=None, device="cuda", add_sam2_neck=False):
     """Build the SAM 3 Perception-Encoder vision encoder and (optionally) load weights.
 
@@ -368,67 +460,29 @@ def build_sam3_vision_encoder(ckpt_path=None, device="cuda", add_sam2_neck=False
         (B, 3, 1008, 1008) tensor and returns ``(features, pos)`` pyramids.
     """
     from sam.modeling.encoders.necks import Sam3DualViTDetNeck
-    from sam.modeling.encoders.pe_vitdet import ViT
     from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
-    from sam.modeling.position_encoding import PositionEmbeddingSine
 
-    trunk = ViT(
-        img_size=1008,
-        pretrain_img_size=336,
-        patch_size=14,
-        embed_dim=1024,
-        depth=32,
-        num_heads=16,
-        mlp_ratio=4.625,
-        norm_layer="LayerNorm",
-        drop_path_rate=0.1,
-        qkv_bias=True,
-        use_abs_pos=True,
-        tile_abs_pos=True,
-        global_att_blocks=(7, 15, 23, 31),
-        use_rope=True,
-        use_interp_rope=True,
-        window_size=24,
-        pretrain_use_cls_token=True,
-        retain_cls_token=False,
-        ln_pre=True,
-        ln_post=False,
-        return_interm_layers=False,
-        bias_patch_embed=False,
-    )
-    position_encoding = PositionEmbeddingSine(
-        num_pos_feats=256,
-        normalize=True,
-        scale=None,
-        temperature=10000,
-        warmup_cache=False,
-    )
     neck = Sam3DualViTDetNeck(
-        trunk=trunk,
-        position_encoding=position_encoding,
+        trunk=_build_pe_vit_trunk(),
+        position_encoding=_pe_sine(),
         d_model=256,
         scale_factors=[4.0, 2.0, 1.0, 0.5],
         add_sam2_neck=add_sam2_neck,
     )
     encoder = Sam3VisionEncoder(vision_backbone=neck, scalp=1)
 
-    if ckpt_path is not None:
-        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        if "model" in ckpt and isinstance(ckpt["model"], dict):
-            ckpt = ckpt["model"]
-        sub_prefix = "detector.backbone.vision_backbone."
-        skip_prefix = "detector.backbone.vision_backbone.sam2_convs."
-        sub = {
-            k[len("detector.backbone."):]: v
-            for k, v in ckpt.items()
-            if k.startswith(sub_prefix)
-            and (add_sam2_neck or not k.startswith(skip_prefix))
-        }
-        encoder.load_state_dict(sub, strict=True)
+    vb = "detector.backbone.vision_backbone."
+    skip = "detector.backbone.vision_backbone.sam2_convs."
 
-    encoder = encoder.to(device)
-    encoder.eval()
-    return encoder
+    def remap(k):
+        # trunk + detection/interactive convs -> "vision_backbone.*"; sam2_convs only when the
+        # SAM 2 propagation neck is built (tracker path).
+        if not k.startswith(vb) or (not add_sam2_neck and k.startswith(skip)):
+            return None
+        return k[len("detector.backbone."):]
+
+    _remap_strict_load(encoder, ckpt_path, remap)
+    return _finalize(encoder, device, "eval")
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
@@ -757,14 +811,10 @@ def _build_sam3_tracker_module():
 
 def _load_sam3_tracker_subtree(tracker, ckpt_path):
     """Strict-load the ``tracker.*`` subtree (309 keys, prefix stripped) into a ``Sam3Tracker``."""
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
     prefix = "tracker."
-    sub = {k[len(prefix):]: v for k, v in ckpt.items() if k.startswith(prefix)}
-    tracker.load_state_dict(sub, strict=True)
+    _remap_strict_load(
+        tracker, ckpt_path, lambda k: k[len(prefix):] if k.startswith(prefix) else None
+    )
 
 
 def build_sam3_tracker(ckpt_path=None, device="cuda"):
@@ -818,22 +868,19 @@ def _load_sam3_image_checkpoint(model, ckpt_path):
     MUST be built with ``add_sam2_neck=True`` (set in configs/sam3/sam3.yaml) so the
     ``sam2_convs`` load and the 1156-key load is STRICT (0 missing / 0 unexpected).
     """
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
-    vb_prefix = "detector.backbone.vision_backbone."
-    lb_prefix = "detector.backbone.language_backbone."
-    sub = {}
-    for k, v in ckpt.items():
-        if k.startswith(vb_prefix):
-            sub["vision_encoder.vision_backbone." + k[len(vb_prefix):]] = v
-        elif k.startswith(lb_prefix):
-            sub["text_encoder." + k[len(lb_prefix):]] = v
-        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
-            sub[k] = v  # detector head keys (transformer/geometry/seg/scoring) map 1:1
-    model.load_state_dict(sub, strict=True)
+    vb = "detector.backbone.vision_backbone."
+    lb = "detector.backbone.language_backbone."
+
+    def remap(k):
+        if k.startswith(vb):
+            return "vision_encoder.vision_backbone." + k[len(vb):]
+        if k.startswith(lb):
+            return "text_encoder." + k[len(lb):]
+        if k.startswith("detector.") and not k.startswith("detector.backbone."):
+            return k  # detector head keys (transformer/geometry/seg/scoring) map 1:1
+        return None  # tracker.* dropped -- the image predictor has no tracker
+
+    _remap_strict_load(model, ckpt_path, remap)
 
 
 def build_sam3(
@@ -852,15 +899,9 @@ def build_sam3(
     local ``sam3.pt``). Returns the predictor on ``device``, in eval mode when
     ``mode == "eval"``.
     """
-    hydra_overrides = list(hydra_overrides_extra)
-    cfg = compose(config_name=config_file, overrides=hydra_overrides)
-    OmegaConf.resolve(cfg)
-    model = instantiate(cfg.model, _recursive_=True)
-    _load_sam3_image_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
+    return _compose_instantiate_load(
+        config_file, ckpt_path, _load_sam3_image_checkpoint, device, mode, hydra_overrides_extra
+    )
 
 
 def build_sam3_hf(model_id, **kwargs):
@@ -870,13 +911,10 @@ def build_sam3_hf(model_id, **kwargs):
     architecture); only the gated weights (``sam3.pt``) are pulled from HF. Mirrors
     :func:`build_sam2_hf`.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_SAM3_MODEL_ID_TO_CONFIG.get(
         model_id, ("configs/sam3/sam3.yaml", "sam3.pt")
     )
-    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
-    return build_sam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+    return _build_from_hf(model_id, config_file, ckpt_name, build_sam3, **kwargs)
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
@@ -926,22 +964,17 @@ def _load_efficientsam3_image_checkpoint(model, ckpt_path):
     with ``strict=True`` (matching every sibling loader) so any drift raises a hard ``RuntimeError``
     rather than a silent partial load -- robust even under ``python -O`` (assert-stripped).
     """
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
-    vb_prefix = "backbone.vision_backbone."
-    lb_prefix = "backbone.language_backbone."
-    remapped = {}
-    for k, v in ckpt.items():
-        if k.startswith(vb_prefix):
-            remapped["vision_encoder.vision_backbone." + k[len(vb_prefix):]] = v
-        elif k.startswith(lb_prefix):
-            remapped["text_encoder." + k[len(lb_prefix):]] = v
-        else:
-            remapped["detector." + k] = v  # transformer / dot_prod_scoring / segmentation_head
-    model.load_state_dict(remapped, strict=True)
+    vb = "backbone.vision_backbone."
+    lb = "backbone.language_backbone."
+
+    def remap(k):
+        if k.startswith(vb):
+            return "vision_encoder.vision_backbone." + k[len(vb):]
+        if k.startswith(lb):
+            return "text_encoder." + k[len(lb):]
+        return "detector." + k  # transformer / dot_prod_scoring / segmentation_head
+
+    _remap_strict_load(model, ckpt_path, remap)
 
 
 def build_efficientsam3(
@@ -960,14 +993,14 @@ def build_efficientsam3(
     ``_target_``s -> strict-load the 1107-key EfficientSAM3 checkpoint (detector-root 3-group
     remap). Returns the predictor on ``device``, in eval mode when ``mode == "eval"``.
     """
-    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
-    OmegaConf.resolve(cfg)
-    model = instantiate(cfg.model, _recursive_=True)
-    _load_efficientsam3_image_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
+    return _compose_instantiate_load(
+        config_file,
+        ckpt_path,
+        _load_efficientsam3_image_checkpoint,
+        device,
+        mode,
+        hydra_overrides_extra,
+    )
 
 
 def build_efficientsam3_hf(model_id="repvit", **kwargs):
@@ -977,11 +1010,10 @@ def build_efficientsam3_hf(model_id="repvit", **kwargs):
     (``Simon7108528/EfficientSAM3``). ``model_id`` selects the variant (default ``"repvit"`` ->
     ``efficientsam3_ft/efficientsam3_repvit.pt``). Mirrors :func:`build_sam3_hf`.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_EFFICIENTSAM3_MODEL_ID_TO_FILES[model_id]
-    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
-    return build_efficientsam3(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+    return _build_from_hf(
+        "Simon7108528/EfficientSAM3", config_file, ckpt_name, build_efficientsam3, **kwargs
+    )
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
@@ -1024,11 +1056,14 @@ def build_efficientsam3_litetext_video_predictor_hf(model_id="litetext-s0-ctx16"
         A ``Sam3VideoPredictor`` in eval mode with MobileCLIP-S0 text encoder,
         base Sam3Tracker, and trained geometry encoder.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_EFFICIENTSAM3_LITETEXT_MODEL_ID_TO_FILES[model_id]
-    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
-    return build_sam3_video_predictor(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+    return _build_from_hf(
+        "Simon7108528/EfficientSAM3",
+        config_file,
+        ckpt_name,
+        build_sam3_video_predictor,
+        **kwargs,
+    )
 
 
 # --- SAM 3 streaming video concept predictor (Phase 1, Task 9) -----------------
@@ -1046,24 +1081,21 @@ def _load_sam3_video_checkpoint(model, ckpt_path):
     ``text_encoder.*`` 295; ``detector.*`` head 397) with the tracker subtree
     (``tracker.*`` -> ``tracker.*`` 309) = **1465 keys, strict (0 missing / 0 unexpected)**.
     """
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
-    vb_prefix = "detector.backbone.vision_backbone."
-    lb_prefix = "detector.backbone.language_backbone."
-    sub = {}
-    for k, v in ckpt.items():
-        if k.startswith(vb_prefix):
-            sub["vision_encoder.vision_backbone." + k[len(vb_prefix):]] = v
-        elif k.startswith(lb_prefix):
-            sub["text_encoder." + k[len(lb_prefix):]] = v
-        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
-            sub[k] = v  # detector head keys map 1:1
-        elif k.startswith("tracker."):
-            sub[k] = v  # tracker subtree maps 1:1 (model.tracker.*)
-    model.load_state_dict(sub, strict=True)
+    vb = "detector.backbone.vision_backbone."
+    lb = "detector.backbone.language_backbone."
+
+    def remap(k):
+        if k.startswith(vb):
+            return "vision_encoder.vision_backbone." + k[len(vb):]
+        if k.startswith(lb):
+            return "text_encoder." + k[len(lb):]
+        if k.startswith("detector.") and not k.startswith("detector.backbone."):
+            return k  # detector head keys map 1:1
+        if k.startswith("tracker."):
+            return k  # tracker subtree maps 1:1 (model.tracker.*)
+        return None
+
+    _remap_strict_load(model, ckpt_path, remap)
 
 
 def build_sam3_video_predictor(
@@ -1085,27 +1117,20 @@ def build_sam3_video_predictor(
     """
     from sam.models.sam3_predictor import Sam3VideoPredictor
 
-    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
-    OmegaConf.resolve(cfg)
-    vision_encoder = instantiate(cfg.model.vision_encoder, _recursive_=True)
-    text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
-    detector = instantiate(cfg.model.detector, _recursive_=True)
+    cfg = _compose(config_file, hydra_overrides_extra)
     tracker = _build_sam3_tracker_module()
     # The bank performs temporal memory selection; the tracker conditions on exactly the frames
     # the bank returns (so it must NOT additionally filter via its SAM2Long heuristic).
     tracker.use_memory_selection = False
 
     model = Sam3VideoPredictor(
-        vision_encoder=vision_encoder,
-        text_encoder=text_encoder,
-        detector=detector,
+        vision_encoder=instantiate(cfg.model.vision_encoder, _recursive_=True),
+        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
+        detector=instantiate(cfg.model.detector, _recursive_=True),
         tracker=tracker,
     )
     _load_sam3_video_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
+    return _finalize(model, device, mode)
 
 
 def build_sam3_video_predictor_hf(model_id, **kwargs):
@@ -1114,13 +1139,10 @@ def build_sam3_video_predictor_hf(model_id, **kwargs):
     The hydra config is OURS; only the gated ``sam3.pt`` is pulled from HF. Mirrors
     :func:`build_sam2_video_predictor_hf`.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_SAM3_MODEL_ID_TO_CONFIG.get(
         model_id, ("configs/sam3/sam3.yaml", "sam3.pt")
     )
-    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
-    return build_sam3_video_predictor(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+    return _build_from_hf(model_id, config_file, ckpt_name, build_sam3_video_predictor, **kwargs)
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
@@ -1151,49 +1173,30 @@ def build_sam3_multiplex_vision_encoder(ckpt_path=None, device="cuda"):
     The detector neck itself is unused by the tracker.
     """
     from sam.modeling.encoders.necks import Sam3DualViTDetNeck
-    from sam.modeling.encoders.pe_vitdet import ViT
     from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
-    from sam.modeling.position_encoding import PositionEmbeddingSine
 
-    trunk = ViT(
-        img_size=1008, pretrain_img_size=336, patch_size=14, embed_dim=1024, depth=32,
-        num_heads=16, mlp_ratio=4.625, norm_layer="LayerNorm", drop_path_rate=0.1,
-        qkv_bias=True, use_abs_pos=True, tile_abs_pos=True, global_att_blocks=(7, 15, 23, 31),
-        use_rope=True, use_interp_rope=True, window_size=24, pretrain_use_cls_token=True,
-        retain_cls_token=False, ln_pre=True, ln_post=False, return_interm_layers=False,
-        bias_patch_embed=False,
-    )
-    position_encoding = PositionEmbeddingSine(
-        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
-    )
     neck = Sam3DualViTDetNeck(
-        trunk=trunk, position_encoding=position_encoding, d_model=256,
+        trunk=_build_pe_vit_trunk(), position_encoding=_pe_sine(), d_model=256,
         scale_factors=[4.0, 2.0, 1.0], add_sam2_neck=True,
     )
     encoder = Sam3VisionEncoder(vision_backbone=neck, scalp=0)
 
-    if ckpt_path is not None:
-        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        if "model" in ckpt and isinstance(ckpt["model"], dict):
-            ckpt = ckpt["model"]
-        vb = "detector.backbone.vision_backbone."
-        sub = {}
-        for k, v in ckpt.items():
-            if not k.startswith(vb):
-                continue
-            rel = k[len(vb):]
-            if rel.startswith("convs."):
-                continue  # detector neck unused by the tracker
-            if rel.startswith("interactive_convs."):
-                rel = "convs." + rel[len("interactive_convs."):]  # SAM-3 slot = interactive
-            elif rel.startswith("propagation_convs."):
-                rel = "sam2_convs." + rel[len("propagation_convs."):]
-            sub["vision_backbone." + rel] = v
-        encoder.load_state_dict(sub, strict=True)
+    vb = "detector.backbone.vision_backbone."
 
-    encoder = encoder.to(device)
-    encoder.eval()
-    return encoder
+    def remap(k):
+        if not k.startswith(vb):
+            return None
+        rel = k[len(vb):]
+        if rel.startswith("convs."):
+            return None  # detector neck unused by the tracker
+        if rel.startswith("interactive_convs."):
+            rel = "convs." + rel[len("interactive_convs."):]  # SAM-3 slot = interactive
+        elif rel.startswith("propagation_convs."):
+            rel = "sam2_convs." + rel[len("propagation_convs."):]
+        return "vision_backbone." + rel
+
+    _remap_strict_load(encoder, ckpt_path, remap)
+    return _finalize(encoder, device, "eval")
 
 
 def _build_sam3_multiplex_tracker_module(multiplex_count=16):
@@ -1211,15 +1214,12 @@ def _build_sam3_multiplex_tracker_module(multiplex_count=16):
         SimpleMaskEncoder,
     )
     from sam.modeling.multiplex import MultiplexController
-    from sam.modeling.position_encoding import PositionEmbeddingSine
     from sam.modeling.tracking.sam3_multiplex_tracker import Sam3MultiplexTracker
 
     d_model = 256
 
     # Multiplex memory encoder (per-bucket: K mask channels + K conditioning channels -> 256-ch).
-    position_encoding = PositionEmbeddingSine(
-        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
-    )
+    position_encoding = _pe_sine()
     mask_downsampler = SimpleMaskDownSampler(
         kernel_size=3, stride=2, padding=1, interpol_size=[1152, 1152],
         multiplex_count=multiplex_count, starting_out_chan=4, input_channel_multiplier=2,
@@ -1279,14 +1279,10 @@ def _build_sam3_multiplex_tracker_module(multiplex_count=16):
 
 def _load_sam3_multiplex_tracker_subtree(tracker, ckpt_path):
     """Strict-load the ``tracker.model.*`` subtree (457 keys, prefix stripped) into the tracker."""
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
     prefix = "tracker.model."
-    sub = {k[len(prefix):]: v for k, v in ckpt.items() if k.startswith(prefix)}
-    tracker.load_state_dict(sub, strict=True)
+    _remap_strict_load(
+        tracker, ckpt_path, lambda k: k[len(prefix):] if k.startswith(prefix) else None
+    )
 
 
 def build_sam3_multiplex_tracker(ckpt_path=None, device="cuda"):
@@ -1338,25 +1334,22 @@ def _load_sam3_multiplex_image_checkpoint(model, ckpt_path):
     ``tracker.*`` (457) is ignored (the image predictor has no tracker). The load is STRICT
     over the predictor's 1130 params (0 missing / 0 unexpected).
     """
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
-    vb_prefix = "detector.backbone.vision_backbone."
-    lb_prefix = "detector.backbone.language_backbone."
-    sub = {}
-    for k, v in ckpt.items():
-        if k.startswith(vb_prefix):
-            rel = k[len(vb_prefix):]
+    vb = "detector.backbone.vision_backbone."
+    lb = "detector.backbone.language_backbone."
+
+    def remap(k):
+        if k.startswith(vb):
+            rel = k[len(vb):]
             if rel.startswith("interactive_convs.") or rel.startswith("propagation_convs."):
-                continue  # tracker-only necks (M1); the image detector uses detection `convs`
-            sub["vision_encoder.vision_backbone." + rel] = v
-        elif k.startswith(lb_prefix):
-            sub["text_encoder." + k[len(lb_prefix):]] = v
-        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
-            sub[k] = v  # detector head keys (transformer/geometry/seg/scoring) map 1:1
-    model.load_state_dict(sub, strict=True)
+                return None  # tracker-only necks (M1); the image detector uses detection `convs`
+            return "vision_encoder.vision_backbone." + rel
+        if k.startswith(lb):
+            return "text_encoder." + k[len(lb):]
+        if k.startswith("detector.") and not k.startswith("detector.backbone."):
+            return k  # detector head keys (transformer/geometry/seg/scoring) map 1:1
+        return None
+
+    _remap_strict_load(model, ckpt_path, remap)
 
 
 def build_sam3_multiplex(
@@ -1375,14 +1368,14 @@ def build_sam3_multiplex(
     subtree of ``ckpt_path`` (a local ``sam3.1_multiplex.pt``). Returns the predictor on
     ``device``, in eval mode when ``mode == "eval"``.
     """
-    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
-    OmegaConf.resolve(cfg)
-    model = instantiate(cfg.model, _recursive_=True)
-    _load_sam3_multiplex_image_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
+    return _compose_instantiate_load(
+        config_file,
+        ckpt_path,
+        _load_sam3_multiplex_image_checkpoint,
+        device,
+        mode,
+        hydra_overrides_extra,
+    )
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
@@ -1405,23 +1398,10 @@ def _build_sam3_multiplex_video_vision_encoder_module():
     each pyramid is the 3-level [288,144,72] the sam3.1 model uses.
     """
     from sam.modeling.encoders.necks import Sam3DualViTDetNeck
-    from sam.modeling.encoders.pe_vitdet import ViT
     from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
-    from sam.modeling.position_encoding import PositionEmbeddingSine
 
-    trunk = ViT(
-        img_size=1008, pretrain_img_size=336, patch_size=14, embed_dim=1024, depth=32,
-        num_heads=16, mlp_ratio=4.625, norm_layer="LayerNorm", drop_path_rate=0.1,
-        qkv_bias=True, use_abs_pos=True, tile_abs_pos=True, global_att_blocks=(7, 15, 23, 31),
-        use_rope=True, use_interp_rope=True, window_size=24, pretrain_use_cls_token=True,
-        retain_cls_token=False, ln_pre=True, ln_post=False, return_interm_layers=False,
-        bias_patch_embed=False,
-    )
-    position_encoding = PositionEmbeddingSine(
-        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
-    )
     neck = Sam3DualViTDetNeck(
-        trunk=trunk, position_encoding=position_encoding, d_model=256,
+        trunk=_build_pe_vit_trunk(), position_encoding=_pe_sine(), d_model=256,
         scale_factors=[4.0, 2.0, 1.0], add_sam2_neck=True, add_interactive_neck=True,
     )
     return Sam3VisionEncoder(vision_backbone=neck, scalp=0)
@@ -1440,28 +1420,25 @@ def _load_sam3_multiplex_video_checkpoint(model, ckpt_path):
 
     474 + 295 + 397 + 457 = **1623 keys, strict (0 missing / 0 unexpected)**.
     """
-    if ckpt_path is None:
-        return
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        ckpt = ckpt["model"]
-    vb_prefix = "detector.backbone.vision_backbone."
-    lb_prefix = "detector.backbone.language_backbone."
-    sub = {}
-    for k, v in ckpt.items():
-        if k.startswith(vb_prefix):
-            rel = k[len(vb_prefix):]
+    vb = "detector.backbone.vision_backbone."
+    lb = "detector.backbone.language_backbone."
+
+    def remap(k):
+        if k.startswith(vb):
+            rel = k[len(vb):]
             if rel.startswith("propagation_convs."):
                 rel = "sam2_convs." + rel[len("propagation_convs."):]
             # detection ``convs.*``, ``interactive_convs.*`` and ``trunk.*`` map 1:1
-            sub["vision_encoder.vision_backbone." + rel] = v
-        elif k.startswith(lb_prefix):
-            sub["text_encoder." + k[len(lb_prefix):]] = v
-        elif k.startswith("detector.") and not k.startswith("detector.backbone."):
-            sub[k] = v  # detector head keys (transformer/geometry/seg/scoring) map 1:1
-        elif k.startswith("tracker.model."):
-            sub["tracker." + k[len("tracker.model."):]] = v  # multiplex tracker (457)
-    model.load_state_dict(sub, strict=True)
+            return "vision_encoder.vision_backbone." + rel
+        if k.startswith(lb):
+            return "text_encoder." + k[len(lb):]
+        if k.startswith("detector.") and not k.startswith("detector.backbone."):
+            return k  # detector head keys (transformer/geometry/seg/scoring) map 1:1
+        if k.startswith("tracker.model."):
+            return "tracker." + k[len("tracker.model."):]  # multiplex tracker (457)
+        return None
+
+    _remap_strict_load(model, ckpt_path, remap)
 
 
 def build_sam3_multiplex_video_predictor(
@@ -1483,8 +1460,7 @@ def build_sam3_multiplex_video_predictor(
     """
     from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor
 
-    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
-    OmegaConf.resolve(cfg)
+    cfg = _compose(config_file, hydra_overrides_extra)
     text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
     detector = instantiate(cfg.model.detector, _recursive_=True)
     vision_encoder = _build_sam3_multiplex_video_vision_encoder_module()
@@ -1497,10 +1473,7 @@ def build_sam3_multiplex_video_predictor(
         tracker=tracker,
     )
     _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
+    return _finalize(model, device, mode)
 
 
 HF_SAM3P1_MODEL_ID_TO_CONFIG = {
@@ -1515,13 +1488,10 @@ def build_sam3_multiplex_hf(model_id, **kwargs):
     ``sam3.1_multiplex.pt`` is pulled from HF. Mirrors :func:`build_sam3_hf` for the SAM 3.1
     image path; the video counterpart is :func:`build_sam3_multiplex_video_predictor_hf`.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_SAM3P1_MODEL_ID_TO_CONFIG.get(
         model_id, ("configs/sam3/sam3.1.yaml", "sam3.1_multiplex.pt")
     )
-    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
-    return build_sam3_multiplex(config_file=config_file, ckpt_path=ckpt_path, **kwargs)
+    return _build_from_hf(model_id, config_file, ckpt_name, build_sam3_multiplex, **kwargs)
 
 
 def build_sam3_multiplex_video_predictor_hf(model_id, **kwargs):
@@ -1530,14 +1500,11 @@ def build_sam3_multiplex_video_predictor_hf(model_id, **kwargs):
     The hydra config is OURS (``configs/sam3/sam3.1.yaml``); only the gated
     ``sam3.1_multiplex.pt`` is pulled from HF. Mirrors :func:`build_sam3_video_predictor_hf`.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_SAM3P1_MODEL_ID_TO_CONFIG.get(
         model_id, ("configs/sam3/sam3.1.yaml", "sam3.1_multiplex.pt")
     )
-    ckpt_path = hf_hub_download(repo_id=model_id, filename=ckpt_name)
-    return build_sam3_multiplex_video_predictor(
-        config_file=config_file, ckpt_path=ckpt_path, **kwargs
+    return _build_from_hf(
+        model_id, config_file, ckpt_name, build_sam3_multiplex_video_predictor, **kwargs
     )
 
 
@@ -1587,12 +1554,13 @@ def build_efficientsam3p1_litetext_video_predictor_hf(
         A ``Sam3MultiplexVideoPredictor`` in eval mode with MobileCLIP-S0 text encoder,
         Sam3MultiplexTracker (457 keys), and trained geometry encoder.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_EFFICIENTSAM3P1_LITETEXT_MODEL_ID_TO_FILES[model_id]
-    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
-    return build_sam3_multiplex_video_predictor(
-        config_file=config_file, ckpt_path=ckpt_path, **kwargs
+    return _build_from_hf(
+        "Simon7108528/EfficientSAM3",
+        config_file,
+        ckpt_name,
+        build_sam3_multiplex_video_predictor,
+        **kwargs,
     )
 
 
@@ -1620,12 +1588,9 @@ def _build_efficientsam3p1_video_vision_encoder_module(
     from sam.modeling.encoders.efficientsam3_trunk import EfficientSam3Trunk
     from sam.modeling.encoders.necks import Sam3DualViTDetNeck
     from sam.modeling.encoders.perception_encoder import Sam3VisionEncoder
-    from sam.modeling.position_encoding import PositionEmbeddingSine
 
     trunk = EfficientSam3Trunk(backbone_type=backbone_type, model_name=model_name)
-    position_encoding = PositionEmbeddingSine(
-        num_pos_feats=256, normalize=True, scale=None, temperature=10000, warmup_cache=False,
-    )
+    position_encoding = _pe_sine()
     neck = Sam3DualViTDetNeck(
         trunk=trunk, position_encoding=position_encoding, d_model=256,
         scale_factors=[4.0, 2.0, 1.0], add_sam2_neck=True, add_interactive_neck=True,
@@ -1660,8 +1625,7 @@ def build_efficientsam3p1_video_predictor(
     """
     from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor
 
-    cfg = compose(config_name=config_file, overrides=list(hydra_overrides_extra))
-    OmegaConf.resolve(cfg)
+    cfg = _compose(config_file, hydra_overrides_extra)
     text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
     detector = instantiate(cfg.model.detector, _recursive_=True)
     vision_encoder = _build_efficientsam3p1_video_vision_encoder_module(
@@ -1676,10 +1640,7 @@ def build_efficientsam3p1_video_predictor(
         tracker=tracker,
     )
     _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
-    model = model.to(device)
-    if mode == "eval":
-        model.eval()
-    return model
+    return _finalize(model, device, mode)
 
 
 HF_EFFICIENTSAM3P1_MODEL_ID_TO_FILES = {
@@ -1715,17 +1676,15 @@ def build_efficientsam3p1_video_predictor_hf(model_id="repvit-m-s0-ctx16", **kwa
         distilled RepViT-M1.1 trunk, Sam3MultiplexTracker (457 keys), and trained
         geometry encoder.
     """
-    from huggingface_hub import hf_hub_download
-
     config_file, ckpt_name = HF_EFFICIENTSAM3P1_MODEL_ID_TO_FILES[model_id]
-    ckpt_path = hf_hub_download(repo_id="Simon7108528/EfficientSAM3", filename=ckpt_name)
     # repvit-m-s0-ctx16 -> backbone_type=repvit, model_name=m1_1
-    backbone_type, model_name = "repvit", "m1_1"
-    return build_efficientsam3p1_video_predictor(
-        config_file=config_file,
-        ckpt_path=ckpt_path,
-        backbone_type=backbone_type,
-        model_name=model_name,
+    return _build_from_hf(
+        "Simon7108528/EfficientSAM3",
+        config_file,
+        ckpt_name,
+        build_efficientsam3p1_video_predictor,
+        backbone_type="repvit",
+        model_name="m1_1",
         **kwargs,
     )
 
