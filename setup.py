@@ -4,7 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Build backend for sam2's CUDA extension (sam2._C).
+"""Build backend for sam's CUDA extension (sam._C).
 
 flash-attn-style install: at `pip install` / wheel-build time we first try to
 download a prebuilt wheel matching the user's exact (torch, CUDA, Python,
@@ -40,7 +40,7 @@ from setuptools import setup
 # Static metadata
 # ---------------------------------------------------------------------------
 THIS_DIR = Path(__file__).parent.resolve()
-PACKAGE_NAME = "sam2"
+PACKAGE_NAME = "sam"
 GH_OWNER_REPO = "cjaverliat/sam2"
 
 # GitHub Releases asset layout: one release per upstream version (tag v1.0.3),
@@ -67,7 +67,7 @@ def _point_cuda_home_at_conda():
     torch.utils.cpp_extension resolves nvcc via CUDA_HOME (else PATH). A system
     CUDA on PATH that differs from the toolkit torch was built with triggers a
     fatal version-mismatch. The pixi env's nvcc matches its torch, so prefer it.
-    Mirrors the runtime JIT logic in sam2/utils/misc.py. Must run before
+    Mirrors the runtime JIT logic in sam/utils/misc.py. Must run before
     torch.utils.cpp_extension is imported (it caches CUDA_HOME at import).
     """
     conda = os.environ.get("CONDA_PREFIX") or os.environ.get("MAMBA_ROOT_PREFIX")
@@ -80,7 +80,7 @@ def _point_cuda_home_at_conda():
 
 
 def get_package_version():
-    text = (THIS_DIR / "sam2" / "version.py").read_text()
+    text = (THIS_DIR / "sam" / "version.py").read_text()
     return re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text).group(1)
 
 
@@ -92,6 +92,11 @@ BASE_DEPS = [
     "iopath>=0.1.10",
     "pillow>=9.4.0",
     "opencv-python>=4.7.0",
+    # SAM 3 text tokenizer (CLIP BPE): text normalisation + Unicode regex.
+    "ftfy>=6.1.1",
+    "regex>=2024.1.1",
+    # SAM 3 det↔track association: Hungarian solver (Task 7).
+    "scipy>=1.11.0",
 ]
 
 
@@ -181,7 +186,7 @@ class _BuildError(Exception):
 def _require_msvc():
     """Check MSVC's cl.exe is on PATH (Windows); raise ``_BuildError`` otherwise.
 
-    nvcc compiles the host side of sam2._C with MSVC. Without an activated MSVC
+    nvcc compiles the host side of sam._C with MSVC. Without an activated MSVC
     environment the build otherwise dies deep inside ninja with an opaque,
     swallowed error. Check up front and tell the user how to fix it.
     """
@@ -191,7 +196,7 @@ def _require_msvc():
 
     if shutil.which("cl") is None:
         raise _BuildError(
-            "MSVC compiler 'cl.exe' was not found on PATH. Building the sam2._C "
+            "MSVC compiler 'cl.exe' was not found on PATH. Building the sam._C "
             "CUDA extension on Windows needs the MSVC x64 toolchain active: build "
             "from an \"x64 Native Tools Command Prompt for VS\" (or run vcvars64.bat "
             "first), then retry."
@@ -229,10 +234,10 @@ def get_extensions(torch):
     # setuptools requires /-separated paths relative to setup.py, never absolute.
     return [
         CUDAExtension(
-            name="sam2._C",
+            name="sam._C",
             sources=[
-                "sam2/csrc/connected_components.cu",
-                "sam2/csrc/connected_components_binding.cpp",
+                "sam/csrc/connected_components.cu",
+                "sam/csrc/connected_components_binding.cpp",
             ],
             extra_compile_args={"cxx": cxx_args, "nvcc": nvcc_args},
         )
@@ -270,10 +275,10 @@ _is_building = not _BUILD_COMMANDS.isdisjoint(sys.argv)
 
 # The local version label (+cuXXXtorchYY) and the exact torch pin in
 # install_requires are for DISTRIBUTED wheels only: they let an external
-# `pip install sam2-...+cu128torch28` refuse a mismatched torch. The in-workspace
-# editable build (pixi `sam2 = { path = ".", editable = true }`) must NOT carry
+# `pip install sam-...+cu128torch28` refuse a mismatched torch. The in-workspace
+# editable build (pixi `sam = { path = ".", editable = true }`) must NOT carry
 # them — every pixi environment already pins torch via its cuNNN feature, so baking
-# `torch==2.12.*` into the editable metadata makes sam2 unsatisfiable in any env on
+# `torch==2.12.*` into the editable metadata makes sam unsatisfiable in any env on
 # a different torch line and non-deterministic across solve-groups. Only a real
 # wheel build (`bdist_wheel` / `build`) is a distribution; editable_wheel / develop
 # / egg_info / dist_info are workspace steps that keep torch loose + no label.
@@ -285,20 +290,20 @@ except ImportError:
     if _is_building and BUILD_CUDA != "0":
         raise SystemExit(
             "\n"
-            "sam2 build error: PyTorch is not importable in the build environment.\n"
+            "sam build error: PyTorch is not importable in the build environment.\n"
             "\n"
-            "sam2 inspects the installed torch (CUDA vs CPU, version, C++ ABI) to\n"
+            "sam inspects the installed torch (CUDA vs CPU, version, C++ ABI) to\n"
             "select/build the right native extension and to pin its torch dependency.\n"
             "It therefore must NOT be built with build isolation. Do this instead:\n"
             "\n"
             "  1. Install torch for your target platform first, e.g.\n"
             "       pip install torch torchvision\n"
             "     (or the CUDA build from https://pytorch.org for GPU kernels)\n"
-            "  2. Reinstall sam2 with build isolation disabled:\n"
+            "  2. Reinstall sam with build isolation disabled:\n"
             "       pip install --no-build-isolation "
             "git+https://github.com/cjaverliat/sam2.git\n"
             "\n"
-            "If torch reports a CPU-only build, sam2 produces a pure-Python (no _C)\n"
+            "If torch reports a CPU-only build, sam produces a pure-Python (no _C)\n"
             "wheel; a CUDA torch enables the prebuilt-or-source compiled kernels.\n"
         )
     # Metadata-only step (or explicit SAM2_BUILD_CUDA=0): degrade gracefully.
@@ -339,9 +344,9 @@ else:
             return get_extensions(torch)
         except _BuildError as e:
             if not ALLOW_BUILD_ERRORS:
-                raise SystemExit(f"\nsam2 build error: {e}\n")
+                raise SystemExit(f"\nsam build error: {e}\n")
             warnings.warn(
-                f"sam2: {e} Building a pure-Python wheel instead; sam2._C is "
+                f"sam: {e} Building a pure-Python wheel instead; sam._C is "
                 "JIT-compiled at runtime on first use "
                 "(set SAM2_ALLOW_BUILD_ERRORS=0 to fail the build instead).",
                 stacklevel=2,
@@ -370,8 +375,8 @@ else:
                 if not ALLOW_BUILD_ERRORS:
                     raise
                 warnings.warn(
-                    f"sam2: compiling sam2._C failed ({e}). Installing a pure-Python "
-                    "sam2; _C is JIT-compiled at runtime on first use "
+                    f"sam: compiling sam._C failed ({e}). Installing a pure-Python "
+                    "sam; _C is JIT-compiled at runtime on first use "
                     "(set SAM2_ALLOW_BUILD_ERRORS=0 to fail the build instead).",
                     stacklevel=2,
                 )
@@ -395,12 +400,12 @@ else:
                     self.dist_dir,
                     f"{self.wheel_dist_name}-{impl_tag}-{abi_tag}-{plat_tag}.whl",
                 )
-                print(f"sam2: fetching prebuilt wheel\n  {url}")
+                print(f"sam: fetching prebuilt wheel\n  {url}")
                 urllib.request.urlretrieve(url, dest)
-                print(f"sam2: using prebuilt wheel -> {dest}")
+                print(f"sam: using prebuilt wheel -> {dest}")
             except (urllib.error.HTTPError, urllib.error.URLError) as e:
                 print(
-                    f"sam2: no matching prebuilt wheel ({e}); building from source."
+                    f"sam: no matching prebuilt wheel ({e}); building from source."
                 )
                 super().run()
 

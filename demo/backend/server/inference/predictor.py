@@ -34,7 +34,6 @@ from inference.data_types import (
     StartSessionResponse,
 )
 from pycocotools.mask import decode as decode_masks, encode as encode_masks
-from sam2.build_sam import build_sam2_video_predictor
 
 
 logger = logging.getLogger(__name__)
@@ -86,10 +85,7 @@ class InferenceAPI:
             )
 
         self.device = device
-        self.predictor = build_sam2_video_predictor(
-            model_cfg, checkpoint, device=device
-        )
-        self.inference_lock = Lock()
+        raise NotImplementedError("SAM2 demo backend pending rework for the streaming predictor")
 
     def autocast_context(self):
         if self.device.type == "cuda":

@@ -1,0 +1,6 @@
+# @package _global_
+
+# EfficientTAM-S: the shared base verbatim (see efficienttam_base.yaml).
+defaults:
+  - efficienttam_base
+  - _self_

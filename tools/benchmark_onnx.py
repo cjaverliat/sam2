@@ -25,22 +25,14 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import torch
 
-from bench_utils import build_memory_bank, run_video_benchmark
-from sam2.build_sam import build_sam2_generic_video_predictor_onnx
-from sam2.onnx.trt_options import TensorRTOptions
+from bench_utils import add_common_bench_args, build_memory_bank, run_video_benchmark
+from sam.build_sam import build_sam2_video_predictor_onnx
+from sam.onnx.trt_options import TensorRTOptions
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", default="notebooks/videos/bedroom.mp4")
-    p.add_argument("--model-cfg", default="configs/sam2.1/sam2.1_hiera_b+.yaml")
-    p.add_argument("--warmup-frames", type=int, default=5,
-                   help="propagation frames discarded before timing (engine/cache settle)")
-    p.add_argument("--max-frames", type=int, default=200, help="stop after N frames (0=all)")
-    p.add_argument("--memory-window", type=int, default=7,
-                   help="forgetful memory window in frames (0=infinite bank)")
-    p.add_argument("--bank-device", default="cuda", choices=["cuda", "cpu"],
-                   help="device the memory bank stores memories on")
+    add_common_bench_args(p)
     # ONNX/TensorRT predictor build
     p.add_argument("--onnx-dir", default="outputs/onnx/sam2.1_hiera_base_plus/opset18")
     p.add_argument("--no-trt", action="store_true", help="CUDA EP instead of TensorRT")
@@ -73,7 +65,7 @@ def main():
     trt_kwargs["bf16_enable"] = args.trt_bf16
     trt_kwargs["cuda_graph_enable"] = args.trt_cuda_graph
 
-    predictor = build_sam2_generic_video_predictor_onnx(
+    predictor = build_sam2_video_predictor_onnx(
         args.model_cfg, args.onnx_dir, device=device,
         use_trt=not args.no_trt, trt_opts=TensorRTOptions(**trt_kwargs),
         apply_postprocessing=True,

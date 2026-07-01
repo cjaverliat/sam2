@@ -9,15 +9,15 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sam2"
+name = "sam"
 # version + dependencies are set in setup.py: each prebuilt wheel pins torch to
 # the exact minor it was compiled against (ABI lock), so a mismatched torch fails
 # at install instead of crashing on import.
 dynamic = ["version", "dependencies"]
-description = "SAM 2: Segment Anything in Images and Videos"
+description = "SAM 2 / SAM 3 unified inference package"
 readme = "README.md"
 requires-python = ">=3.10.0"
-license = {text = "Apache 2.0"}
+license = {file = "LICENSE"}
 authors = [
     {name = "Meta AI", email = "segment-anything@meta.com"},
 ]
@@ -103,16 +103,17 @@ dev = [
 
 # version (incl. +cuXXXtorchYY local label) and ext_modules are set in setup.py.
 [tool.setuptools.packages.find]
-include = ["sam2*"]
+include = ["sam*"]
 exclude = ["notebooks*", "demo*", "tools*", "training*", "sav_dataset*"]
 
 [tool.setuptools.package-data]
 # Hydra configs + CUDA sources (the latter for the JIT source-build fallback in
-# sam2/utils/misc.py when no _C extension is present).
-sam2 = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h"]
+# sam/utils/misc.py when no _C extension is present).
+# SAM 3 text tokenizer BPE vocabulary (data asset, not weights).
+sam = ["configs/**/*.yaml", "csrc/*.cu", "csrc/*.cpp", "csrc/*.h", "modeling/text/assets/*.gz"]
 
-# Windows: the sam2 native extension is built with nvcc + MSVC cl.exe, which conda
-# cannot ship. Before running any pixi command that builds/installs sam2 (e.g.
+# Windows: the sam native extension is built with nvcc + MSVC cl.exe, which conda
+# cannot ship. Before running any pixi command that builds/installs sam (e.g.
 # `pixi run`, `pixi install`, `pixi shell`), source the MSVC environment first so
 # cl.exe is on PATH, e.g. in a cmd shell:
 #     "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
@@ -136,13 +137,15 @@ numpy = ">=1.24.4"
 # "OMP: Error #15". OpenBLAS avoids MKL, leaving a single OMP. (linux-64 already
 # defaults to OpenBLAS.)
 libblas = { build = "*openblas" }
-# Build backend deps: present in-env because sam2 builds with --no-build-isolation
+# Build backend deps: present in-env because sam builds with --no-build-isolation
 # (needs the env's torch, not an isolated CPU torch).
 setuptools = ">=61,<82"   # torch wheels cap setuptools <82 (pkg_resources use)
 wheel = "*"
 python-build = "*"   # provides `python -m build` for the build-wheel task
 curl = "*"
 pixi-pycharm = "*"
+huggingface_hub = ">=1.21.0,<2"
+pytest = ">=9.1.1,<10"
 
 # CUDA build toolchain: nvcc + dev libs + ninja (CUDAExtension build / JIT) and,
 # on linux, the g++ host compiler so the extension builds with zero system
@@ -164,13 +167,13 @@ pypi-dependencies = { torch = { version = ">=2.5.1", index = "https://download.p
 activation = { env = { SAM2_BUILD_CUDA = "0" } }
 
 [tool.pixi.pypi-options]
-# Build sam2 against the already-installed cuXXX torch (and the env's Python),
+# Build sam against the already-installed cuXXX torch (and the env's Python),
 # not a fresh CPU torch pulled from default PyPI in an isolated build env.
 # The isolated build torch lacks c10/cuda/impl/cuda_cmake_macros.h (CUDA-build-only).
-no-build-isolation = ["sam2"]
+no-build-isolation = ["sam"]
 
 [tool.pixi.pypi-dependencies]
-sam2 = { path = ".", editable = true }
+sam = { path = ".", editable = true }
 
 # --- Per-CUDA toolchains -----------------------------------------------------
 # One feature per supported CUDA version: each pins the toolkit (cuda-version +
@@ -263,6 +266,9 @@ cpu = { features = ["cpu"], solve-group = "cpu" }
 cmd = "python -m build --wheel --no-isolation"
 env = { SAM2_FORCE_BUILD = "1", SAM2_BUILD_CUDA = "1", SAM2_ALLOW_BUILD_ERRORS = "0" }
 
+[tool.pixi.tasks.test]
+cmd = "pytest tests/ -v"
+
 # ---------------------------------------------------------------------------
 # Checkpoint download tasks (cross-platform via curl, conda-provided so it is
 # available on both linux-64 and win-64). Each task declares an `outputs` entry
@@ -354,6 +360,49 @@ depends-on = [
     "download-efficienttam-ti-1",
     "download-efficienttam-ti-2",
 ]
+
+# --- SAM 3 checkpoints (gated; needs HF access + auth, see tools/download_sam3.py) ---
+# Unlike the curl tasks above, SAM 3 repos are access-gated, so download goes through
+# huggingface_hub (resolves the logged-in account / HF_TOKEN) and fails loud with
+# guidance if access or auth is missing.
+[tool.pixi.tasks.download-sam3]
+cmd = "python tools/download_sam3.py --version sam3 --out-dir checkpoints"
+outputs = ["checkpoints/sam3.pt"]
+
+[tool.pixi.tasks.download-sam3-1]
+cmd = "python tools/download_sam3.py --version sam3.1 --out-dir checkpoints"
+outputs = ["checkpoints/sam3.1_multiplex.pt"]
+
+# --- EfficientSAM3 checkpoints (public; no HF auth required) --------------------
+# Weights live at Simon7108528/EfficientSAM3 (public HuggingFace repo).
+# download_efficientsam3.py mirrors the SAM 3 download pattern but skips auth.
+[tool.pixi.tasks.download-efficientsam3-repvit]
+cmd = "python tools/download_efficientsam3.py --variant repvit --out-dir checkpoints"
+outputs = ["checkpoints/efficientsam3_repvit.pt"]
+
+[tool.pixi.tasks.download-efficientsam3-tinyvit]
+cmd = "python tools/download_efficientsam3.py --variant tinyvit --out-dir checkpoints"
+outputs = ["checkpoints/efficientsam3_tinyvit.pt"]
+
+[tool.pixi.tasks.download-efficientsam3-efficientvit]
+cmd = "python tools/download_efficientsam3.py --variant efficientvit --out-dir checkpoints"
+outputs = ["checkpoints/efficientsam3_efficientvit.pt"]
+
+[tool.pixi.tasks.download-efficientsam3-litetext-s0-ctx16]
+cmd = "python tools/download_efficientsam3.py --variant litetext-s0-ctx16 --out-dir checkpoints"
+outputs = ["checkpoints/sam3_litetext_mobileclip_s0_ctx16.pt"]
+
+[tool.pixi.tasks.download-efficientsam3p1-litetext-s0-ctx16]
+cmd = "python tools/download_efficientsam3.py --variant sam3p1-litetext-s0-ctx16 --out-dir checkpoints"
+outputs = ["checkpoints/efficient_sam3p1_litetext_mobileclip_s0_ctx16.pt"]
+
+[tool.pixi.tasks.download-efficientsam3p1-repvit-m-s0-ctx16]
+cmd = "python tools/download_efficientsam3.py --variant sam3p1-repvit-m-s0-ctx16 --out-dir checkpoints"
+outputs = ["checkpoints/efficient_sam3p1_repvit_m_mobileclip_s0_ctx16.pt"]
+
+# --- EfficientSAM3: all checkpoints ---
+[tool.pixi.tasks.download-efficientsam3]
+depends-on = ["download-efficientsam3-repvit", "download-efficientsam3-tinyvit", "download-efficientsam3-efficientvit"]
 
 # ---------------------------------------------------------------------------
 # ONNX export tasks. One task per model: it downloads the checkpoint (via

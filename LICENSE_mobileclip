@@ -1,0 +1,33 @@
+MobileCLIP
+Copyright (C) 2024 Apple Inc. All Rights Reserved.
+
+This code is licensed under the Apple Machine Learning Research License
+("Apple ML Research License").  Non-commercial research and educational use
+is permitted; commercial use requires explicit written permission from Apple.
+
+Full license text:
+    https://github.com/apple/ml-mobileclip/blob/main/LICENSE
+
+Summary of key terms (informational; the full text above is authoritative):
+  * You may use, copy, modify, and distribute this software for non-commercial
+    research or educational purposes.
+  * You may NOT use it for commercial purposes without Apple's prior written
+    permission.
+  * Attribution to Apple Inc. and inclusion of this notice is required in all
+    copies or substantial portions of the software.
+  * The software is provided "as is," without warranty of any kind.
+
+---
+
+Original repository: https://github.com/apple/ml-mobileclip
+
+This file covers code vendored into sam/modeling/text/mobile_clip.py and
+sam/modeling/text/mobileclip_text_encoder.py (MobileCLIP-S0 text transformer
+and text encoder wrapper).  The vendored code has been de-timm'd (timm
+dependency removed) and is identified by SPDX-License-Identifier: LicenseRef-AppleML
+in each file header.
+
+Note: EfficientSAM3 uses MobileCLIP for open-vocabulary concept matching, which
+involves the MobileCLIP text encoder weights distributed separately from this
+code (Simon7108528/EfficientSAM3 on HuggingFace).  Using those weights is
+also subject to the Apple ML Research License terms above.

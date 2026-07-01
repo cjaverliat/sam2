@@ -1,0 +1,14 @@
+# @package _global_
+# SPDX-License-Identifier: LicenseRef-SAM
+# EfficientSAM3 (TinyViT-11M + MobileCLIP-S0 ctx16), base SAM 3 lineage (image).
+# Image base with the vision trunk swapped to TinyViT-11M.
+defaults:
+  - efficientsam3_image_base
+  - _self_
+
+model:
+  vision_encoder:
+    vision_backbone:
+      trunk:
+        backbone_type: tinyvit
+        model_name: "11m"

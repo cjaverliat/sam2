@@ -1,0 +1,15 @@
+# @package _global_
+
+# EfficientTAM-S at 512x512: base with image_size 512 and RoPE feat_sizes [32, 32].
+defaults:
+  - efficienttam_base
+  - _self_
+
+model:
+  image_size: 512
+  memory_attention:
+    layer:
+      self_attention:
+        feat_sizes: [32, 32]
+      cross_attention:
+        feat_sizes: [32, 32]

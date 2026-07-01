@@ -1,0 +1,16 @@
+# @package _global_
+
+# EfficientTAM "ti" (tiny) base: the shared base with the smaller ViT trunk. The
+# ti / ti_1 / ti_2 / ti_512x512 variants compose this and override only the memory
+# cross-attention target / image size, exactly like their `s` counterparts.
+defaults:
+  - efficienttam_base
+  - _self_
+
+model:
+  image_encoder:
+    trunk:
+      embed_dim: 192
+      num_heads: 3
+    neck:
+      backbone_channel_list: [192,]

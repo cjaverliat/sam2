@@ -19,21 +19,13 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import torch
 
-from bench_utils import build_memory_bank, run_video_benchmark
-from sam2.build_sam import build_sam2_generic_video_predictor
+from bench_utils import add_common_bench_args, build_memory_bank, run_video_benchmark
+from sam.build_sam import build_sam2_video_predictor
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", default="notebooks/videos/bedroom.mp4")
-    p.add_argument("--model-cfg", default="configs/sam2.1/sam2.1_hiera_b+.yaml")
-    p.add_argument("--warmup-frames", type=int, default=5,
-                   help="propagation frames discarded before timing (engine/cache settle)")
-    p.add_argument("--max-frames", type=int, default=200, help="stop after N frames (0=all)")
-    p.add_argument("--memory-window", type=int, default=7,
-                   help="forgetful memory window in frames (0=infinite bank)")
-    p.add_argument("--bank-device", default="cuda", choices=["cuda", "cpu"],
-                   help="device the memory bank stores memories on")
+    add_common_bench_args(p)
     # torch predictor build
     p.add_argument("--checkpoint", default="checkpoints/sam2.1_hiera_base_plus.pt")
     p.add_argument("--precision", choices=["auto", "bf16", "fp16", "fp32"], default="auto",
@@ -56,7 +48,7 @@ def main():
     if args.cudnn_benchmark and device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    predictor = build_sam2_generic_video_predictor(
+    predictor = build_sam2_video_predictor(
         args.model_cfg, args.checkpoint, device=device, use_half=args.precision != "fp32",
         vos_optimized=args.compile, apply_postprocessing=True,
     )

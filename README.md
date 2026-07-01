@@ -27,6 +27,7 @@ This fork keeps the original SAM 2 models and weights bit-for-bit, and adds:
   - [Custom memory bank](#custom-memory-bank)
   - [ONNX / TensorRT inference](#onnx--tensorrt-inference)
 - [EfficientTAM](#efficienttam)
+- [EfficientSAM3](#efficientsam3--lightweight-concept-segmentation)
 - [Benchmarks](#benchmarks)
 - [License](#license)
 - [Citation](#citation)
@@ -83,7 +84,7 @@ git clone https://github.com/cjaverliat/sam2.git && cd sam2
 # Default environment: CUDA 12.8 torch + compiled CUDA kernels
 pixi shell           # drop into the environment
 # or run a single command:
-pixi run python -c "import sam2; print(sam2.__version__)"
+pixi run python -c "import sam; print(sam.__version__)"
 ```
 
 Available environments include `default` (CUDA 12.8 torch), `notebooks`, `dev`, and the ONNX tiers described in [ONNX / TensorRT inference](#onnx--tensorrt-inference).
@@ -126,9 +127,9 @@ Encode the image once, then prompt it (see [`notebooks/image_predictor_example.i
 import numpy as np
 import torch
 from PIL import Image
-from sam2.build_sam import build_sam2_generic
+from sam.build_sam import build_sam2_predictor
 
-model = build_sam2_generic(
+model = build_sam2_predictor(
     "configs/sam2.1/sam2.1_hiera_l.yaml",
     "./checkpoints/sam2.1_hiera_large.pt",
     device="cuda",
@@ -162,21 +163,21 @@ Build the predictor once, create a lightweight state, then call `forward()` per 
 
 ```python
 import torch
-from sam2.build_sam import build_sam2_generic_video_predictor
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.build_sam import build_sam2_video_predictor
+from sam.prompts import GeometryPrompt
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 checkpoint = "./checkpoints/sam2.1_hiera_base_plus.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 device = torch.device("cuda")
 
-predictor = build_sam2_generic_video_predictor(model_cfg, checkpoint, device=device)
+predictor = build_sam2_video_predictor(model_cfg, checkpoint, device=device)
 
 # State holds only (H, W) and the memory bank — not the frames.
-state = SAM2GenericVideoPredictorState.create(video_hw=(height, width))
+state = Sam2VideoPredictorState.create(video_hw=(height, width))
 
 # Frame 0: add a prompt for object id 1
-prompt = SAM2Prompt(
+prompt = GeometryPrompt(
     obj_id=1,
     points_coords=torch.tensor([[210, 350]], dtype=torch.float32, device=device),
     points_labels=torch.tensor([1], device=device),
@@ -197,19 +198,19 @@ The memory bank is a pluggable component. Two implementations ship in the box:
 
 | Class | Strategy |
 |---|---|
-| `SAM2ObjectMemoryBank` | Default. Unbounded store, faithful to the original SAM 2 paper (no forgetting). |
-| `SAM2ForgetfulObjectMemoryBank` | Sliding window. Conditional (prompted) memories are kept forever; non-conditional memories outside `[frame - window, frame + window]` are pruned. |
+| `Sam2ObjectMemoryBank` | Default. Unbounded store, faithful to the original SAM 2 paper (no forgetting). |
+| `ForgetfulObjectMemoryBank` | Sliding window. Conditional (prompted) memories are kept forever; non-conditional memories outside `[frame - window, frame + window]` are pruned. |
 
 ```python
-from sam2.modeling.sam2_forgetful_memory import SAM2ForgetfulObjectMemoryBank
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
-bank = SAM2ForgetfulObjectMemoryBank(memory_window_size=7)
-state = SAM2GenericVideoPredictorState.create(video_hw=(height, width), memory_bank=bank)
+bank = ForgetfulObjectMemoryBank(memory_window_size=7)
+state = Sam2VideoPredictorState.create(video_hw=(height, width), memory_bank=bank)
 ```
 
 Write your own policy by subclassing the abstract base
-[`ObjectMemoryBank`](sam2/modeling/memory.py) (or `SAM2ObjectMemoryBank`) and overriding
+[`ObjectMemoryBank`](sam/modeling/memory/bank.py) (or `Sam2ObjectMemoryBank`) and overriding
 `try_add_memories`, `select_memories`, and `prune_memories` — for example, to cap memory
 count, score-based eviction, or temporal striding.
 
@@ -240,10 +241,10 @@ pixi run -e onnx-export python tools/export_onnx.py \
 
 ```python
 import torch
-from sam2.build_sam import build_sam2_generic_video_predictor_onnx
-from sam2.onnx.trt_options import TensorRTOptions
+from sam.build_sam import build_sam2_video_predictor_onnx
+from sam.onnx.trt_options import TensorRTOptions
 
-predictor = build_sam2_generic_video_predictor_onnx(
+predictor = build_sam2_video_predictor_onnx(
     "configs/sam2.1/sam2.1_hiera_b+.yaml",
     onnx_dir="onnx_sam2",          # extracted dir, a .zip, or an http(s) URL to one
     device="cuda",
@@ -252,7 +253,7 @@ predictor = build_sam2_generic_video_predictor_onnx(
 )
 ```
 
-For image-only inference, use `build_sam2_generic_image_predictor_onnx` with the same arguments.
+For image-only inference, use `build_sam2_image_predictor_onnx` with the same arguments.
 
 Notes:
 - `onnx_dir` accepts an extracted export directory, a `.zip` of one (e.g. a release artifact), or an `http(s)` URL (downloaded and cached; override with `SAM2_ONNX_CACHE`).
@@ -265,24 +266,194 @@ Notes:
 
 ## EfficientTAM
 
-[EfficientTAM](https://github.com/yformer/EfficientTAM) (Efficient Track Anything) is integrated as a first-class model (`sam2.modeling.efficienttam_base.EfficientTAMBase`) with a plain ViT image encoder. It uses the **same build and predictor APIs** as SAM 2 — point a builder at an EfficientTAM config and checkpoint:
+[EfficientTAM](https://github.com/yformer/EfficientTAM) (Efficient Track Anything) is integrated as a first-class model (`sam.modeling.efficienttam_base.EfficientTAMBase`) with a plain ViT image encoder. It uses the **same build and predictor APIs** as SAM 2 — point a builder at an EfficientTAM config and checkpoint:
 
 ```python
-from sam2.build_sam import build_sam2_generic_video_predictor
+from sam.build_sam import build_sam2_video_predictor
 
-predictor = build_sam2_generic_video_predictor(
+predictor = build_sam2_video_predictor(
     "configs/efficienttam/efficienttam_ti.yaml",
     "./checkpoints/efficienttam_ti.pt",
 )
 ```
 
-Available configs live in [`sam2/configs/efficienttam/`](sam2/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
+Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
+
+---
+
+## SAM 3 — Concept Segmentation
+
+SAM 3 segments by **concept** (a text phrase) rather than by clicks or boxes. Build with `build_sam3` (image) or `build_sam3_video_predictor` (streaming video); the API mirrors SAM 2's predictor (encode once, run per frame). SAM 3 weights are access-gated — request via [Meta AI](https://ai.meta.com/sam) and download with:
+
+```bash
+pixi run download-sam3       # sam3.pt
+pixi run download-sam3-1     # sam3.1_multiplex.pt (SAM 3.1)
+```
+
+### Image — detect all instances of a concept
+
+```python
+import numpy as np
+from PIL import Image
+from sam.build_sam import build_sam3
+from sam.prompts import ConceptPrompt
+
+predictor = build_sam3("configs/sam3/sam3.yaml", "./checkpoints/sam3.pt", device="cuda")
+
+image = np.array(Image.open("images/truck.jpg").convert("RGB"))  # (H, W, 3) uint8
+
+result = predictor.predict(image, ConceptPrompt(text="wheel"))
+# result.masks_logits: (N, H, W)  — per-instance mask logits  (> 0 → foreground)
+# result.boxes:        (N, 4)     — xyxy pixel bounding boxes
+# result.scores:       (N,)       — per-instance confidence scores
+# result.presence:     float      — 0..1 concept-in-image presence score
+
+binary_masks = result.masks_logits > 0.0
+```
+
+### Streaming video — track a concept across frames
+
+```python
+from sam.build_sam import build_sam3_video_predictor
+from sam.prompts import ConceptPrompt
+from sam.models.sam3_predictor import Sam3VideoPredictorState
+
+predictor = build_sam3_video_predictor(
+    "configs/sam3/sam3.yaml", "./checkpoints/sam3.pt", device="cuda"
+)
+
+# State holds memory bank + tracklet bookkeeping — not the frames.
+state = Sam3VideoPredictorState(video_hw=(height, width))
+predictor.set_concept(state, ConceptPrompt(text="wheel"))
+
+for frame_idx, frame in enumerate(frames):  # frames: (H, W, 3) uint8 arrays
+    results = predictor.forward(state, frame_idx, frame)
+    # results: {obj_id: MaskletResult, ...}
+    masks = {obj_id: (r.masks_logits > 0) for obj_id, r in results.items()}
+```
+
+Per-object memory is managed by the internal `ForgetfulObjectMemoryBank` (non-conditional frames outside a 7-frame window are pruned), so VRAM stays constant regardless of clip length.
+
+### SAM 3.1 (multiplex) — up to 16 objects in one joint forward pass
+
+SAM 3.1 packs all tracked objects into one joint forward via `build_sam3_multiplex` (image) and `build_sam3_multiplex_video_predictor` (video). The calling API is **identical** to base SAM 3; mux/demux is internal to the tracker.
+
+**Scope:** the multiplex video predictor supports concept-seeded multi-object tracking with a fixed bucket set — all instances must be detected on the seed frame and co-tracked thereafter. Mid-stream instance spawn and geometry prompts (`GeometryPrompt`) are not yet supported; use the base SAM 3 (`build_sam3_video_predictor`) for those use-cases. VRAM stays bounded because the joint bucket-space spatial memory is threaded internally (not via the per-object `ObjectMemoryBank`) and non-conditional frames outside the 7-frame forgetful window are pruned.
+
+```python
+from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor
+from sam.prompts import ConceptPrompt
+from sam.models.sam3_predictor import Sam3VideoPredictorState
+
+# Image
+image_predictor = build_sam3_multiplex(
+    "configs/sam3/sam3.1.yaml", "./checkpoints/sam3.1_multiplex.pt", device="cuda"
+)
+result = image_predictor.predict(image, ConceptPrompt(text="wheel"))
+
+# Video
+video_predictor = build_sam3_multiplex_video_predictor(
+    "configs/sam3/sam3.1.yaml", "./checkpoints/sam3.1_multiplex.pt", device="cuda"
+)
+state = Sam3VideoPredictorState(video_hw=(height, width))
+video_predictor.set_concept(state, ConceptPrompt(text="wheel"))
+for frame_idx, frame in enumerate(frames):
+    results = video_predictor.forward(state, frame_idx, frame)
+    masks = {obj_id: (r.masks_logits > 0) for obj_id, r in results.items()}
+```
+
+---
+
+## EfficientSAM3 — Lightweight Concept Segmentation
+
+EfficientSAM3 is a distilled, mobile-friendly version of SAM 3 (same DETR detector
+and text-conditioned concept API, lighter vision backbone and text encoder).
+It identifies and segments all instances of a text concept in images and across
+streaming video (per-object and multiplex tracking) — see the [variant matrix](#variant-matrix).
+
+### Download
+
+EfficientSAM3 weights are **publicly available** (no HF login required):
+
+```bash
+pixi run download-efficientsam3        # RepViT-M1.1 variant (efficientsam3_repvit.pt)
+```
+
+Or download manually:
+
+```python
+from sam.build_sam import build_efficientsam3_hf
+model = build_efficientsam3_hf("repvit", device="cuda")  # downloads on first call
+```
+
+### Image — detect all instances of a concept
+
+```python
+import numpy as np
+from PIL import Image
+from sam.build_sam import build_efficientsam3
+from sam.prompts import ConceptPrompt
+
+model = build_efficientsam3(
+    "configs/efficientsam3/efficientsam3_repvit.yaml",
+    "./checkpoints/efficientsam3_repvit.pt",
+    device="cuda",
+)
+
+image = np.array(Image.open("dog_person.jpeg").convert("RGB"))  # (H, W, 3) uint8
+
+result = model.predict(image, ConceptPrompt(text="dog"), confidence_threshold=0.1)
+# result.masks_logits: (N, H, W)  — per-instance logits  (> 0 → foreground)
+# result.boxes:        (N, 4)     — xyxy pixel boxes
+# result.scores:       (N,)       — per-instance confidence
+
+binary_masks = result.masks_logits > 0.0
+```
+
+### Variant matrix
+
+All four published EfficientSAM3 families are integrated (image + streaming video). Parity is
+measured against **efficientsam3's own reference** (its `build_efficientsam3_*` builders / the
+`stage1_sam3.1` multiplex code), not facebook SAM 3.
+
+| Family | Vision backbone | Text encoder | Tracker | Parity vs efficientsam3 reference |
+|---|---|---|---|---|
+| **EfficientSAM3** (image) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | MobileCLIP-S0 (ctx16) | — | ✅ mask IoU ≥ 0.99 |
+| **EfficientSAM3** (video) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | PE text (ctx32) | base, 309 + geometry | build + detection ✅; propagation drift ~1–3% ⚠️ |
+| **SAM3-LiteText** (video) | PE-ViT (SAM 3) | MobileCLIP-S0 (ctx16) | base, 309 | ✅ streaming IoU ≥ 0.99 |
+| **SAM3.1-LiteText** (video) | PE-ViT (SAM 3) | MobileCLIP-S0 (ctx16) | multiplex, 457 | ✅ min 0.994 / mean 0.998 |
+| **EfficientSAM3.1** (video) | RepViT-M1.1 (stage1) | MobileCLIP-S0 (ctx16) | multiplex, 457 | build + detection ✅; propagation drift ⚠️ |
+
+⚠️ The distilled-vision **video** variants reproduce the reference's per-frame **detection** exactly
+(≥ 0.99) and instance counts match, but tracker **propagation** drifts ~1–3% for distilled features
+(numerical-grade — PE-vision video matches at 0.994 on the same predictor; the distillation itself
+differs from full SAM 3 by ~24%). Tracked as `xfail` in the parity suite — see
+[`tests/parity/reference_efficientsam3/`](tests/parity/reference_efficientsam3/).
+
+### Image benchmark — EfficientSAM3 vs SAM 3 (image only)
+
+RTX 3080 Ti, `dog_person.jpeg` (2048×1365), prompt `"dog"`, 30 iters (`tools/benchmark_efficientsam3.py`). **autocast (bfloat16)** — the deployment path (works for every model; base SAM 3 is bf16-only):
+
+| Model | Vision | Prompt+detect | **End-to-end** |
+|---|---|---|---|
+| EfficientSAM3 · EfficientViT-B1 | 25.3 ms · 39.5 FPS | 40.5 ms | **65.1 ms · 15.4 FPS** |
+| EfficientSAM3 · RepViT-M1.1 | 27.4 ms · 36.6 FPS | 40.2 ms | **67.7 ms · 14.8 FPS** |
+| EfficientSAM3 · TinyViT-11M | 29.3 ms · 34.2 FPS | 40.3 ms | **69.4 ms · 14.4 FPS** |
+| **SAM 3 · PE ViT-H** | **147.2 ms · 6.8 FPS** | 52.0 ms | **200.1 ms · 5.0 FPS** |
+
+fp32 (TF32) — EfficientSAM3 only (base SAM 3 fp32 is unsupported — perflib hardcodes bf16): EfficientViT 99.4 ms · 10.1 FPS · RepViT 101.5 ms · 9.8 FPS · TinyViT 104.9 ms · 9.5 FPS end-to-end. (Matches upstream `_bench.py`: fp32 vision ~31.5 ms.)
+
+- **Distilled vision encoder is ~5–6× faster** than SAM 3's PE ViT-H (25–29 ms vs 147 ms) — the EfficientSAM3 win.
+- **~3× faster end-to-end** (15 vs 5 FPS). The reused SAM 3 DETR detector (prompt phase, ~40–52 ms) now dominates (~⅔ of e2e) — the next speedup lever.
+- These are **image** numbers; streaming-video parity/throughput is separate (see the variant matrix + `tests/parity/reference_efficientsam3/`).
+
+Reproduce: `pixi run python tools/benchmark_efficientsam3.py --ckpt <ckpt> --config <cfg>` (add `--sam3` for the base SAM 3 model).
 
 ---
 
 ## Benchmarks
 
-Per-frame **streaming** throughput of `SAM2GenericVideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
+Per-frame **streaming** throughput of `Sam2VideoPredictor` across every model variant and backend. Measured with `tools/benchmark_torch.py` (PyTorch) and `tools/benchmark_onnx.py` (ONNX Runtime + TensorRT), which share one timing loop (`tools/bench_utils.py`): one point prompt on frame 0, propagate the masklet, time each `forward()` over 200 frames (5 warm-up frames discarded), forgetful memory bank (window 7) stored on GPU, `apply_postprocessing=True`.
 
 **Hardware / stack:** NVIDIA RTX 3080 Ti (12 GB, sm86). PyTorch rows: torch 2.11.0+cu128. ONNX-TRT rows: TensorRT 10.16.1 + onnxruntime-gpu 1.27.0 (CUDA 13). Video: `notebooks/videos/bedroom.mp4` (960×540), single object.
 
@@ -328,7 +499,19 @@ pixi run -e onnx-tensorrt-cu13 python tools/benchmark_onnx.py \
 
 ## License
 
-The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0](./LICENSE). This fork is distributed under the same license. EfficientTAM is integrated from its [upstream repository](https://github.com/yformer/EfficientTAM); see that project for its license and terms. Third-party code includes a GPU connected-components algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) ([license](./LICENSE_cctorch)).
+The SAM 2 model, code, and checkpoints are released by Meta AI under [Apache 2.0](./LICENSE). This fork is distributed under the same license. EfficientTAM is integrated from its [upstream repository](https://github.com/yformer/EfficientTAM); see that project for its license and terms. Third-party code includes a GPU connected-components algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) ([license](./LICENSE_cctorch)). SAM 3 components (and code derived from or importing them) are released by Meta AI under the [SAM License](./LICENSE_sam) — using them binds you to that license's terms (e.g. acceptable-use and trade-control restrictions); the permissive Apache-2.0 / BSD-3 parts remain independently usable. SAM 3 weights are gated and never vendored.
+
+| Component | License |
+|---|---|
+| SAM 2 | Apache-2.0 |
+| EfficientTAM | Apache-2.0 |
+| SAM 3 (+ derivatives) | SAM License |
+| RepViT backbone (`sam/modeling/encoders/repvit.py`) | Apache-2.0 ([LICENSE_repvit](./LICENSE_repvit)) |
+| TinyViT backbone (`sam/modeling/encoders/tiny_vit.py`) | MIT ([LICENSE_tinyvit](./LICENSE_tinyvit)) |
+| EfficientViT backbone (`sam/modeling/encoders/efficientvit/`) | Apache-2.0 ([LICENSE_apache2](./LICENSE_apache2)) |
+| MobileCLIP text transformer (`sam/modeling/text/mobile_clip.py`) | Apple ML Research License — **non-commercial** ([LICENSE_mobileclip](./LICENSE_mobileclip)) |
+| CUDA connected-components ext (`csrc`) | BSD-3-Clause |
+| This fork's code | Apache-2.0 |
 
 ---
 

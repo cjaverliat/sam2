@@ -1,0 +1,6 @@
+# @package _global_
+
+# EfficientTAM-Ti: the tiny base verbatim (see efficienttam_ti_base.yaml).
+defaults:
+  - efficienttam_ti_base
+  - _self_

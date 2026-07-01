@@ -1,0 +1,12 @@
+This project bundles components under multiple licenses:
+- SAM 2, EfficientTAM, and this fork's code: Apache-2.0 (LICENSE_apache2)
+- CUDA connected-components extension (csrc): BSD-3-Clause (LICENSE_cctorch)
+- SAM 3 components, and code derived from or importing them: SAM License (LICENSE_sam)
+- RepViT backbone (sam/modeling/encoders/repvit.py, _layers.py): Apache-2.0 (LICENSE_repvit)
+- TinyViT backbone (sam/modeling/encoders/tiny_vit.py): MIT (LICENSE_tinyvit)
+- EfficientViT backbone (sam/modeling/encoders/efficientvit/): Apache-2.0 (LICENSE_apache2)
+- MobileCLIP text transformer (sam/modeling/text/mobile_clip.py,
+  mobileclip_text_encoder.py): Apple Machine Learning Research License (LICENSE_mobileclip)
+SAM 3 weights are access-gated and are never vendored. EfficientSAM3 weights live in
+the public Simon7108528/EfficientSAM3 HuggingFace repo. See README for the per-model
+license table and restrictions.

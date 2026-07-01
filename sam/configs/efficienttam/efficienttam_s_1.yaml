@@ -1,0 +1,12 @@
+# @package _global_
+
+# EfficientTAM-S variant 1: base with memory cross-attention = EfficientRoPEAttention1.
+defaults:
+  - efficienttam_base
+  - _self_
+
+model:
+  memory_attention:
+    layer:
+      cross_attention:
+        _target_: sam.modeling.decoders.transformer.EfficientRoPEAttention1

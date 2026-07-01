@@ -31,9 +31,9 @@ import torch
 from tqdm import tqdm
 
 from frame_utils import read_frame, warmup
-from sam2.build_sam import build_sam2_generic_video_predictor
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.build_sam import build_sam2_video_predictor
+from sam.prompts import GeometryPrompt
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 
 def select_device() -> torch.device:
@@ -116,7 +116,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     device = select_device()
 
-    predictor = build_sam2_generic_video_predictor(
+    predictor = build_sam2_video_predictor(
         args.model_cfg, args.checkpoint, device=device,
         vos_optimized=False, apply_postprocessing=True,
     )
@@ -129,7 +129,7 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     orig_hw = (height, width)
 
-    video_state = SAM2GenericVideoPredictorState.create(orig_hw)
+    video_state = Sam2VideoPredictorState.create(orig_hw)
 
     # Move the one-time GPU init off the first prompted frame.
     warmup(predictor, video_state, device)
@@ -142,7 +142,7 @@ def main():
     points = torch.tensor([[210, 350], [250, 220]], dtype=torch.float32, device=device)
     labels = torch.tensor([1, 1], device=device)
 
-    prompt = SAM2Prompt(
+    prompt = GeometryPrompt(
         obj_id=ann_obj_id, points_coords=points, points_labels=labels
     )
 

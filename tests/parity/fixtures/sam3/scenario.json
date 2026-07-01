@@ -1,0 +1,287 @@
+{
+  "upstream_commit": "5dd401d1c5c1d5c3eedff06d41b77af824517619",
+  "determinism": "seed=0, deterministic, TF32 off",
+  "image": {
+    "model_version": "sam3",
+    "source": "notebooks/images/truck.jpg",
+    "resize_hw": [
+      384,
+      512
+    ],
+    "phrase": "truck",
+    "confidence_threshold": 0.5,
+    "num_detections": 1,
+    "precision_mode": "bf16_autocast",
+    "enc_levels": 3,
+    "enc_shapes": [
+      [
+        1,
+        256,
+        288,
+        288
+      ],
+      [
+        1,
+        256,
+        144,
+        144
+      ],
+      [
+        1,
+        256,
+        72,
+        72
+      ]
+    ],
+    "enc_feat_lastlevel_shape": [
+      1,
+      256,
+      72,
+      72
+    ],
+    "text_emb_shape": [
+      32,
+      1,
+      256
+    ],
+    "pyramid_file": "image_encoder_pyramid.npz (NOT committed; regenerate via capture)"
+  },
+  "video": {
+    "model_version": "sam3",
+    "source": "sam3_reference/assets/videos/0001 (upstream dance clip)",
+    "resize_hw": [
+      288,
+      512
+    ],
+    "num_frames": 4,
+    "phrase": "person",
+    "precision_mode": "bf16_autocast",
+    "per_frame": {
+      "0": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      },
+      "1": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      },
+      "2": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      },
+      "3": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9726027250289917,
+          0.9649122953414917,
+          0.9726027250289917,
+          0.9532163739204407
+        ]
+      }
+    },
+    "trk_f1_present": true,
+    "trk_f1_shape": [
+      4,
+      3,
+      288,
+      288
+    ]
+  },
+  "image_sam31": {
+    "source": "notebooks/images/truck.jpg",
+    "resize_hw": [
+      384,
+      512
+    ],
+    "phrase": "truck",
+    "entry_point": "build_sam3_predictor(version=\"sam3.1\").model.add_prompt",
+    "model_version": "sam3.1",
+    "num_detections": 1,
+    "precision_mode": "bf16_autocast",
+    "captured_keys": [
+      "boxes",
+      "confidence_threshold",
+      "enc_feat_lastlevel",
+      "image_hw",
+      "image_input_rgb",
+      "image_phrase",
+      "masks",
+      "model_version",
+      "precision_mode",
+      "pred_boxes_cxcywh",
+      "pred_logits",
+      "presence",
+      "presence_logit",
+      "scores",
+      "text_emb",
+      "text_embeds_pre",
+      "upstream_commit"
+    ],
+    "scores": [
+      0.827957034111023
+    ],
+    "enc_feat_lastlevel_shape": [
+      1,
+      256,
+      72,
+      72
+    ],
+    "text_emb_shape": [
+      32,
+      3,
+      256
+    ]
+  },
+  "video_sam31": {
+    "source": "sam3_reference/assets/videos/0001 (upstream dance clip)",
+    "resize_hw": [
+      288,
+      512
+    ],
+    "num_frames": 4,
+    "phrase": "person",
+    "entry_point": "build_sam3_predictor(version=\"sam3.1\").model (add_prompt @f0 -> propagate_in_video start_frame_idx=1)",
+    "model_version": "sam3.1",
+    "precision_mode": "bf16_autocast",
+    "per_frame": {
+      "0": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9649122953414917,
+          0.9569892287254333,
+          0.96875,
+          0.949367105960846
+        ]
+      },
+      "1": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9649122953414917,
+          0.9569892287254333,
+          0.96875,
+          0.949367105960846
+        ]
+      },
+      "2": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9649122953414917,
+          0.9569892287254333,
+          0.96875,
+          0.949367105960846
+        ]
+      },
+      "3": {
+        "obj_ids": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "scores": [
+          0.9649122953414917,
+          0.9569892287254333,
+          0.96875,
+          0.949367105960846
+        ]
+      }
+    },
+    "multiplex": {
+      "multiplex_count_K": 16,
+      "num_buckets": 1,
+      "total_valid_entries": 4,
+      "assignments": [
+        [
+          0,
+          1,
+          2,
+          3,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          -1
+        ]
+      ],
+      "mux_matrix_shape": [
+        16,
+        4
+      ],
+      "demux_matrix_shape": [
+        4,
+        16
+      ],
+      "trk_f1_demux_perobj_shape": [
+        4,
+        3,
+        288,
+        288
+      ],
+      "trk_f1_mux_buckets_shape": [
+        1,
+        16,
+        3,
+        288,
+        288
+      ],
+      "trk_f1_mux_buckets_file": "video_sam31_multiplex_internals.npz (NOT committed; regenerate via capture)"
+    }
+  }
+}

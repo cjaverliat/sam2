@@ -1,0 +1,15 @@
+# @package _global_
+# SPDX-License-Identifier: LicenseRef-SAM
+# EfficientSAM3 EfficientViT-B1 base-lineage (non-multiplex) VIDEO predictor.
+# Video base with the vision trunk swapped to EfficientViT-B1.
+# Checkpoint: stage1_all_converted/efficient_sam3_efficientvit_m_geo_ft.pt.
+defaults:
+  - efficientsam3_video_base
+  - _self_
+
+model:
+  vision_encoder:
+    vision_backbone:
+      trunk:
+        backbone_type: efficientvit
+        model_name: b1

@@ -1,0 +1,8 @@
+# @package _global_
+# SPDX-License-Identifier: LicenseRef-SAM
+# EfficientSAM3 RepViT-M1.1 base-lineage (non-multiplex) VIDEO predictor.
+# = the video base verbatim (see efficientsam3_video_base.yaml); RepViT-M1.1 is the base trunk.
+# Checkpoint: stage1_all_converted/efficient_sam3_repvit_m_geo_ft.pt.
+defaults:
+  - efficientsam3_video_base
+  - _self_

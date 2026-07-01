@@ -34,10 +34,10 @@ import matplotlib.pyplot as plt
 import torch
 from tqdm import tqdm
 
-from sam2.build_sam import build_sam2_generic_video_predictor_onnx
-from sam2.modeling.sam2_prompt import SAM2Prompt
-from sam2.onnx.trt_options import TensorRTOptions
-from sam2.sam2_generic_video_predictor import SAM2GenericVideoPredictorState
+from sam.build_sam import build_sam2_video_predictor_onnx
+from sam.prompts import GeometryPrompt
+from sam.onnx.trt_options import TensorRTOptions
+from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 # Reuse the plotting / IO helpers from the torch example (same directory).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -65,7 +65,7 @@ def main():
     # all weights are baked into the export artifacts under --onnx-dir.
     # Default fp32 TRT; set bf16_enable for full-speed on Ampere+.
     trt_opts = TensorRTOptions()
-    predictor = build_sam2_generic_video_predictor_onnx(
+    predictor = build_sam2_video_predictor_onnx(
         args.model_cfg, args.onnx_dir, device=device,
         use_trt=not args.no_trt, trt_opts=trt_opts, apply_postprocessing=True,
     )
@@ -78,14 +78,14 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     orig_hw = (height, width)
 
-    video_state = SAM2GenericVideoPredictorState.create(orig_hw)
+    video_state = Sam2VideoPredictorState.create(orig_hw)
     warmup(predictor, video_state, device)
 
     ann_frame_idx = 0
     ann_obj_id = 1
     points = torch.tensor([[210, 350], [250, 220]], dtype=torch.float32, device=device)
     labels = torch.tensor([1, 1], device=device)
-    prompt = SAM2Prompt(obj_id=ann_obj_id, points_coords=points, points_labels=labels)
+    prompt = GeometryPrompt(obj_id=ann_obj_id, points_coords=points, points_labels=labels)
 
     initial_frame = read_frame(cap, device)
     results = predictor.forward(
