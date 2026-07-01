@@ -23,12 +23,8 @@ import run_pipelines  # noqa: E402
 GOLDEN = Path(__file__).parent / "fixtures" / "golden_prephase0.npz"
 
 
-def _iou(a, b):
-    a, b = a.astype(bool), b.astype(bool)
-    union = (a | b).sum()
-    return 1.0 if union == 0 else float((a & b).sum()) / float(union)
-
-
+# NOTE: the local ``_iou`` helper (astype(bool) IoU) is now the ``mask_iou`` fixture in
+# tests/parity/conftest.py (functionally identical; auto-discovered here).
 @pytest.fixture(scope="module")
 def outputs():
     if not GOLDEN.is_file():
@@ -44,20 +40,20 @@ def test_keys_match(outputs):
 
 
 @pytest.mark.parametrize("key", ["img_pt", "img_box", "img_ptbox"])
-def test_image_parity(outputs, key):
+def test_image_parity(outputs, key, mask_iou):
     golden, new = outputs
     gm, nm = golden[f"{key}_masks"], new[f"{key}_masks"]
     assert gm.shape == nm.shape, f"{key} mask shape {nm.shape} != golden {gm.shape}"
     for i in range(gm.shape[0]):
-        assert _iou(gm[i], nm[i]) >= 0.999, f"{key}[{i}] mask IoU below 0.999 vs pre-Phase-0"
+        assert mask_iou(gm[i], nm[i]) >= 0.999, f"{key}[{i}] mask IoU below 0.999 vs pre-Phase-0"
     np.testing.assert_allclose(golden[f"{key}_scores"], new[f"{key}_scores"], atol=1e-3)
 
 
 @pytest.mark.parametrize("f_idx", [0, 1, 2])
-def test_video_parity(outputs, f_idx):
+def test_video_parity(outputs, f_idx, mask_iou):
     golden, new = outputs
     g, n = golden[f"vid_f{f_idx}_mask"], new[f"vid_f{f_idx}_mask"]
-    assert _iou(g, n) >= 0.999, f"video frame {f_idx} mask IoU below 0.999 vs pre-Phase-0"
+    assert mask_iou(g, n) >= 0.999, f"video frame {f_idx} mask IoU below 0.999 vs pre-Phase-0"
 
 
 def test_amg_parity(outputs):

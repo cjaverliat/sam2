@@ -36,10 +36,17 @@ _CKPT_VALIDATE = os.path.join(
 )
 _CKPT = _CKPT_PRIMARY if os.path.exists(_CKPT_PRIMARY) else _CKPT_VALIDATE
 
-# Upstream sample video frames (JPEG folder, numerically-named)
-_VIDEO_DIR = os.path.join(
-    "C:", os.sep, "Users", "javerlia", "PycharmProjects",
-    "efficientsam3_reference", "sam3", "assets", "videos", "0001",
+# Upstream sample video frames (JPEG folder, numerically-named). Configurable via the
+# EFFICIENTSAM3_VIDEO_DIR env var; falls back to the workspace-sibling reference clip
+# (../../efficientsam3_reference/... relative to this file, i.e. the same location the old
+# hardcoded path pointed at). The test skips cleanly when the folder is absent (see
+# _skip_reason below).
+_VIDEO_DIR = os.environ.get(
+    "EFFICIENTSAM3_VIDEO_DIR",
+    os.path.join(
+        os.path.dirname(__file__), "..", "..",
+        "efficientsam3_reference", "sam3", "assets", "videos", "0001",
+    ),
 )
 _N_FRAMES = 8  # use only the first 8 frames for speed
 
@@ -179,20 +186,12 @@ def test_sam3_litetext_video_streaming_smoke():
     #    appear (with the same ids) on later frames (tracklets persist).
     # ------------------------------------------------------------------
     if winning_frame0_ids:
-        # Ids allocated on frame 0 must still be present on frame 1 (if there is one)
-        # and must NOT be re-allocated to different-semantics objects (monotonic alloc).
-        frame0_ids_set = set(winning_frame0_ids)
+        # The obj-id allocator is monotonic (it never reuses an id) and objects may die /
+        # be culled, so we can't require every frame-0 id to survive. Verify each id emitted
+        # on a later frame is a valid (non-negative) allocator output.
         for f_idx in range(1, len(frames)):
             later_ids = set(per_frame_results[f_idx].keys())
-            # Any id that appeared on frame 0 must not reappear with a *different*
-            # object (the allocator is monotonic — it never reuses an id).
-            # We can't require every id to survive (objects can die / be culled),
-            # but the union of later-frame ids must be a SUBSET of all ids ever allocated
-            # (monotonic: new ids only go up, never reuse old ones).
-            max_frame0_id = max(winning_frame0_ids)
             for later_id in later_ids:
-                # Any "new" id must be > the max id allocated before this frame
-                # (monotonicity check — we relax: just verify no negative or huge wraparound)
                 assert later_id >= 0, (
                     f"frame {f_idx}: obj_id {later_id} is negative"
                 )

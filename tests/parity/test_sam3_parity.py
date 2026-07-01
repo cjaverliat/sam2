@@ -25,17 +25,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "sam3"
 CKPT = Path(__file__).parents[2] / "checkpoints" / "sam3.pt"
 
 
-def _determinism():
-    """Mirror run_pipelines._determinism / the capture's determinism() regime."""
-    torch.manual_seed(0)
-    np.random.seed(0)
-    torch.use_deterministic_algorithms(True, warn_only=True)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-
-
+# NOTE: ``_determinism`` and ``_mask_iou`` now live in tests/parity/conftest.py as the
+# ``determinism`` / ``mask_iou`` fixtures (auto-discovered here).
 from sam.utils.sam3_transforms import preprocess_to_1008 as _preprocess_to_1008
 
 
@@ -47,14 +38,14 @@ def image_fixture():
     return dict(np.load(f))
 
 
-def test_encoder_parity(image_fixture):
+def test_encoder_parity(image_fixture, determinism):
     """The PE vision encoder's principal (stride-14, 72x72/256ch) level matches the golden
     ``enc_feat_lastlevel`` within atol=1e-2."""
     if not CKPT.is_file():
         pytest.skip(f"checkpoint absent: {CKPT}")
     from sam.build_sam import build_sam3_vision_encoder
 
-    _determinism()
+    determinism()
     encoder = build_sam3_vision_encoder(ckpt_path=str(CKPT), device="cuda")
 
     image_rgb = image_fixture["image_input_rgb"]  # (384,512,3) uint8
@@ -77,7 +68,7 @@ def test_encoder_parity(image_fixture):
     )
 
 
-def test_text_parity(image_fixture):
+def test_text_parity(image_fixture, determinism):
     """The SAM 3 text encoder's output matches the golden ``text_emb`` within atol=1e-2.
 
     Target key: ``text_emb`` (32, 1, 256) = ``language_features`` = ``text_memory_resized``
@@ -92,7 +83,7 @@ def test_text_parity(image_fixture):
         pytest.skip(f"checkpoint absent: {CKPT}")
     from sam.build_sam import build_sam3_text_encoder  # noqa: F401 — will fail RED
 
-    _determinism()
+    determinism()
     text_encoder = build_sam3_text_encoder(ckpt_path=str(CKPT), device="cuda")
 
     phrase = str(image_fixture["image_phrase"])  # "truck"
@@ -113,16 +104,7 @@ def test_text_parity(image_fixture):
     )
 
 
-def _mask_iou(a, b):
-    """IoU of two binary masks (numpy arrays, any integer/bool dtype)."""
-    a = a.astype(bool)
-    b = b.astype(bool)
-    inter = float(np.logical_and(a, b).sum())
-    union = float(np.logical_or(a, b).sum())
-    return 1.0 if union == 0.0 else inter / union
-
-
-def test_detector_parity(image_fixture):
+def test_detector_parity(image_fixture, determinism, mask_iou):
     """The vendored DETR detector reproduces the golden 'truck' detection.
 
     Chains the Task-2 vision encoder (FULL FPN pyramid + pos -- the per-object mask
@@ -140,7 +122,7 @@ def test_detector_parity(image_fixture):
     from sam.build_sam import build_sam3_detector, build_sam3_vision_encoder
     from sam.modeling.text.tokenizer import Sam3Tokenizer
 
-    _determinism()
+    determinism()
     encoder = build_sam3_vision_encoder(ckpt_path=str(CKPT), device="cuda")
     detector = build_sam3_detector(ckpt_path=str(CKPT), device="cuda")
 
@@ -227,11 +209,11 @@ def test_detector_parity(image_fixture):
     my_masks = (result.masks_logits.float().cpu().numpy() > 0.0).astype(np.uint8)  # (N,H,W)
     assert my_masks.shape == g_masks.shape, f"masks shape {my_masks.shape} != golden {g_masks.shape}"
     top = int(np.argmax(scores)) if scores.size else 0
-    iou = _mask_iou(my_masks[top], g_masks[top])
+    iou = mask_iou(my_masks[top], g_masks[top])
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
 
 
-def test_sam3_image_parity(image_fixture):
+def test_sam3_image_parity(image_fixture, determinism, mask_iou):
     """End-to-end image concept-prediction parity through the REAL builder/config/predictor.
 
     ``build_sam3(configs/sam3/sam3.yaml, checkpoints/sam3.pt)`` composes the owned PE
@@ -250,7 +232,7 @@ def test_sam3_image_parity(image_fixture):
     from sam.build_sam import build_sam3
     from sam.prompts import ConceptPrompt
 
-    _determinism()
+    determinism()
     predictor = build_sam3(
         config_file="configs/sam3/sam3.yaml",
         ckpt_path=str(CKPT),
@@ -288,7 +270,7 @@ def test_sam3_image_parity(image_fixture):
     my_masks = (result.masks_logits.float().cpu().numpy() > 0.0).astype(np.uint8)  # (N,H,W)
     assert my_masks.shape == g_masks.shape, f"masks shape {my_masks.shape} != golden {g_masks.shape}"
     top = int(np.argmax(scores))
-    iou = _mask_iou(my_masks[top], g_masks[top])
+    iou = mask_iou(my_masks[top], g_masks[top])
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
 
 
@@ -300,7 +282,7 @@ def video_fixture():
     return dict(np.load(f, allow_pickle=True))
 
 
-def test_tracker_step_parity(video_fixture):
+def test_tracker_step_parity(video_fixture, determinism, mask_iou):
     """One per-object SAM2-lineage ``track_step`` (RoPE memory attention + SAM mask
     decoder) reproduces the golden frame-1 tracker activation.
 
@@ -323,7 +305,7 @@ def test_tracker_step_parity(video_fixture):
 
     from sam.build_sam import build_sam3_tracker, build_sam3_vision_encoder
 
-    _determinism()
+    determinism()
     encoder = build_sam3_vision_encoder(
         ckpt_path=str(CKPT), device="cuda", add_sam2_neck=True
     )
@@ -408,7 +390,7 @@ def test_tracker_step_parity(video_fixture):
     ious = []
     for oid in obj_ids:
         g = video_fixture[f"frame1_obj{oid}"].astype(np.uint8)  # (288,512)
-        best = max(_mask_iou(my_bin[j], g) for j in range(n))
+        best = max(mask_iou(my_bin[j], g) for j in range(n))
         ious.append(best)
     min_iou = min(ious)
     assert min_iou >= 0.99, (
@@ -428,7 +410,7 @@ def test_tracker_step_parity(video_fixture):
     m_bin = (my_trk.reshape(n, 3, -1) > 0.0)
     for gi in range(n):
         best = max(
-            _mask_iou(g_bin[gi, gc], m_bin[mj, mc])
+            mask_iou(g_bin[gi, gc], m_bin[mj, mc])
             for mj in range(n)
             for gc in range(3)
             for mc in range(3)
@@ -436,7 +418,7 @@ def test_tracker_step_parity(video_fixture):
         assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"
 
 
-def test_sam3_video_parity(video_fixture):
+def test_sam3_video_parity(video_fixture, determinism, run_streaming_parity):
     """End-to-end STREAMING video parity through ``build_sam3_video_predictor``.
 
     Replicates the official ``sam3_video_predictor_example`` golden scenario captured in
@@ -457,77 +439,19 @@ def test_sam3_video_parity(video_fixture):
     """
     if not CKPT.is_file():
         pytest.skip(f"checkpoint absent: {CKPT}")
-    from scipy.optimize import linear_sum_assignment
-
     from sam.build_sam import build_sam3_video_predictor
-    from sam.models.sam3_predictor import Sam3VideoPredictorState
-    from sam.prompts import ConceptPrompt
 
-    _determinism()
+    determinism()
     predictor = build_sam3_video_predictor(
         config_file="configs/sam3/sam3.yaml", ckpt_path=str(CKPT), device="cuda"
     )
-
-    frames = video_fixture["video_frames_rgb"]  # (T,288,512,3) uint8
-    video_h, video_w = (int(v) for v in video_fixture["video_hw"])
-    phrase = str(video_fixture["video_phrase"])  # "person"
-    n_frames = int(frames.shape[0])
-
-    state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
-    predictor.set_concept(state, ConceptPrompt(phrase))
-
-    per_frame_masks = {}  # frame_idx -> {obj_id: (H,W) uint8}
-    for f_idx in range(n_frames):
-        out = predictor.forward(state, f_idx, frames[f_idx])
-        per_frame_masks[f_idx] = {
-            oid: (r.masks_logits.float().cpu().numpy()[0, 0] > 0.0).astype(np.uint8)
-            for oid, r in out.items()
-        }
-
-    id_mapping = {}
-    for f_idx in range(n_frames):
-        g_ids = video_fixture[f"frame{f_idx}_obj_ids"].tolist()
-        my = per_frame_masks[f_idx]
-        my_ids = list(my.keys())
-        assert len(my_ids) == len(g_ids), (
-            f"frame {f_idx}: object count {len(my_ids)} != golden {len(g_ids)} "
-            f"(mine={my_ids}, golden={g_ids})"
-        )
-        # Hungarian-match golden<->mine on IoU; require every golden object reproduced.
-        iou_mat = np.zeros((len(g_ids), len(my_ids)), np.float64)
-        for i, gid in enumerate(g_ids):
-            g = video_fixture[f"frame{f_idx}_obj{gid}"].astype(np.uint8)  # (288,512)
-            for j, mid in enumerate(my_ids):
-                iou_mat[i, j] = _mask_iou(my[mid], g)
-        row, col = linear_sum_assignment(-iou_mat)
-        matched = {int(g_ids[r]): (int(my_ids[c]), float(iou_mat[r, c])) for r, c in zip(row, col)}
-        id_mapping[f_idx] = matched
-        assert len(set(c for _, c in zip(row, col))) == len(g_ids), (
-            f"frame {f_idx}: id-mapping is not a bijection ({matched})"
-        )
-        ious = [v[1] for v in matched.values()]
-        min_iou = min(ious)
-        mean_iou = sum(ious) / len(ious)
-        n_ge_99 = sum(1 for x in ious if x >= 0.99)
-        # Every golden object is reproduced (exact count + bijective id-mapping) and the per-frame
-        # MEAN IoU clears the >=0.99 bar.  ONE hard object (golden id 1 — the smallest / most-
-        # occluded person) can dip to ~0.985 on frames 1 & 3: its frame-0 detector SEED is 0.9951
-        # (the DETR seg head's flash->SDPA mask fidelity, Task 4), and that ~0.5% seed error
-        # compounds through propagation. Frame 1 conditions ONLY on the frame-0 seed, so no memory
-        # handling can lift it -- it is a detector-seed limit, not a streaming-wiring defect (the
-        # other 3 objects + all of frame 0 are >=0.99; counts + id order are exact).
-        assert min_iou >= 0.98, (
-            f"frame {f_idx}: per-object video IoU {matched} (min={min_iou:.4f} < 0.98)"
-        )
-        assert mean_iou >= 0.99, (
-            f"frame {f_idx}: mean per-object IoU {mean_iou:.4f} < 0.99 ({matched})"
-        )
-        assert n_ge_99 >= len(ious) - 1, (
-            f"frame {f_idx}: only {n_ge_99}/{len(ious)} objects >= 0.99 ({matched})"
-        )
+    # ONE hard object (golden id 1 -- the smallest / most-occluded person) can dip to ~0.985 on
+    # frames 1 & 3 (a detector-seed limit, not a streaming defect); the mean/n_ge_99 gates absorb
+    # it, so min>=0.98 / mean>=0.99 / n_ge_99>=len-1 exactly as before.
+    run_streaming_parity(predictor, video_fixture, min_gate=0.98, mean_gate=0.99)
 
 
-def test_sam3_video_constant_vram(video_fixture):
+def test_sam3_video_constant_vram(video_fixture, determinism, assert_constant_vram):
     """Peak CUDA memory stays ~flat as the streamed clip grows (the fork's headline property).
 
     Streams a long clip (the 4 golden frames looped to ``N_LONG`` frames) through the
@@ -540,43 +464,14 @@ def test_sam3_video_constant_vram(video_fixture):
     if not CKPT.is_file():
         pytest.skip(f"checkpoint absent: {CKPT}")
     from sam.build_sam import build_sam3_video_predictor
-    from sam.models.sam3_predictor import Sam3VideoPredictorState
-    from sam.prompts import ConceptPrompt
 
-    _determinism()
+    determinism()
     predictor = build_sam3_video_predictor(
         config_file="configs/sam3/sam3.yaml", ckpt_path=str(CKPT), device="cuda"
     )
-
-    base_frames = video_fixture["video_frames_rgb"]  # (4,288,512,3)
-    video_h, video_w = (int(v) for v in video_fixture["video_hw"])
-    phrase = str(video_fixture["video_phrase"])
-    N_LONG = 16
-
-    state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
-    predictor.set_concept(state, ConceptPrompt(phrase))
-
-    WARM_FRAME = 9  # > forgetful window (7): the non-conditional store is full and steady here
-    mem_after_warm = None
-    for f_idx in range(N_LONG):
-        frame = base_frames[f_idx % base_frames.shape[0]]
-        predictor.forward(state, f_idx, frame)
-        torch.cuda.synchronize()
-        if f_idx == WARM_FRAME:  # after the forgetful window has FILLED (steady-state working set)
-            torch.cuda.reset_peak_memory_stats()
-            mem_after_warm = torch.cuda.max_memory_allocated()
-
-    torch.cuda.synchronize()
-    mem_after_long = torch.cuda.max_memory_allocated()
-
-    assert mem_after_warm is not None and mem_after_warm > 0
-    # From the window-full frame on, the per-frame working set is bounded (<= window non-cond
-    # frames + the cond frames), so peak VRAM must not balloon. Allow 25% allocator slack.
-    growth = (mem_after_long - mem_after_warm) / mem_after_warm
-    assert growth <= 0.25, (
-        f"peak VRAM grew {growth:.1%} from frame {WARM_FRAME} ({mem_after_warm/1e6:.1f} MB) to "
-        f"frame {N_LONG-1} ({mem_after_long/1e6:.1f} MB) -- not constant-VRAM"
-    )
+    # Peak-only gate (base tracker, mem_dim 64): peak growth from the window-full frame must stay
+    # <= 25% (allocator slack). No persistent gate here -- matches the original single-gate form.
+    assert_constant_vram(predictor, video_fixture, peak_gate=0.25, n_long=16, warm_frame=9)
 
 
 # --- SAM 3.1 multiplex tracker (M1) ---------------------------------------------------
@@ -591,7 +486,7 @@ def video_sam31_fixture():
     return dict(np.load(f, allow_pickle=True))
 
 
-def test_sam3p1_tracker_step_parity(video_sam31_fixture):
+def test_sam3p1_tracker_step_parity(video_sam31_fixture, determinism, mask_iou):
     """One SAM 3.1 MULTIPLEX ``track_step`` (mux per-object -> buckets -> K-token joint
     decode at ``batch=num_buckets`` -> demux -> per-object) reproduces the golden frame-1
     multiplex decode.
@@ -622,7 +517,7 @@ def test_sam3p1_tracker_step_parity(video_sam31_fixture):
         build_sam3_multiplex_vision_encoder,
     )
 
-    _determinism()
+    determinism()
     # The sam3.1 vision encoder is NOT bit-shared with base sam3.pt (different trunk weights
     # + a 3-level tri-neck); load its propagation neck from the multiplex checkpoint.
     encoder = build_sam3_multiplex_vision_encoder(ckpt_path=str(CKPT_MUX), device="cuda")
@@ -740,7 +635,7 @@ def test_sam3p1_tracker_step_parity(video_sam31_fixture):
     ious = []
     for oid in obj_ids:
         g = fx[f"frame1_obj{oid}"].astype(np.uint8)  # (288,512)
-        best = max(_mask_iou(my_bin[j], g) for j in range(n))
+        best = max(mask_iou(my_bin[j], g) for j in range(n))
         ious.append(best)
     min_iou = min(ious)
     assert min_iou >= 0.99, (
@@ -758,7 +653,7 @@ def test_sam3p1_tracker_step_parity(video_sam31_fixture):
     m_bin = (demuxed.reshape(n, 3, -1) > 0.0)
     for gi in range(n):
         best = max(
-            _mask_iou(g_bin[gi, gc], m_bin[mj, mc_])
+            mask_iou(g_bin[gi, gc], m_bin[mj, mc_])
             for mj in range(n) for gc in range(3) for mc_ in range(3)
         )
         assert best >= 0.99, f"trk_f1 golden row {gi}: best multimask IoU={best:.4f} < 0.99"
@@ -773,7 +668,7 @@ def image_sam31_fixture():
     return dict(np.load(f, allow_pickle=True))
 
 
-def test_sam3p1_image_parity(image_sam31_fixture):
+def test_sam3p1_image_parity(image_sam31_fixture, determinism, mask_iou):
     """End-to-end SAM 3.1 image concept-prediction parity through the real builder/config.
 
     ``build_sam3_multiplex(configs/sam3/sam3.1.yaml, checkpoints/sam3.1_multiplex.pt)``
@@ -799,7 +694,7 @@ def test_sam3p1_image_parity(image_sam31_fixture):
     from sam.build_sam import build_sam3_multiplex
     from sam.prompts import ConceptPrompt
 
-    _determinism()
+    determinism()
     predictor = build_sam3_multiplex(
         config_file="configs/sam3/sam3.1.yaml",
         ckpt_path=str(CKPT_MUX),
@@ -843,12 +738,12 @@ def test_sam3p1_image_parity(image_sam31_fixture):
     my_masks = (result.masks_logits.float().cpu().numpy() > 0.0).astype(np.uint8)  # (N,H,W)
     assert my_masks.shape == g_masks.shape, f"masks shape {my_masks.shape} != golden {g_masks.shape}"
     top = int(np.argmax(scores))
-    iou = _mask_iou(my_masks[top], g_masks[top])
+    iou = mask_iou(my_masks[top], g_masks[top])
     assert iou >= 0.99, f"top-mask IoU={iou:.4f} < 0.99"
 
 
 # --- SAM 3.1 multiplex streaming video predictor (M3) ---------------------------------
-def test_sam3p1_video_parity(video_sam31_fixture):
+def test_sam3p1_video_parity(video_sam31_fixture, determinism, run_streaming_parity):
     """End-to-end SAM 3.1 MULTIPLEX streaming video parity through the real builder.
 
     Replicates the sam3.1 multiplex video golden (``video_sam31.npz``,
@@ -872,71 +767,18 @@ def test_sam3p1_video_parity(video_sam31_fixture):
     """
     if not CKPT_MUX.is_file():
         pytest.skip(f"checkpoint absent: {CKPT_MUX}")
-    from scipy.optimize import linear_sum_assignment
-
     from sam.build_sam import build_sam3_multiplex_video_predictor
-    from sam.models.sam3_predictor import Sam3VideoPredictorState
-    from sam.prompts import ConceptPrompt
 
-    _determinism()
+    determinism()
     predictor = build_sam3_multiplex_video_predictor(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=str(CKPT_MUX), device="cuda"
     )
-
-    fx = video_sam31_fixture
-    frames = fx["video_frames_rgb"]  # (T,288,512,3) uint8
-    video_h, video_w = (int(v) for v in fx["video_hw"])
-    phrase = str(fx["video_phrase"])  # "person"
-    n_frames = int(frames.shape[0])
-
-    state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
-    predictor.set_concept(state, ConceptPrompt(phrase))
-
-    per_frame_masks = {}  # frame_idx -> {obj_id: (H,W) uint8}
-    for f_idx in range(n_frames):
-        out = predictor.forward(state, f_idx, frames[f_idx])
-        per_frame_masks[f_idx] = {
-            oid: (r.masks_logits.float().cpu().numpy()[0, 0] > 0.0).astype(np.uint8)
-            for oid, r in out.items()
-        }
-
-    id_mapping = {}
-    for f_idx in range(n_frames):
-        g_ids = fx[f"frame{f_idx}_obj_ids"].tolist()
-        my = per_frame_masks[f_idx]
-        my_ids = list(my.keys())
-        assert len(my_ids) == len(g_ids), (
-            f"frame {f_idx}: object count {len(my_ids)} != golden {len(g_ids)} "
-            f"(mine={my_ids}, golden={g_ids})"
-        )
-        # Hungarian-match golden<->mine on IoU; require every golden object reproduced.
-        iou_mat = np.zeros((len(g_ids), len(my_ids)), np.float64)
-        for i, gid in enumerate(g_ids):
-            g = fx[f"frame{f_idx}_obj{gid}"].astype(np.uint8)  # (288,512)
-            for j, mid in enumerate(my_ids):
-                iou_mat[i, j] = _mask_iou(my[mid], g)
-        row, col = linear_sum_assignment(-iou_mat)
-        matched = {int(g_ids[r]): (int(my_ids[c]), float(iou_mat[r, c])) for r, c in zip(row, col)}
-        id_mapping[f_idx] = matched
-        assert len(set(c for _, c in zip(row, col))) == len(g_ids), (
-            f"frame {f_idx}: id-mapping is not a bijection ({matched})"
-        )
-        ious = [v[1] for v in matched.values()]
-        min_iou = min(ious)
-        mean_iou = sum(ious) / len(ious)
-        n_ge_99 = sum(1 for x in ious if x >= 0.99)
-        assert min_iou >= 0.98, (
-            f"frame {f_idx}: per-object multiplex video IoU {matched} (min={min_iou:.4f} < 0.98)"
-        )
-        assert mean_iou >= 0.99, (
-            f"frame {f_idx}: mean per-object multiplex IoU {mean_iou:.4f} < 0.99 ({matched})"
-        )
-        assert n_ge_99 >= len(ious) - 1, (
-            f"frame {f_idx}: only {n_ge_99}/{len(ious)} multiplex objects >= 0.99 ({matched})"
-        )
+    # Same gate as base test_sam3_video_parity: one hard/occluded object may dip to ~0.985
+    # (FA3-absent SDPA seed limit), absorbed by mean>=0.99 / n_ge_99>=len-1.
+    run_streaming_parity(predictor, video_sam31_fixture, min_gate=0.98, mean_gate=0.99)
 
 
-def test_sam3p1_video_constant_vram(video_sam31_fixture):
+def test_sam3p1_video_constant_vram(video_sam31_fixture, determinism, assert_constant_vram):
     """Peak CUDA memory stays ~flat as the streamed clip grows (the multiplex fork property).
 
     The multiplex tracker's BUCKET-space spatial memory is threaded as the tracker's native
@@ -953,41 +795,11 @@ def test_sam3p1_video_constant_vram(video_sam31_fixture):
     if not CKPT_MUX.is_file():
         pytest.skip(f"checkpoint absent: {CKPT_MUX}")
     from sam.build_sam import build_sam3_multiplex_video_predictor
-    from sam.models.sam3_predictor import Sam3VideoPredictorState
-    from sam.prompts import ConceptPrompt
 
-    _determinism()
+    determinism()
     predictor = build_sam3_multiplex_video_predictor(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=str(CKPT_MUX), device="cuda"
     )
-
-    fx = video_sam31_fixture
-    base_frames = fx["video_frames_rgb"]  # (4,288,512,3)
-    video_h, video_w = (int(v) for v in fx["video_hw"])
-    phrase = str(fx["video_phrase"])
-    N_LONG = 16
-    WARM_FRAME = 9  # > forgetful window (7): the non-conditional store is full and steady here
-
-    state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
-    predictor.set_concept(state, ConceptPrompt(phrase))
-
-    mem_after_warm = None
-    for f_idx in range(N_LONG):
-        frame = base_frames[f_idx % base_frames.shape[0]]
-        predictor.forward(state, f_idx, frame)
-        torch.cuda.synchronize()
-        if f_idx == WARM_FRAME:  # after the forgetful window has FILLED (steady-state working set)
-            torch.cuda.reset_peak_memory_stats()
-            mem_after_warm = torch.cuda.max_memory_allocated()
-
-    torch.cuda.synchronize()
-    mem_after_long = torch.cuda.max_memory_allocated()
-
-    assert mem_after_warm is not None and mem_after_warm > 0
-    # From the window-full frame on, the per-frame working set is bounded (<= window non-cond
-    # frames + the cond frames), so peak VRAM must not balloon. Allow 25% allocator slack.
-    growth = (mem_after_long - mem_after_warm) / mem_after_warm
-    assert growth <= 0.25, (
-        f"peak VRAM grew {growth:.1%} from frame {WARM_FRAME} ({mem_after_warm/1e6:.1f} MB) to "
-        f"frame {N_LONG-1} ({mem_after_long/1e6:.1f} MB) -- not constant-VRAM"
-    )
+    # Peak-only gate (25% allocator slack); no persistent gate -- matches the original single-gate
+    # form. Peak reset at the window-fill frame (multiplex mem is large; see docstring).
+    assert_constant_vram(predictor, video_sam31_fixture, peak_gate=0.25, n_long=16, warm_frame=9)

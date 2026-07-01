@@ -85,33 +85,16 @@ def _resolve_ckpt(ckpts: list) -> Path | None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _determinism() -> None:
-    """Mirror the determinism regime used by the upstream golden capture."""
-    np.random.seed(0)
-    torch.manual_seed(0)
-    torch.use_deterministic_algorithms(True, warn_only=True)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-
-
-def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
-    """Binary mask IoU (any bool/int dtype)."""
-    a = a.astype(bool)
-    b = b.astype(bool)
-    inter = float(np.logical_and(a, b).sum())
-    union = float(np.logical_or(a, b).sum())
-    return 1.0 if union == 0.0 else inter / union
-
-
-def _pairwise_iou(masks_a: np.ndarray, masks_b: np.ndarray) -> np.ndarray:
-    """Return (N, M) float64 IoU matrix between two sets of (H, W) masks."""
+# NOTE: ``_determinism`` and ``_mask_iou`` now live in tests/parity/conftest.py as the
+# ``determinism`` / ``mask_iou`` fixtures (auto-discovered here). ``_pairwise_iou`` takes the
+# ``mask_iou`` callable as an argument so it stays a plain module-level helper.
+def _pairwise_iou(masks_a: np.ndarray, masks_b: np.ndarray, iou) -> np.ndarray:
+    """Return (N, M) float64 IoU matrix between two sets of (H, W) masks, using ``iou(a, b)``."""
     N, M = len(masks_a), len(masks_b)
     mat = np.zeros((N, M), dtype=np.float64)
     for i in range(N):
         for j in range(M):
-            mat[i, j] = _mask_iou(masks_a[i], masks_b[j])
+            mat[i, j] = iou(masks_a[i], masks_b[j])
     return mat
 
 
@@ -120,7 +103,7 @@ def _pairwise_iou(masks_a: np.ndarray, masks_b: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("variant", list(VARIANTS))
 @pytest.mark.parametrize("prompt", ["dog", "person"])
-def test_efficientsam3_parity(variant: str, prompt: str) -> None:
+def test_efficientsam3_parity(variant: str, prompt: str, determinism, mask_iou) -> None:
     """End-to-end EfficientSAM3 image parity vs upstream golden (Phase A/B gate).
 
     Loads the model via ``build_efficientsam3``, runs ``Sam3Predictor.predict`` on
@@ -161,7 +144,7 @@ def test_efficientsam3_parity(variant: str, prompt: str) -> None:
     gold_masks_raw = gold_npz["masks"]               # (N, 1, 1365, 2048) float
     gold_masks_bin = (gold_masks_raw[:, 0] > 0.5).astype(np.uint8)  # (N, 1365, 2048)
 
-    _determinism()
+    determinism()
 
     # ------------------------------------------------------------------ model
     model = build_efficientsam3(
@@ -194,7 +177,7 @@ def test_efficientsam3_parity(variant: str, prompt: str) -> None:
     ).astype(np.uint8)  # (N, 1365, 2048)
 
     # Pairwise IoU matrix (N_ours x N_gold); counts are already equal.
-    iou_mat = _pairwise_iou(our_masks_bin, gold_masks_bin)
+    iou_mat = _pairwise_iou(our_masks_bin, gold_masks_bin, mask_iou)
     row_ind, col_ind = linear_sum_assignment(-iou_mat)
 
     matched_ious = [float(iou_mat[r, c]) for r, c in zip(row_ind, col_ind)]

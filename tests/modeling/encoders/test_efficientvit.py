@@ -4,7 +4,6 @@
 RED phase: these fail before the vendor package and trunk branch are implemented.
 GREEN phase: pass after implementation.
 """
-import torch
 
 
 def test_efficientvit_backbone_b1_builds():
@@ -32,21 +31,7 @@ def test_triton_fallback_flag():
     assert isinstance(_TRITON_AVAILABLE, bool)
 
 
-def test_efficientvit_trunk_channel_list():
-    from sam.modeling.encoders.efficientsam3_trunk import EfficientSam3Trunk
-
-    trunk = EfficientSam3Trunk(backbone_type="efficientvit", model_name="b1")
-    assert trunk.channel_list == [1024]
-
-
-def test_efficientvit_trunk_forward_shape():
-    """CPU forward: exercises pure-torch RMSNorm fallback (no triton needed)."""
-    from sam.modeling.encoders.efficientsam3_trunk import EfficientSam3Trunk
-
-    trunk = EfficientSam3Trunk(backbone_type="efficientvit", model_name="b1")
-    trunk.eval()
-    with torch.no_grad():
-        out = trunk(torch.randn(1, 3, 1008, 1008))
-    assert isinstance(out, list)
-    assert len(out) == 1
-    assert out[0].shape == (1, 1024, 72, 72), f"expected (1,1024,72,72), got {out[0].shape}"
+# NOTE: the EfficientSam3Trunk channel_list == [1024] and (1,1024,72,72) forward-shape checks
+# for efficientvit/b1 are covered by the parametrized test in test_efficientsam3_trunk.py
+# (shared across repvit / efficientvit / tinyvit). The pure-torch RMSNorm CPU fallback is
+# exercised by that forward pass.

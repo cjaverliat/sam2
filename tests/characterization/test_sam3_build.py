@@ -272,52 +272,32 @@ from sam.models.sam3_predictor import (  # noqa: E402
 )
 
 
-def test_build_sam3_predictor_instantiates():
-    """build_sam3 (ckpt_path=None, CPU) must return a Sam3Predictor instance.
-
-    Exercises the full hydra-compose -> instantiate path for configs/sam3/sam3.yaml without
-    loading any weights. Catches broken _target_, wrong dim, or a moved module.
+@pytest.mark.parametrize(
+    "builder,config,cls",
+    [
+        pytest.param(build_sam3, "configs/sam3/sam3.yaml", Sam3Predictor, id="sam3"),
+        pytest.param(
+            build_sam3_video_predictor, "configs/sam3/sam3.yaml", Sam3VideoPredictor,
+            id="sam3_video",
+        ),
+        pytest.param(
+            build_sam3_multiplex, "configs/sam3/sam3.1.yaml", Sam3MultiplexPredictor,
+            id="sam3_multiplex",
+        ),
+        pytest.param(
+            build_sam3_multiplex_video_predictor, "configs/sam3/sam3.1.yaml",
+            Sam3MultiplexVideoPredictor, id="sam3_multiplex_video",
+        ),
+    ],
+)
+def test_build_predictor_instantiates(builder, config, cls):
+    """Each SAM 3 / SAM 3.1 builder (ckpt_path=None, CPU) instantiates its full
+    hydra-compose -> instantiate (or direct-construction) path without loading any weights,
+    returning its predictor class. Catches a broken _target_, a wrong dim, or a moved module
+    that test_config_compose.py would not surface. Mirrors test_build_instantiate.py.
     """
-    model = build_sam3(
-        "configs/sam3/sam3.yaml", ckpt_path=None, device="cpu", mode="eval"
-    )
-    assert isinstance(model, Sam3Predictor)
-
-
-def test_build_sam3_video_predictor_instantiates():
-    """build_sam3_video_predictor (ckpt_path=None, CPU) must return a Sam3VideoPredictor.
-
-    Exercises the builder's direct-construction path (vision_encoder + text_encoder +
-    detector from config + tracker built directly) without any weights.
-    """
-    model = build_sam3_video_predictor(
-        "configs/sam3/sam3.yaml", ckpt_path=None, device="cpu", mode="eval"
-    )
-    assert isinstance(model, Sam3VideoPredictor)
-
-
-def test_build_sam3_multiplex_predictor_instantiates():
-    """build_sam3_multiplex (ckpt_path=None, CPU) must return a Sam3MultiplexPredictor.
-
-    Exercises the hydra-compose -> instantiate path for configs/sam3/sam3.1.yaml (the SAM
-    3.1 multiplex image predictor) without loading any weights.
-    """
-    model = build_sam3_multiplex(
-        "configs/sam3/sam3.1.yaml", ckpt_path=None, device="cpu", mode="eval"
-    )
-    assert isinstance(model, Sam3MultiplexPredictor)
-
-
-def test_build_sam3_multiplex_video_predictor_instantiates():
-    """build_sam3_multiplex_video_predictor (ckpt_path=None, CPU) -> Sam3MultiplexVideoPredictor.
-
-    Exercises the SAM 3.1 video-predictor builder (tri-neck vision encoder + multiplex
-    tracker built directly; text + detector from configs/sam3/sam3.1.yaml) without weights.
-    """
-    model = build_sam3_multiplex_video_predictor(
-        "configs/sam3/sam3.1.yaml", ckpt_path=None, device="cpu", mode="eval"
-    )
-    assert isinstance(model, Sam3MultiplexVideoPredictor)
+    model = builder(config, ckpt_path=None, device="cpu", mode="eval")
+    assert isinstance(model, cls)
 
 
 # ---------------------------------------------------------------------------

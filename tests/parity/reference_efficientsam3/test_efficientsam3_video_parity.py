@@ -42,15 +42,10 @@ def _resolve_ckpt(basename):
     return primary if primary.is_file() else (validate if validate.is_file() else None)
 
 
-def _determinism():
-    torch.manual_seed(0)
-    np.random.seed(0)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-
-
+# NOTE: ``_determinism`` (flash-attention-safe, WITHOUT use_deterministic_algorithms) now lives
+# in tests/parity/conftest.py as the ``determinism_no_det_algos`` fixture. ``_iou`` below is the
+# >0.5-threshold variant (NOT the astype(bool) ``mask_iou`` fixture); it is intentionally kept
+# local because its thresholding semantics differ from ``mask_iou``.
 def _iou(a, b):
     a = a > 0.5
     b = b > 0.5
@@ -75,7 +70,7 @@ _XFAIL_REASON = (
     [pytest.param(v, marks=pytest.mark.xfail(strict=True, reason=_XFAIL_REASON))
      for v in sorted(_VARIANTS)],
 )
-def test_efficientsam3_video_parity(variant):
+def test_efficientsam3_video_parity(variant, determinism_no_det_algos):
     config_file, basename, gold_name = _VARIANTS[variant]
     ckpt = _resolve_ckpt(basename)
     if ckpt is None:
@@ -94,7 +89,7 @@ def test_efficientsam3_video_parity(variant):
     phrase = str(g["video_phrase"])
     n_frames = frames.shape[0]
 
-    _determinism()
+    determinism_no_det_algos()
     predictor = build_sam3_video_predictor(config_file=config_file, ckpt_path=str(ckpt), device="cuda")
     predictor.eval()
 
