@@ -17,7 +17,11 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
     Non-conditional memories are stored only when BOTH gates pass:
       - Period gate: at least ``storage_period`` frames have elapsed since the last
         stored non-conditional memory for that object.
-      - Score gate: the frame's ``obj_score_logits`` is ``>= score_threshold``.
+      - Score gate: the frame's object-presence probability is ``>= score_threshold``.
+        The score is ``sigmoid(obj_score_logits)`` in ``[0, 1]`` (0 = surely absent,
+        1 = certainly present); ``0.5`` matches SAM2's own present/absent boundary
+        (``is_obj_appearing = obj_score_logits > 0``). The probability is stored on
+        ``ObjectMemory.score``.
 
     "Keep probing" semantics: once the period has elapsed, every subsequent frame is
     checked and the first one that also passes the score gate is stored (which resets
@@ -33,7 +37,7 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
 
     def __init__(
             self,
-            score_threshold: float,
+            score_threshold: float = 0.5,
             storage_period: int = 1,
             memory_temporal_stride: int = 1,
             storage_device: torch.device = torch.device("cpu"),
@@ -43,6 +47,9 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
             storage_device=storage_device,
         )
         assert storage_period >= 1, f"storage_period must be >= 1, got {storage_period}"
+        assert (
+            0.0 <= score_threshold <= 1.0
+        ), f"score_threshold is a probability in [0, 1], got {score_threshold}"
         self.score_threshold = score_threshold
         self.storage_period = storage_period
         # Per-object frame index of the last stored non-conditional memory.
@@ -88,7 +95,9 @@ class SAM2ScoredPeriodicObjectMemoryBank(SAM2ObjectMemoryBank):
             result = results[i]
             prompt = prompts[i]
             is_conditional = prompt is not None
-            score = result.obj_score_logits.max().item()
+            # Object-presence probability in [0, 1]. obj_score_logits is [1, 1] here
+            # (one presence logit per object), so squeeze to a scalar.
+            score = torch.sigmoid(result.obj_score_logits).squeeze().item()
 
             self.known_obj_ids.add(obj_id)
 
