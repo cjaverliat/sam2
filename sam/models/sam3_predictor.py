@@ -938,10 +938,15 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         return det_f, det_p, prop_f, prop_p, int_f, int_p
 
     def _placeholder_concept(self):
-        """A cached '<geometric>' ConceptState for box-only prompts (no text set)."""
+        """A cached placeholder ConceptState for box-only prompts (no text set).
+
+        Upstream keeps the TEXT slot at the literal ``"<text placeholder>"`` for a
+        box-only frame (the box drives detection via the geometric slot).
+        """
         if getattr(self, "_geo_concept", None) is None:
-            emb, mask = self.encode_text(ConceptPrompt("geometric"))
-            self._geo_concept = ConceptState(0, ConceptPrompt("geometric"), emb, None, mask)
+            text = "<text placeholder>"
+            emb, mask = self.encode_text(ConceptPrompt(text))
+            self._geo_concept = ConceptState(0, ConceptPrompt(text), emb, None, mask)
         return self._geo_concept
 
     def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
