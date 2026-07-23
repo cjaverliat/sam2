@@ -237,8 +237,15 @@ class Sam3DetectionResult:
   `predict`/`detect`. Spec+plan: `docs/superpowers/{specs,plans}/2026-07-23-sam3-geometry-encoder-image*`.
   Image box-prompt parity vs the facebook golden (id-agnostic detection-set match).
   Mask geometry raises (no `mask_encoder` weights in either checkpoint).
-- [ ] **Box/point geometry — video (2b)** — route a box `GeometryPrompt` through the
-  detector geometry in the streaming `forward` (→ detection → `_seed_multiplex`/`_grow_mux_state`).
+- [x] **Box/point geometry — video (2b)** — a box `GeometryPrompt` biases the prompt
+  frame's detection (GEOMETRIC slot, `<text placeholder>` concept); the biased detection
+  seeds via the existing association pipeline (our streaming/forgetful-bank arch). Spec+plan:
+  `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-video-box-prompt*`. Parity: frame-0 mask
+  matches the golden (14737 vs 14711 px), tracked object matches on the later frames.
+- [ ] **Hotstart visibility for box-only tracking** — upstream HIDES a box-seeded object
+  during its hotstart-delay warm-up (no detection); our lifecycle only steps on a detection,
+  so it shows the tracked object (correct masks) during that window. Step the lifecycle every
+  frame (tracker object-score as the match signal) to match upstream's show/hide timing.
 - [ ] **Exemplar (VISUAL slot)**, **negative_phrases**, **multi-concept** — separate features.
 - [ ] **Geometry-prompt bit-exact parity** — the image box path matches upstream to a
   looser tolerance than the text-only 2px/1e-2 (geometry tokens + bf16 drift); tighten if needed.
