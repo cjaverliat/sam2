@@ -194,6 +194,44 @@ def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
     return boxes
 
 
+def _build_mux_point_inputs(prompts, video_hw, image_size, device):
+    """Batch point-only ``GeometryPrompt``s into the tracker's ``point_inputs`` dict.
+
+    Coords are scaled from video pixels (or ``[0,1]`` when ``is_normalized``) to the
+    ``image_size`` prompt grid. Ragged point counts are right-padded with coord
+    ``(0,0)`` and label ``-1`` (the SAM "no point" padding), so all objects batch
+    into one interactive ``track_step``.
+
+    Args:
+        prompts: point-only prompts, one per object (each ``points_coords`` (P,2),
+            ``points_labels`` (P,), no boxes/masks).
+        video_hw: ``(H, W)`` of the source video.
+        image_size: the tracker's square input resolution.
+        device: target device for the built tensors.
+
+    Returns:
+        ``(point_inputs, obj_ids)`` where ``point_inputs`` has ``point_coords``
+        ``(n, P, 2)`` float and ``point_labels`` ``(n, P)`` int32.
+    """
+    height, width = video_hw
+    scale = torch.tensor([width, height], device=device, dtype=torch.float32)
+    obj_ids, per_coords, per_labels = [], [], []
+    for prompt in prompts:
+        obj_ids.append(prompt.obj_id)
+        coords = prompt.points_coords.to(device).float()
+        coords = coords if prompt.is_normalized else coords / scale
+        per_coords.append(coords * image_size)
+        per_labels.append(prompt.points_labels.to(device).to(torch.int32))
+    max_points = max(labels.shape[0] for labels in per_labels)
+    n = len(prompts)
+    coords = torch.zeros(n, max_points, 2, device=device)
+    labels = torch.full((n, max_points), -1, device=device, dtype=torch.int32)
+    for i, (obj_coords, obj_labels) in enumerate(zip(per_coords, per_labels)):
+        coords[i, : obj_coords.shape[0]] = obj_coords
+        labels[i, : obj_labels.shape[0]] = obj_labels
+    return {"point_coords": coords, "point_labels": labels}, obj_ids
+
+
 class Sam3MultiplexPredictor(Sam3Predictor):
     """SAM 3.1 (multiplex) image concept predictor (text-only path).
 
