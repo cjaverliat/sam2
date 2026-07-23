@@ -1,0 +1,9 @@
+{
+  "phrase": "person",
+  "num_frames": 101,
+  "hw": [
+    720,
+    1280
+  ],
+  "frames_dir": "notebooks/videos/dance"
+}
