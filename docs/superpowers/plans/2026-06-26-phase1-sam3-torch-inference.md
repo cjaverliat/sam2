@@ -232,4 +232,15 @@ class Sam3DetectionResult:
   suppress-not-purge; upstream has no re-association step). Spec+plan:
   `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-tracklet-reid*`. Verified: model-find
   distinct-id count now matches the golden.
-- [ ] **Boxes/exemplars**, **negative_phrases**, **multi-concept** — separate parity features.
+- [x] **Box/point geometry — image (2a)** — activate the dormant box/point encoders
+  (roi_align + grid_sample + pos-enc, all summed) and thread a `GeometryPrompt` through
+  `predict`/`detect`. Spec+plan: `docs/superpowers/{specs,plans}/2026-07-23-sam3-geometry-encoder-image*`.
+  Image box-prompt parity vs the facebook golden (id-agnostic detection-set match).
+  Mask geometry raises (no `mask_encoder` weights in either checkpoint).
+- [ ] **Box/point geometry — video (2b)** — route a box `GeometryPrompt` through the
+  detector geometry in the streaming `forward` (→ detection → `_seed_multiplex`/`_grow_mux_state`).
+- [ ] **Exemplar (VISUAL slot)**, **negative_phrases**, **multi-concept** — separate features.
+- [ ] **Geometry-prompt bit-exact parity** — the image box path matches upstream to a
+  looser tolerance than the text-only 2px/1e-2 (geometry tokens + bf16 drift); tighten if needed.
+- [ ] **Pre-existing:** `test_sam3_parity.py::test_encoder_parity` (vision encoder) fails
+  independent of this work (fails on pre-geometry `HEAD~`); stale golden / env drift — investigate separately.
