@@ -1,0 +1,15 @@
+{
+  "phrase": "person",
+  "box_xyxy": [
+    300,
+    150,
+    470,
+    420
+  ],
+  "confidence_threshold": 0.5,
+  "hw": [
+    540,
+    960
+  ],
+  "frame": "notebooks/videos/bedroom/00000.jpg"
+}
