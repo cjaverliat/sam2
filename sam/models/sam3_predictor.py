@@ -109,6 +109,39 @@ class Sam3Predictor(nn.Module):
         """
         return None
 
+    @staticmethod
+    def _pack_geometry(prompt, image_hw, device):
+        """Pack a point/box ``GeometryPrompt`` into the detector's geometry inputs.
+
+        Points -> normalized xy ``(N,1,2)`` + labels ``(N,1)``; boxes xyxy (pixel, or
+        normalized via ``is_normalized``) -> normalized cxcywh ``(N,1,4)`` + labels
+        ``(N,1)``. Mask geometry has no weights in either checkpoint -> raises.
+        """
+        if prompt is None:
+            return None
+        if prompt.masks_logits is not None:
+            raise NotImplementedError(
+                "mask geometry prompts are unsupported (no mask_encoder weights); "
+                "use box or point prompts"
+            )
+        h, w = image_hw
+        geo = {}
+        if prompt.points_coords is not None:
+            c = prompt.points_coords.to(device).float()
+            c = c if prompt.is_normalized else c / torch.tensor([w, h], device=device)
+            geo["point_coords"] = c[:, None, :]
+            geo["point_labels"] = prompt.points_labels.to(device)[:, None]
+        if prompt.boxes is not None:
+            b = prompt.boxes.to(device).float()
+            b = b if prompt.is_normalized else b / torch.tensor([w, h, w, h], device=device)
+            cx = (b[:, 0] + b[:, 2]) / 2
+            cy = (b[:, 1] + b[:, 3]) / 2
+            bw = (b[:, 2] - b[:, 0]).abs()
+            bh = (b[:, 3] - b[:, 1]).abs()
+            geo["box_coords"] = torch.stack([cx, cy, bw, bh], -1)[:, None, :]
+            geo["box_labels"] = torch.ones(b.shape[0], 1, device=device)
+        return geo or None
+
     def detect(
         self,
         feats: List[torch.Tensor],
@@ -118,11 +151,12 @@ class Sam3Predictor(nn.Module):
         image_hw: Tuple[int, int],
         confidence_threshold: float = 0.5,
         exemplar_emb: Optional[torch.Tensor] = None,
+        geo: Optional[dict] = None,
     ) -> "Sam3DetectionResult":
         """Ground the encoded text into per-object detections via the owned detector."""
         return self.detector.detect(
             feats, pos, text_emb, text_mask, image_hw,
-            confidence_threshold=confidence_threshold, exemplar_emb=exemplar_emb,
+            confidence_threshold=confidence_threshold, exemplar_emb=exemplar_emb, geo=geo,
         )
 
     # ------------------------------------------------------------------
@@ -132,7 +166,7 @@ class Sam3Predictor(nn.Module):
     @torch.inference_mode()
     def predict(
         self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5,
-        dtype: torch.dtype = torch.bfloat16,
+        dtype: torch.dtype = torch.bfloat16, geometry=None,
     ) -> "Sam3DetectionResult":
         """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
 
@@ -165,9 +199,11 @@ class Sam3Predictor(nn.Module):
             exemplar_emb = (
                 self.encode_exemplars(concept.exemplars) if concept.exemplars else None
             )
+            geo = self._pack_geometry(geometry, image_hw, device)
             return self.detect(
                 feats, pos, text_emb, text_mask, image_hw,
                 confidence_threshold=confidence_threshold, exemplar_emb=exemplar_emb,
+                geo=geo,
             )
 
 
@@ -254,7 +290,8 @@ class Sam3MultiplexPredictor(Sam3Predictor):
 
     @torch.inference_mode()
     def predict(
-        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5
+        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5,
+        geometry=None,
     ) -> "Sam3DetectionResult":
         """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
 
@@ -269,7 +306,8 @@ class Sam3MultiplexPredictor(Sam3Predictor):
             x = preprocess_to_1008(image, device=device)
             feats, pos = self.encode_image(x)
             text_emb, text_mask = self.encode_text(concept)
-            out = self.detector.forward_grounding(feats, pos, text_emb, text_mask)
+            geo = self._pack_geometry(geometry, image_hw, device)
+            out = self.detector.forward_grounding(feats, pos, text_emb, text_mask, geo=geo)
 
         pred_logits = out["pred_logits"]              # (P, nq, 1) -- JOINT (presence folded)
         pred_masks = out["pred_masks"]                # (P, nq, h, w) logits

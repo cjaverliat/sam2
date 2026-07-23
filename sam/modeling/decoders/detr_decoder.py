@@ -30,9 +30,33 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from torch import Tensor
 
+from sam.modeling.position_encoding import PositionEmbeddingSine
 from sam.modeling.utils import get_activation_fn, get_clones
+
+
+def _concat_padded_sequences(seq1, mask1, seq2, mask2):
+    """Concatenate two right-padded seq-first sequences -> one right-padded sequence.
+
+    ``seq*`` are ``(L, B, C)``; ``mask*`` are ``(B, L)`` with True at padded positions.
+    Faithful port of upstream ``geometry_encoders.concat_padded_sequences``.
+    """
+    l1, bs, c = seq1.shape
+    l2 = seq2.shape[0]
+    len1 = (~mask1).sum(dim=-1)
+    len2 = (~mask2).sum(dim=-1)
+    max_len = l1 + l2
+    cat_mask = (
+        torch.arange(max_len, device=seq2.device)[None].repeat(bs, 1)
+        >= (len1 + len2)[:, None]
+    )
+    cat_seq = torch.zeros((max_len, bs, c), device=seq2.device, dtype=seq2.dtype)
+    cat_seq[:l1] = seq1
+    index = torch.arange(l2, device=seq2.device)[:, None].repeat(1, bs) + len1[None]
+    cat_seq = cat_seq.scatter(0, index[:, :, None].expand(-1, -1, c), seq2)
+    return cat_seq, cat_mask
 
 
 # =====================================================================================
@@ -922,22 +946,82 @@ class Sam3GeometryEncoder(nn.Module):
         self.final_proj = nn.Linear(d_model, d_model)
         self.norm = nn.LayerNorm(d_model)
         self.img_pre_norm = nn.LayerNorm(d_model)
-        # active cls-token transformer (cross-attends the cls token to the image features)
+        self.roi_size = roi_size
+        # sinusoidal position encoder for the point/box pos-enc sub-encoders (no params)
+        self.pos_enc = PositionEmbeddingSine(num_pos_feats=d_model)
+        # active cls-token transformer (cross-attends the tokens to the image features)
         self.encode = get_clones(layer, num_layers)
         self.encode_norm = nn.LayerNorm(d_model)
 
-    def forward(self, img_feats, img_pos_embeds, bs):
+    def _encode_points(self, points, points_mask, points_labels, img_feats):
+        """Point tokens: direct + grid_sample pool + sine pos-enc + label (all summed)."""
+        n_points, bs = points.shape[:2]
+        emb = self.points_direct_project(points)
+        grid = (points.transpose(0, 1).unsqueeze(2) * 2) - 1          # (B,N,1,2) in [-1,1]
+        sampled = F.grid_sample(img_feats, grid, align_corners=False)  # (B,C,N,1)
+        emb = emb + self.points_pool_project(sampled.squeeze(-1).permute(2, 0, 1))
+        x, y = points.unbind(-1)
+        enc_x, enc_y = self.pos_enc._encode_xy(x.flatten(), y.flatten())
+        enc = torch.cat([enc_x.view(n_points, bs, -1), enc_y.view(n_points, bs, -1)], -1)
+        emb = emb + self.points_pos_enc_project(enc)
+        return self.label_embed(points_labels.long()) + emb, points_mask
+
+    def _encode_boxes(self, boxes, boxes_mask, boxes_labels, img_feats):
+        """Box tokens: direct + roi_align pool + sine pos-enc + label (all summed)."""
+        n_boxes, bs = boxes.shape[:2]
+        emb = self.boxes_direct_project(boxes)
+        h, w = img_feats.shape[-2:]
+        boxes_xyxy = box_cxcywh_to_xyxy(boxes)
+        scale = torch.tensor([w, h, w, h], device=boxes.device, dtype=boxes_xyxy.dtype)
+        boxes_xyxy = boxes_xyxy * scale.view(1, 1, 4)
+        sampled = torchvision.ops.roi_align(
+            img_feats, boxes_xyxy.float().transpose(0, 1).unbind(0), self.roi_size
+        )                                                              # (B*N,C,roi,roi)
+        proj = self.boxes_pool_project(sampled).view(bs, n_boxes, self.d_model).transpose(0, 1)
+        emb = emb + proj
+        cx, cy, bw, bh = boxes.unbind(-1)
+        enc = self.pos_enc.encode_boxes(cx.flatten(), cy.flatten(), bw.flatten(), bh.flatten())
+        emb = emb + self.boxes_pos_enc_project(enc.view(n_boxes, bs, -1))
+        return self.label_embed(boxes_labels.long()) + emb, boxes_mask
+
+    def forward(self, img_feats, img_pos_embeds, bs, img_sizes=None,
+                box_coords=None, box_labels=None, point_coords=None, point_labels=None):
         seq_first_img_feats = img_feats[-1]
         seq_first_img_pos_embeds = (
             img_pos_embeds[-1] if img_pos_embeds is not None
             else torch.zeros_like(seq_first_img_feats)
         )
-        # text-only: points/boxes are empty -> only the CLS token remains
-        cls = self.cls_embed.weight.view(1, 1, self.d_model).repeat(1, bs, 1)
-        final_mask = torch.zeros(
-            bs, 1, dtype=torch.bool, device=seq_first_img_feats.device
-        )
-        final_embeds = self.norm(self.final_proj(cls))
+        device = seq_first_img_feats.device
+        has_geo = box_coords is not None or point_coords is not None
+        if has_geo:
+            h, w = img_sizes[-1]
+            nchw = self.img_pre_norm(img_feats[-1]).permute(1, 2, 0).view(
+                bs, self.d_model, h, w
+            )
+            if point_coords is not None:
+                pm = torch.zeros(bs, point_coords.shape[0], dtype=torch.bool, device=device)
+                final_embeds, final_mask = self._encode_points(
+                    point_coords, pm, point_labels, nchw
+                )
+            else:
+                final_embeds = seq_first_img_feats.new_zeros(0, bs, self.d_model)
+                final_mask = torch.zeros(bs, 0, dtype=torch.bool, device=device)
+            if box_coords is not None:
+                bm = torch.zeros(bs, box_coords.shape[0], dtype=torch.bool, device=device)
+                be, bmask = self._encode_boxes(box_coords, bm, box_labels, nchw)
+                final_embeds, final_mask = _concat_padded_sequences(
+                    final_embeds, final_mask, be, bmask
+                )
+            cls = self.cls_embed.weight.view(1, 1, self.d_model).repeat(1, bs, 1)
+            cls_mask = torch.zeros(bs, 1, dtype=torch.bool, device=device)
+            final_embeds, final_mask = _concat_padded_sequences(
+                final_embeds, final_mask, cls, cls_mask
+            )
+        else:
+            # text-only: points/boxes empty -> only the CLS token remains
+            final_embeds = self.cls_embed.weight.view(1, 1, self.d_model).repeat(1, bs, 1)
+            final_mask = torch.zeros(bs, 1, dtype=torch.bool, device=device)
+        final_embeds = self.norm(self.final_proj(final_embeds))
         for lay in self.encode:
             final_embeds = lay(
                 tgt=final_embeds,
@@ -945,8 +1029,7 @@ class Sam3GeometryEncoder(nn.Module):
                 tgt_key_padding_mask=final_mask,
                 pos=seq_first_img_pos_embeds,
             )
-        final_embeds = self.encode_norm(final_embeds)
-        return final_embeds, final_mask
+        return self.encode_norm(final_embeds), final_mask
 
 
 # =====================================================================================
@@ -1021,9 +1104,10 @@ class Sam3DetrDetector(nn.Module):
         text_emb: Tensor,
         text_mask: Tensor,
         exemplar_emb: Optional[Tensor] = None,
+        geo: Optional[dict] = None,
     ) -> Dict[str, Tensor]:
         assert exemplar_emb is None, (
-            "exemplar prompts are deferred; the base text-only path expects exemplar_emb=None"
+            "exemplar (VISUAL-slot) prompts are deferred; pass box/point via `geo`"
         )
         src = feats[-1]  # principal level (num_feature_levels=1), batch-first (bs,c,H,W)
         bs = src.shape[0]
@@ -1037,10 +1121,11 @@ class Sam3DetrDetector(nn.Module):
         # encoder (geometry_encoder=None) -> the prompt is the text features alone.
         if self.geometry_encoder is not None:
             geo_feats, geo_mask = self.geometry_encoder(
-                img_feats=[img_feat_seq], img_pos_embeds=[img_pos_seq], bs=bs
+                img_feats=[img_feat_seq], img_pos_embeds=[img_pos_seq], bs=bs,
+                img_sizes=[(h, w)], **(geo or {}),
             )
-            prompt = torch.cat([text_emb, geo_feats], dim=0)        # (seq+1, bs, c)
-            prompt_mask = torch.cat([text_mask, geo_mask], dim=1)   # (bs, seq+1)
+            prompt = torch.cat([text_emb, geo_feats], dim=0)        # (seq+Ngeo, bs, c)
+            prompt_mask = torch.cat([text_mask, geo_mask], dim=1)   # (bs, seq+Ngeo)
         else:
             prompt = text_emb                                       # (seq, bs, c)
             prompt_mask = text_mask                                 # (bs, seq)
@@ -1106,10 +1191,11 @@ class Sam3DetrDetector(nn.Module):
         image_hw: Tuple[int, int],
         confidence_threshold: float = 0.5,
         exemplar_emb: Optional[Tensor] = None,
+        geo: Optional[dict] = None,
     ):
         from sam.results import Sam3DetectionResult
 
-        out = self.forward_grounding(feats, pos, text_emb, text_mask, exemplar_emb)
+        out = self.forward_grounding(feats, pos, text_emb, text_mask, exemplar_emb, geo)
         pred_boxes = out["pred_boxes"]              # (P, nq, 4) cxcywh, normalised
         pred_logits = out["pred_logits"]            # (P, nq, 1)
         pred_masks = out["pred_masks"]              # (P, nq, h, w) logits
