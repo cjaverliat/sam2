@@ -948,12 +948,6 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             num_frames = frame_idx + 1
             concept = state.concepts[0] if state.concepts else None
 
-            # Interactive VOS: seed-frame point clicks spawn the tracked set (text-free).
-            if geometry_prompts:
-                return self._seed_points_multiplex(
-                    state, frame_idx, geometry_prompts, bf_int, bf_prop, num_frames
-                )
-
             # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
             active_ids = sorted(state.bank.known_obj_ids)
             trk_low_masks: dict[int, torch.Tensor] = {}
@@ -998,6 +992,21 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 results[oid] = self._masklet_from_lowres(
                     det.masks_logits[det_idx].float(), None, H, W
                 )
+
+            # 6) interactive point clicks: seed the set (first frame) or grow it
+            # (mid-stream / co-seed after a detector seed on this frame).
+            if geometry_prompts:
+                if state.mux_state is None:
+                    results.update(self._seed_points_multiplex(
+                        state, frame_idx, geometry_prompts, bf_int, bf_prop, num_frames
+                    ))
+                else:
+                    click_masks, click_ids = self._click_masks_multiplex(
+                        geometry_prompts, (H, W), bf_int
+                    )
+                    results.update(self._grow_mux_state(
+                        state, frame_idx, click_masks, True, click_ids, bf_int, bf_prop
+                    ))
             return results
 
     # ------------------------------------------------------------------
@@ -1061,17 +1070,39 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 )
             if prompt.points_coords is None:
                 raise ValueError("geometry prompt has no points")
-        if state.mux_state is not None:
-            raise NotImplementedError(
-                "multiplex (sam3.1): mid-stream click add is unsupported (the mux "
-                "state is fixed from the seed frame); all objects must appear on the "
-                "seed frame"
-            )
-        if state.concepts:
-            raise NotImplementedError(
-                "multiplex (sam3.1): text concept + click co-seed on one frame is "
-                "unsupported yet; use clicks alone (no set_concept) for interactive VOS"
-            )
+
+    def _click_masks_multiplex(self, prompts, video_hw, bf_int):
+        """Decode point clicks into binarised ``(n, 1, ims, ims)`` masks.
+
+        Runs the interactive head (prompt encoder + mask decoder) on the clicks to
+        produce a mask per object, which :meth:`_grow_mux_state` then adds to the
+        live mux state as a conditioning mask (mirrors upstream add_sam2_new_points).
+        """
+        point_inputs, new_ids = _build_mux_point_inputs(
+            prompts, video_hw, self.tracker.image_size, self.device
+        )
+        int_feats = bf_int["vision_feats"]
+        int_sizes = bf_int["feat_sizes"]
+        int_hi = None
+        if len(int_feats) > 1:
+            int_hi = [
+                x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
+                for x, s in zip(int_feats[:-1], int_sizes[:-1])
+            ]
+        interactive_pix_feat = self.tracker._get_interactive_pix_mem(int_feats, int_sizes)
+        sam_out = self.tracker._forward_sam_heads(
+            backbone_features=interactive_pix_feat,
+            point_inputs=point_inputs,
+            interactive_high_res_features=int_hi,
+            multimask_output=self.tracker._use_multimask(True, point_inputs),
+            objects_to_interact=list(range(len(new_ids))),
+        )
+        ims = self.tracker.input_mask_size
+        masks = F.interpolate(
+            (sam_out["high_res_masks"] > 0).float(), size=(ims, ims),
+            mode="bilinear", align_corners=False,
+        )
+        return masks, new_ids
 
     def _seed_points_multiplex(
         self, state, frame_idx, prompts, bf_int, bf_prop, num_frames
