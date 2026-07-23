@@ -974,11 +974,17 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     state, det, active_ids, trk_low_masks, trk_results
                 )
 
-            # 4) seed new detector instances (JOINT multiplex cond-frame mask_as_output)
+            # 4) seed (first frame) or grow (mid-stream) new detector instances
             if new_objects:
-                self._seed_multiplex(
-                    state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames
-                )
+                if state.mux_state is None:
+                    self._seed_multiplex(
+                        state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames
+                    )
+                else:
+                    new_masks, new_ids = self._det_masks_for_seed(det, new_objects)
+                    self._grow_mux_state(
+                        state, frame_idx, new_masks, False, new_ids, bf_int, bf_prop
+                    )
 
             # 5) build outputs: existing -> tracker masks; new dets -> detector masks
             results: dict[int, MaskletResult] = {}
@@ -1108,27 +1114,8 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             for obj_id in new_ids
         }
 
-    def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
-        """Seed new detector instances JOINTLY (multiplex ``mask_as_output`` cond frame).
-
-        Mirrors the base ``_seed_object`` (resize each detector mask to ``input_mask_size`` +
-        BINARIZE) but stacks all new objects into ONE multiplex ``track_step`` (cond-frame
-        interactive head + joint memory encoder). Builds the persistent ``MultiplexState`` for the
-        tracked set (the committed scenario seeds once, on the cond frame, then co-tracks), records
-        the obj-index -> obj_id map, registers the ids on the bank (lifecycle), and stores the
-        cond-frame output in ``output_dict``.
-        """
-        if state.mux_state is not None:
-            raise NotImplementedError(
-                "multiplex (sam3.1): mid-stream new-instance spawn is unsupported "
-                "(num_buckets is fixed from the first concept frame); all instances "
-                "must appear on the seed frame"
-            )
-        device = self.device
-        new_ids = [oid for oid, _ in new_objects]
-        mux_state = self.tracker.multiplex_controller.get_state(
-            len(new_ids), device, torch.float32, random=False
-        )
+    def _det_masks_for_seed(self, det, new_objects):
+        """Binarised ``(n, 1, ims, ims)`` masks + ids for detector-spawned objects."""
         ims = self.tracker.input_mask_size
         masks = []
         for _oid, det_idx in new_objects:
@@ -1137,7 +1124,55 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 mode="bilinear", align_corners=False,
             )
             masks.append((m > 0.0).float())
-        mask_inputs = torch.cat(masks, dim=0)  # (n, 1, ims, ims)
+        return torch.cat(masks, dim=0), [oid for oid, _ in new_objects]
+
+    def _grow_mux_state(
+        self, state, frame_idx, new_masks, is_mask_from_pts, new_ids, bf_int, bf_prop
+    ) -> dict:
+        """Add new objects to the live mux state at ``frame_idx`` (forward-only).
+
+        The current frame's output must already be stored in
+        ``mux_output_dict["non_cond_frame_outputs"][frame_idx]`` (propagation) or,
+        for a seed-frame co-seed, in ``cond_frame_outputs[frame_idx]``. After growth
+        the frame is a conditioning frame (re-keyed so ``_prune_mux_memory`` keeps
+        it). Returns per-object masklets for ``new_ids``.
+        """
+        height, width = state.video_hw
+        prev = state.mux_output_dict["non_cond_frame_outputs"].get(frame_idx)
+        was_cond = prev is None
+        if was_cond:  # seed-frame co-seed: grow the cond-frame output in place
+            prev = state.mux_output_dict["cond_frame_outputs"][frame_idx]
+        out, new_idx = self.tracker.add_new_masks_to_existing_state(
+            prev, new_masks, bf_int, bf_prop, state.mux_state, is_mask_from_pts
+        )
+        if not was_cond:
+            state.mux_output_dict["non_cond_frame_outputs"].pop(frame_idx, None)
+            state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
+        state.mux_obj_ids = state.mux_obj_ids + list(new_ids)
+        for obj_id in new_ids:
+            state.bank.known_obj_ids.add(obj_id)
+        per_obj = self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
+        return {
+            oid: self._masklet_from_lowres(
+                per_obj[oid]["pred_masks"][0, 0].float(), per_obj[oid], height, width
+            )
+            for oid in new_ids
+        }
+
+    def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
+        """Seed new detector instances JOINTLY (multiplex ``mask_as_output`` cond frame).
+
+        Mirrors the base ``_seed_object`` (resize each detector mask to ``input_mask_size`` +
+        BINARIZE) but stacks all new objects into ONE multiplex ``track_step`` (cond-frame
+        interactive head + joint memory encoder). Builds the persistent ``MultiplexState`` for the
+        tracked set, records the obj-index -> obj_id map, registers the ids on the bank
+        (lifecycle), and stores the cond-frame output in ``output_dict``.
+        """
+        new_ids = [oid for oid, _ in new_objects]
+        mux_state = self.tracker.multiplex_controller.get_state(
+            len(new_ids), self.device, torch.float32, random=False
+        )
+        mask_inputs, _ = self._det_masks_for_seed(det, new_objects)  # (n, 1, ims, ims)
         out = self.tracker.track_step(
             frame_idx=frame_idx,
             is_init_cond_frame=True,
