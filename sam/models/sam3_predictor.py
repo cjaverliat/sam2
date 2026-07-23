@@ -933,10 +933,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
     ) -> dict[int, MaskletResult]:
         geometry_prompts = geometry_prompts or []
         if geometry_prompts:
-            raise NotImplementedError(
-                "multiplex (sam3.1) video predictor does not support geometry prompts yet; "
-                "use the base build_sam3_video_predictor for click/box prompting"
-            )
+            self._check_mux_geometry(state, geometry_prompts)
         device = self.device
         H, W = state.video_hw
         state.num_frames_processed += 1
@@ -950,6 +947,12 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             )
             num_frames = frame_idx + 1
             concept = state.concepts[0] if state.concepts else None
+
+            # Interactive VOS: seed-frame point clicks spawn the tracked set (text-free).
+            if geometry_prompts:
+                return self._seed_points_multiplex(
+                    state, frame_idx, geometry_prompts, bf_int, bf_prop, num_frames
+                )
 
             # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -1035,6 +1038,75 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         state.mux_output_dict["non_cond_frame_outputs"][frame_idx] = out
         self._prune_mux_memory(state, frame_idx)
         return self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
+
+    def _check_mux_geometry(self, state, geometry_prompts) -> None:
+        """Reject the geometry-prompt cases this predictor does not yet support.
+
+        Feature 1a supports only point clicks that SEED the first frame (no text
+        concept, no existing mux state). Boxes/masks are the detector geometry-
+        encoder (exemplar) path; mid-stream add and text co-seed are Feature 1b.
+        """
+        for prompt in geometry_prompts:
+            if prompt.boxes is not None or prompt.masks_logits is not None:
+                raise NotImplementedError(
+                    "multiplex (sam3.1): box/mask geometry prompts route through the "
+                    "detector geometry-encoder (exemplar path), not implemented yet; "
+                    "clicks (points) are supported"
+                )
+            if prompt.points_coords is None:
+                raise ValueError("geometry prompt has no points")
+        if state.mux_state is not None:
+            raise NotImplementedError(
+                "multiplex (sam3.1): mid-stream click add is unsupported (the mux "
+                "state is fixed from the seed frame); all objects must appear on the "
+                "seed frame"
+            )
+        if state.concepts:
+            raise NotImplementedError(
+                "multiplex (sam3.1): text concept + click co-seed on one frame is "
+                "unsupported yet; use clicks alone (no set_concept) for interactive VOS"
+            )
+
+    def _seed_points_multiplex(
+        self, state, frame_idx, prompts, bf_int, bf_prop, num_frames
+    ) -> dict:
+        """Seed click-prompted objects on the seed frame (interactive VOS, no text).
+
+        Structural twin of :meth:`_seed_multiplex`: builds the persistent
+        ``MultiplexState`` from a single JOINT interactive ``track_step`` (points ->
+        interactive prompt encoder + mask decoder + joint memory encoder), records
+        the obj-id map, registers ids on the bank, and returns per-object masklets.
+        """
+        height, width = state.video_hw
+        point_inputs, new_ids = _build_mux_point_inputs(
+            prompts, (height, width), self.tracker.image_size, self.device
+        )
+        mux_state = self.tracker.multiplex_controller.get_state(
+            len(new_ids), self.device, torch.float32, random=False
+        )
+        out = self.tracker.track_step(
+            frame_idx=frame_idx,
+            is_init_cond_frame=True,
+            backbone_features_interactive=bf_int,
+            backbone_features_propagation=bf_prop,
+            point_inputs=point_inputs,
+            mask_inputs=None,
+            output_dict={"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
+            num_frames=num_frames,
+            multiplex_state=mux_state,
+        )
+        state.mux_state = mux_state
+        state.mux_obj_ids = new_ids
+        state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
+        for obj_id in new_ids:
+            state.bank.known_obj_ids.add(obj_id)
+        per_obj = self._demux_outputs(out, mux_state, new_ids)
+        return {
+            obj_id: self._masklet_from_lowres(
+                per_obj[obj_id]["pred_masks"][0, 0].float(), per_obj[obj_id], height, width
+            )
+            for obj_id in new_ids
+        }
 
     def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
         """Seed new detector instances JOINTLY (multiplex ``mask_as_output`` cond frame).
