@@ -882,11 +882,25 @@ class Sam3MultiplexTracker(Sam3Tracker):
             objects_in_mask=new_idx,
         )
 
+        # Reconcile resolutions before append (mirror upstream): the interactive head
+        # emits masks at input_mask_size, the propagation output at image_size. Unify
+        # high-res at the interactive grid (memory-encode only) and downsample the new
+        # low-res to the propagation output grid (drives the output masklets).
+        new_high = sam_out["high_res_masks"]
+        if prev_output["pred_masks_high_res"].shape[-2:] != new_high.shape[-2:]:
+            prev_output["pred_masks_high_res"] = F.interpolate(
+                prev_output["pred_masks_high_res"].float(), size=new_high.shape[-2:],
+                mode="bilinear", align_corners=False,
+            )
+        new_low = F.interpolate(
+            sam_out["low_res_masks"].float(), size=prev_output["pred_masks"].shape[-2:],
+            mode="bilinear", align_corners=False,
+        )
         prev_output["pred_masks"] = torch.cat(
-            [prev_output["pred_masks"], sam_out["low_res_masks"]], dim=0
+            [prev_output["pred_masks"], new_low], dim=0
         )
         prev_output["pred_masks_high_res"] = torch.cat(
-            [prev_output["pred_masks_high_res"], sam_out["high_res_masks"]], dim=0
+            [prev_output["pred_masks_high_res"], new_high], dim=0
         )
         prev_output["object_score_logits"] = torch.cat(
             [prev_output["object_score_logits"], sam_out["object_score_logits"]], dim=0
