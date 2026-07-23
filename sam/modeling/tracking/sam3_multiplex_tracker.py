@@ -835,3 +835,75 @@ class Sam3MultiplexTracker(Sam3Tracker):
             current_out["image_pos_enc"] = propagation_vision_pos_embeds[-1]
 
         return current_out
+
+    def add_new_masks_to_existing_state(
+        self, prev_output, new_masks, backbone_features_interactive,
+        backbone_features_propagation, multiplex_state, is_mask_from_pts,
+    ):
+        """Add new objects to a live multiplex frame output (mirror upstream).
+
+        Fills padding slots in the EXISTING bucket grid (no growth): demux the
+        current pointers, allocate slots, encode each new mask via the interactive
+        head, append the per-object tensors, re-mux the pointers, and re-encode the
+        frame's spatial memory so it conditions on the new objects too.
+
+        Args:
+            prev_output: the current frame's ``track_step`` output (mutated in place).
+            new_masks: ``(num_new, 1, ims, ims)`` binarised masks for the new objects.
+            backbone_features_interactive: the per-frame interactive feature dict.
+            backbone_features_propagation: the per-frame propagation feature dict.
+            multiplex_state: the live state (grown in place via ``add_objects``).
+            is_mask_from_pts: True for click-derived masks (memory binarisation).
+
+        Returns:
+            ``(prev_output, new_idx)`` -- the grown output and the new slot indices.
+        """
+        num_new = new_masks.shape[0]
+        int_feats = backbone_features_interactive["vision_feats"]
+        int_sizes = backbone_features_interactive["feat_sizes"]
+        int_hi = None
+        if len(int_feats) > 1:
+            int_hi = [
+                x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
+                for x, s in zip(int_feats[:-1], int_sizes[:-1])
+            ]
+        prop_feats = backbone_features_propagation["vision_feats"]
+        prop_sizes = backbone_features_propagation["feat_sizes"]
+
+        existing_ptr = multiplex_state.demux(prev_output["obj_ptr"])  # (old, C)
+        new_idx = multiplex_state.find_next_batch_of_available_indices(
+            num_new, allow_new_buckets=False
+        )
+        multiplex_state.add_objects(new_idx, object_ids=None, allow_new_buckets=False)
+
+        interactive_pix_feat = self._get_interactive_pix_mem(int_feats, int_sizes)
+        sam_out = self._use_mask_as_output(
+            interactive_pix_feat, int_hi, new_masks, multiplex_state,
+            objects_in_mask=new_idx,
+        )
+
+        prev_output["pred_masks"] = torch.cat(
+            [prev_output["pred_masks"], sam_out["low_res_masks"]], dim=0
+        )
+        prev_output["pred_masks_high_res"] = torch.cat(
+            [prev_output["pred_masks_high_res"], sam_out["high_res_masks"]], dim=0
+        )
+        prev_output["object_score_logits"] = torch.cat(
+            [prev_output["object_score_logits"], sam_out["object_score_logits"]], dim=0
+        )
+        combined_ptr = torch.cat([existing_ptr, sam_out["obj_ptr"]], dim=0)
+        prev_output["obj_ptr"] = multiplex_state.mux(combined_ptr)
+        prev_output["conditioning_objects"].update(new_idx)
+
+        if self.num_maskmem > 0:
+            maskmem_features, maskmem_pos_enc = self._encode_new_memory(
+                image=None, current_vision_feats=prop_feats, feat_sizes=prop_sizes,
+                pred_masks_high_res=prev_output["pred_masks_high_res"],
+                object_score_logits=prev_output["object_score_logits"],
+                is_mask_from_pts=is_mask_from_pts,
+                conditioning_objects=prev_output["conditioning_objects"],
+                multiplex_state=multiplex_state,
+            )
+            prev_output["maskmem_features"] = maskmem_features
+            prev_output["maskmem_pos_enc"] = maskmem_pos_enc
+        return prev_output, new_idx
