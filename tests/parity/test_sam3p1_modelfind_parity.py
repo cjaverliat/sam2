@@ -72,8 +72,11 @@ def test_modelfind_detector_midstream_parity():
     st = Sam3VideoPredictorState(video_hw=(h, w))
     pred.set_concept(st, ConceptPrompt(scn["phrase"]))
 
+    our_ids, gold_ids = set(), set()
     for i, fr in enumerate(frames):
         out = pred.forward(st, i, fr)
+        our_ids.update(out)
+        gold_ids.update(int(o) for o in g[f"frame{i}_obj_ids"])
         ours = [(out[k].masks_logits[0, 0] > 0).cpu().numpy() for k in sorted(out)]
         gids = g[f"frame{i}_obj_ids"]
         gold = [g[f"frame{i}_obj{o}"].astype(bool) for o in gids]
@@ -88,3 +91,10 @@ def test_modelfind_detector_midstream_parity():
         assert float(np.mean(ious)) >= IOU_MEAN, (
             f"frame {i}: mean matched IoU {np.mean(ious):.3f} < {IOU_MEAN}"
         )
+
+    # Re-ID: a re-entering object reuses its id (no fresh spawn). Upstream tracks the
+    # whole clip with a fixed id set; our port must not mint spurious extra ids.
+    assert len(our_ids) == len(gold_ids), (
+        f"distinct ids {sorted(our_ids)} vs golden {sorted(gold_ids)} "
+        "(a re-entering object must reuse its id, not spawn a fresh one)"
+    )
