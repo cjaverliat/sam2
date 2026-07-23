@@ -223,6 +223,10 @@ class Sam3DetectionResult:
 
 - [x] **Feature 1a** — mux seed-frame point-click add-object (interactive VOS, no
   text). Spec + plan: `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-interactive-seed-click*`.
-- [ ] **Feature 1b** — dynamic mux-state growth (port `add_new_masks_to_existing_state`):
-  mid-stream click add + text+click co-seed + detector mid-stream spawn.
+- [x] **Feature 1b** — dynamic mux-state growth (port `add_new_masks_to_existing_state`):
+  detector mid-stream spawn + interactive mid-stream click + text+click co-seed.
+  Spec+plan: `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-dynamic-mux-growth*`.
+  Parity: 1a seed-click (IoU≥0.99) + model-find on dance (mean IoU≥0.95, id-agnostic).
+- [ ] **Tracklet re-ID** — re-associate a re-entering object to its original id
+  (upstream reuses the id; we spawn a fresh tracklet). Surfaced by the model-find golden.
 - [ ] **Boxes/exemplars**, **negative_phrases**, **multi-concept** — separate parity features.
