@@ -84,9 +84,10 @@ substituted for the detector `mask_inputs`.
 
 1. `mux_state = self.tracker.multiplex_controller.get_state(len(prompts), ...)`.
 2. Build batched `point_inputs` from each prompt: scale coords to the tracker input
-   space, stack `(n, num_pts, 2)` coords + `(n, num_pts)` labels (design assumption:
-   the interactive branch batches over objects like the mask path — **verified in
-   plan step 1**).
+   space, stack into a dict `{point_coords: (n, num_pts, 2), point_labels:
+   (n, num_pts)}`. The interactive branch batches over objects natively (B = n
+   objects, `repeat_image=True`) — verified at
+   `sam3_multiplex_tracker.py:300-334`.
 3. `out = self.tracker.track_step(frame_idx, is_init_cond_frame=True,
    backbone_features_interactive=bf_int, backbone_features_propagation=bf_prop,
    point_inputs=point_inputs, mask_inputs=None, output_dict={...}, num_frames,
@@ -138,10 +139,10 @@ without the upstream repo/weights (mirrors phase1 Task 1).
 
 ## Risks & assumptions
 
-- **Batched interactive `point_inputs`** — assumed the tracker's `_forward_sam_heads`
-  interactive branch + `track_step` accept per-object batched points exactly as they
-  accept batched `mask_inputs` in `_seed_multiplex`. Verified as plan step 1; if the
-  interactive head is single-object, seed objects sequentially into the mux state.
+- **Batched interactive `point_inputs`** — RESOLVED: the interactive branch reads
+  `point_inputs["point_coords"]` (B,num_pts,2) + `point_labels` (B,num_pts) and runs
+  with `repeat_image=True` over B = n objects, exactly like the batched `mask_inputs`
+  path (`sam3_multiplex_tracker.py:300-334`). No sequential fallback needed.
 - **Coordinate space** — upstream scales relative `[0,1]` coords by `image_size`
   inside the demo tracker; our `GeometryPrompt` carries pixel coords + an
   `is_normalized` flag. The seeding method must map to the tracker input space
