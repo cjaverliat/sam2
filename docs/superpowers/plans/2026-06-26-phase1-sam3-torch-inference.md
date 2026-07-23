@@ -216,3 +216,13 @@ class Sam3DetectionResult:
 - **Deferred correctly:** ONNX (Phase 2), training/eval, multi-concept (guard stays at 1), EfficientSAM3 (§16). ✓
 - **Risk flags for the executor:** (a) **never `sed`** / never `python -c` for edits — Phase-0 BOM + escape footguns; (b) the SAM 3 floor (py3.12/torch2.7) may exceed the current default env → add a dedicated pixi env, don't downgrade; (c) `state_dict` key alignment is the main vendoring hazard — inspect `sam3.pt` keys and keep attribute names; (d) tolerances are looser than Phase 0 (large VL model) — `atol=1e-2`, IoU ≥ 0.99; (e) capturing reference golden needs the official sam3 env once — isolate it; (f) RoPE may force a `Sam3` transformer variant (not a drop-in).
 - **Type consistency:** `build_sam3` (raw/predictor), `Sam3DetectionResult`, `MaskletResult` (reused per-object tracker output), `ConceptPrompt`, `Sam3VideoPredictorState` used consistently across T6/T8/T9.
+
+---
+
+## Post-phase1: SAM 3.1 interactive parity (2026-07-23)
+
+- [x] **Feature 1a** — mux seed-frame point-click add-object (interactive VOS, no
+  text). Spec + plan: `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-interactive-seed-click*`.
+- [ ] **Feature 1b** — dynamic mux-state growth (port `add_new_masks_to_existing_state`):
+  mid-stream click add + text+click co-seed + detector mid-stream spawn.
+- [ ] **Boxes/exemplars**, **negative_phrases**, **multi-concept** — separate parity features.
