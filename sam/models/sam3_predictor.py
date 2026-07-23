@@ -937,7 +937,14 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             int_f, int_p = int_f[:-s], int_p[:-s]
         return det_f, det_p, prop_f, prop_p, int_f, int_p
 
-    def _detect(self, det_feats, det_pos, concept: ConceptState) -> "Sam3DetectionResult":
+    def _placeholder_concept(self):
+        """A cached '<geometric>' ConceptState for box-only prompts (no text set)."""
+        if getattr(self, "_geo_concept", None) is None:
+            emb, mask = self.encode_text(ConceptPrompt("geometric"))
+            self._geo_concept = ConceptState(0, ConceptPrompt("geometric"), emb, None, mask)
+        return self._geo_concept
+
+    def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
         """Run the SAM 3.1 detector at the tracker's low-res mask grid, joint-score post-proc.
 
         The SAM 3.1 detector folds presence into ``pred_logits`` (``supervise_joint_box_scores``),
@@ -951,7 +958,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
 
         m = self.tracker.low_res_mask_size
         out = self.detector.forward_grounding(
-            det_feats, det_pos, concept.text_emb, concept.text_mask
+            det_feats, det_pos, concept.text_emb, concept.text_mask, geo=geo,
         )
         pred_logits = out["pred_logits"]            # (P, nq, 1) JOINT (presence folded)
         pred_masks = out["pred_masks"]              # (P, nq, h, w) logits
@@ -1001,6 +1008,17 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             )
             num_frames = frame_idx + 1
             concept = state.concepts[0] if state.concepts else None
+            # box prompts bias THIS frame's detection (GEOMETRIC slot); point prompts
+            # go to the interactive click path below.
+            box_prompts = [p for p in geometry_prompts if p.boxes is not None]
+            point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
+            box_geo = None
+            if box_prompts:
+                packed = [Sam3Predictor._pack_geometry(p, (H, W), device) for p in box_prompts]
+                box_geo = {
+                    "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
+                    "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
+                }
 
             # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -1012,8 +1030,13 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     trk_results[oid] = per_obj[oid]
                     trk_low_masks[oid] = per_obj[oid]["pred_masks"][0, 0].float()
 
-            # 2) concept-driven detection (GATED) — joint-score sam3.1 detector
-            det = self._detect(det_f, det_p, concept) if concept is not None else None
+            # 2) detection (GATED) — concept text and/or a box in the geometric slot; a
+            # box-only prompt uses the '<geometric>' placeholder concept.
+            det_concept = concept or (self._placeholder_concept() if box_geo else None)
+            det = (
+                self._detect(det_f, det_p, det_concept, geo=box_geo)
+                if det_concept is not None else None
+            )
 
             # 3) associate det<->trk + spawn / confirm / kill (Task 7, per-object, unchanged)
             new_objects: list[tuple[int, int]] = []
@@ -1049,14 +1072,14 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
 
             # 6) interactive point clicks: seed the set (first frame) or grow it
             # (mid-stream / co-seed after a detector seed on this frame).
-            if geometry_prompts:
+            if point_prompts:
                 if state.mux_state is None:
                     results.update(self._seed_points_multiplex(
-                        state, frame_idx, geometry_prompts, bf_int, bf_prop, num_frames
+                        state, frame_idx, point_prompts, bf_int, bf_prop, num_frames
                     ))
                 else:
                     click_masks, click_ids = self._click_masks_multiplex(
-                        geometry_prompts, (H, W), bf_int
+                        point_prompts, (H, W), bf_int
                     )
                     results.update(self._grow_mux_state(
                         state, frame_idx, click_masks, True, click_ids, bf_int, bf_prop
@@ -1128,14 +1151,13 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         encoder (exemplar) path; mid-stream add and text co-seed are Feature 1b.
         """
         for prompt in geometry_prompts:
-            if prompt.boxes is not None or prompt.masks_logits is not None:
+            if prompt.masks_logits is not None:
                 raise NotImplementedError(
-                    "multiplex (sam3.1): box/mask geometry prompts route through the "
-                    "detector geometry-encoder (exemplar path), not implemented yet; "
-                    "clicks (points) are supported"
+                    "mask geometry prompts are unsupported (no mask_encoder weights); "
+                    "use box or point prompts"
                 )
-            if prompt.points_coords is None:
-                raise ValueError("geometry prompt has no points")
+            if prompt.boxes is None and prompt.points_coords is None:
+                raise ValueError("geometry prompt has neither points nor boxes")
 
     def _click_masks_multiplex(self, prompts, video_hw, bf_int):
         """Decode point clicks into binarised ``(n, 1, ims, ims)`` masks.

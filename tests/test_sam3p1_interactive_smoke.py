@@ -41,13 +41,26 @@ def _click(obj_id, xy):
 
 
 @needs_gpu
-def test_box_prompt_raises_pointing_to_exemplars():
+def test_video_box_prompt_spawns_and_tracks():
+    pred = _build()
+    frames = _bedroom(4)
+    h, w, _ = frames[0].shape
+    st = _state((h, w))
+    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]))
+    out0 = pred.forward(st, 0, frames[0], geometry_prompts=[box])   # box, no text concept
+    assert len(out0) >= 1                              # detector found the boxed person(s)
+    out1 = pred.forward(st, 1, frames[1])              # tracks forward
+    assert len(out1) >= 1
+
+
+@needs_gpu
+def test_video_mask_prompt_still_raises():
     pred = _build()
     st = _state((540, 960))
-    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([[10.0, 10.0, 50.0, 50.0]]))
+    m = GeometryPrompt(obj_id=1, masks_logits=torch.zeros(540, 960))
     frame = np.zeros((540, 960, 3), dtype=np.uint8)
-    with pytest.raises(NotImplementedError, match="exemplar"):
-        pred.forward(st, 0, frame, geometry_prompts=[box])
+    with pytest.raises(NotImplementedError, match="mask"):
+        pred.forward(st, 0, frame, geometry_prompts=[m])
 
 
 @needs_gpu
