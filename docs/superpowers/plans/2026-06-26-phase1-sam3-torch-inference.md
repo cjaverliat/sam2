@@ -227,6 +227,9 @@ class Sam3DetectionResult:
   detector mid-stream spawn + interactive mid-stream click + text+click co-seed.
   Spec+plan: `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-dynamic-mux-growth*`.
   Parity: 1a seed-click (IoU≥0.99) + model-find on dance (mean IoU≥0.95, id-agnostic).
-- [ ] **Tracklet re-ID** — re-associate a re-entering object to its original id
-  (upstream reuses the id; we spawn a fresh tracklet). Surfaced by the model-find golden.
+- [x] **Tracklet re-ID** — a re-entering object reuses its original id. Fixed by
+  matching upstream's dormant-object lifecycle (hotstart-gated kill + keep-alive
+  suppress-not-purge; upstream has no re-association step). Spec+plan:
+  `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-tracklet-reid*`. Verified: model-find
+  distinct-id count now matches the golden.
 - [ ] **Boxes/exemplars**, **negative_phrases**, **multi-concept** — separate parity features.
