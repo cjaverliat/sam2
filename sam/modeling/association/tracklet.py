@@ -1,113 +1,119 @@
 # SPDX-License-Identifier: LicenseRef-SAM
-"""Tracklet lifecycle state machine: PENDING → CONFIRMED → DEAD.
+"""Tracklet lifecycle: hotstart-gated kill + keep-alive suppress (upstream parity).
 
-Extracted from ``Sam3VideoBase.update_masklet_confirmation_status`` and
-``_process_hotstart`` in upstream ``sam3/model/sam3_video_base.py``
-(@ 5dd401d), simplified into a single, testable class.
+Mirrors upstream ``sam3/model/sam3_multiplex_base.py::_process_hotstart_gpu``
+(@ 5dd401d): two INDEPENDENT counters per object.
 
-State transitions
------------------
-- ``spawn(obj_id)``                : register a new PENDING tracklet.
-- ``step(matched_track_ids, new_det_ids)`` : advance all alive tracklets.
-    * matched for ``confirmation_thresh`` consecutive frames → CONFIRMED.
-    * unmatched for ``kill_thresh`` consecutive frames       → DEAD.
-- ``is_dead(obj_id)``              : True when the tracklet has been killed.
-- ``get_state(obj_id)``            : return the current ``TrackletState``.
-- ``active_ids()``                 : set of non-DEAD tracklet IDs.
-- ``confirmed_ids()``              : set of CONFIRMED tracklet IDs.
+- **Kill** (``unmatched_count`` -> ``removed``) fires ONLY inside an object's
+  hotstart window (its first ``hotstart_delay`` frames) once it has been unmatched
+  for ``hotstart_unmatch_thresh`` frames. It is a new-object-quality gate, NOT an
+  absence policy -- an established object is *never* removed.
+- **Suppress** (``keep_alive`` hysteresis, +1 matched / -1 not, clamped) only HIDES
+  an object from output while it is absent; the object stays alive with its memory
+  retained, so when it re-appears it un-hides under the SAME id (re-ID).
+- **Confirmation** (``consecutive_det_count`` -> CONFIRMED) is an orthogonal display
+  gate with no kill (upstream ``masklet_confirmation``).
 
-Gating note
------------
-Upstream gates confirmation on *detection match* (``consecutive_det_num``
-incremented only when the tracklet is matched by a detection in the current
-frame), not a bare frame counter.  The kill is similarly gated on frames
-where no detection is matched (``unmatched_count``).  Presence / object-score
-signal from the tracker is the caller's responsibility: pass non-present
-tracks *outside* ``matched_track_ids`` so the unmatched counter increments.
+The predictor reads three id-sets each frame: ``removed_ids`` (purge bank + free mux
+slot), ``alive_ids`` (propagate -- includes suppressed, so memory is rewritten), and
+``visible_ids`` (emit in results).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Set
 
 
 class TrackletState(Enum):
     PENDING = "pending"      # newly spawned; awaiting confirmation
-    CONFIRMED = "confirmed"  # matched by detector for ≥ confirmation_thresh consecutive frames
-    DEAD = "dead"            # unmatched for ≥ kill_thresh frames; no longer tracked
+    CONFIRMED = "confirmed"  # matched for >= confirmation_thresh consecutive frames
 
 
 @dataclass
 class _TrackletInfo:
+    first_frame: int
     state: TrackletState = TrackletState.PENDING
     consecutive_det_count: int = 0   # consecutive frames with a det match
     unmatched_count: int = 0         # consecutive frames without a det match
+    keep_alive: int = 0              # suppress hysteresis (visible when > 0)
+    removed: bool = False            # purged (within-hotstart failure / user removal)
 
 
 class TrackletManager:
-    """Explicit PENDING → CONFIRMED → DEAD state machine for concept-driven tracklets.
+    """PENDING -> CONFIRMED display gate + hotstart-gated kill + keep-alive suppress.
 
-    Holds per-tracklet state keyed by ``obj_id`` (integer).  Designed to live
-    inside ``Sam3VideoPredictorState`` (Task 6 dataclass) as a ``tracklet_mgr``
-    field so the whole session state is in one place.
+    Holds per-tracklet state keyed by ``obj_id``. Lives inside
+    ``Sam3VideoPredictorState`` as ``tracklet_mgr``.
 
     Parameters
     ----------
     confirmation_thresh:
-        Number of consecutive detection-matched frames before a PENDING
-        tracklet is promoted to CONFIRMED.  Mirrors upstream
-        ``masklet_confirmation_consecutive_det_thresh`` (default 3).
-    kill_thresh:
-        Number of consecutive unmatched frames before any alive tracklet is
-        marked DEAD.  Mirrors upstream ``hotstart_unmatch_thresh`` (default 3).
+        Consecutive detection-matched frames before PENDING -> CONFIRMED
+        (upstream ``masklet_confirmation_consecutive_det_thresh``, default 3).
+    hotstart_delay:
+        Width of the removable window from an object's first frame; after this an
+        object can never be killed (upstream ``hotstart_delay``, default 15).
+    hotstart_unmatch_thresh:
+        Unmatched frames before a *within-hotstart* object is removed (upstream
+        ``hotstart_unmatch_thresh``, default 8).
+    init_keep_alive / max_keep_alive / min_keep_alive:
+        Suppress-hysteresis counter bounds (upstream ``init/max/min_trk_keep_alive``,
+        defaults 0 / 8 / -4). Visible while ``keep_alive > 0``.
     """
 
     def __init__(
         self,
         confirmation_thresh: int = 3,
-        kill_thresh: int = 3,
+        hotstart_delay: int = 15,
+        hotstart_unmatch_thresh: int = 8,
+        init_keep_alive: int = 0,
+        max_keep_alive: int = 8,
+        min_keep_alive: int = -4,
     ) -> None:
         self.confirmation_thresh = confirmation_thresh
-        self.kill_thresh = kill_thresh
+        self.hotstart_delay = hotstart_delay
+        self.hotstart_unmatch_thresh = hotstart_unmatch_thresh
+        self.init_keep_alive = init_keep_alive
+        self.max_keep_alive = max_keep_alive
+        self.min_keep_alive = min_keep_alive
         self._tracks: Dict[int, _TrackletInfo] = {}
 
     # ------------------------------------------------------------------
     # Mutation API
     # ------------------------------------------------------------------
 
-    def spawn(self, obj_id: int) -> None:
-        """Register a new PENDING tracklet with the given object ID."""
+    def spawn(self, obj_id: int, frame_idx: int) -> None:
+        """Register a new PENDING tracklet born on ``frame_idx``."""
         if obj_id in self._tracks:
             raise ValueError(
                 f"tracklet {obj_id!r} already registered; "
                 "call remove() first or use a fresh obj_id"
             )
-        self._tracks[obj_id] = _TrackletInfo()
+        self._tracks[obj_id] = _TrackletInfo(
+            first_frame=frame_idx, keep_alive=self.init_keep_alive
+        )
 
     def step(
         self,
         matched_track_ids: Set[int],
         new_det_ids: Set[int],
+        frame_idx: int,
     ) -> None:
-        """Advance all alive tracklets by one frame.
+        """Advance all live tracklets one frame.
 
         Args:
-            matched_track_ids:
-                Set of existing tracklet IDs that were matched to a detection
-                on this frame (from ``associate_det_trk`` det2track values).
-            new_det_ids:
-                Set of tracklet IDs that were just spawned from new detections
-                on this frame.  They count as matched on their first frame so
-                the confirmation clock starts from the spawn frame, matching
-                upstream behaviour where new-det objects have
-                ``consecutive_det_num = 1`` on first appearance.
+            matched_track_ids: existing tracklet ids matched to a detection now.
+            new_det_ids: tracklet ids just spawned from new detections (count as
+                matched on their first frame).
+            frame_idx: the current frame index (for the hotstart gate).
         """
         all_matched = matched_track_ids | new_det_ids
         for obj_id, info in self._tracks.items():
-            if info.state is TrackletState.DEAD:
-                continue  # no further transitions once dead
-            if obj_id in all_matched:
+            if info.removed:
+                continue
+            matched = obj_id in all_matched
+            if matched:
                 info.consecutive_det_count += 1
                 info.unmatched_count = 0
                 if (
@@ -118,46 +124,48 @@ class TrackletManager:
             else:
                 info.consecutive_det_count = 0
                 info.unmatched_count += 1
-                if info.unmatched_count >= self.kill_thresh:
-                    info.state = TrackletState.DEAD
+            info.keep_alive = max(
+                self.min_keep_alive,
+                min(self.max_keep_alive, info.keep_alive + (1 if matched else -1)),
+            )
+            within_hotstart = info.first_frame > frame_idx - self.hotstart_delay
+            if within_hotstart and info.unmatched_count >= self.hotstart_unmatch_thresh:
+                info.removed = True
 
     def remove(self, obj_id: int) -> None:
-        """Immediately remove a tracklet (e.g. user-requested removal)."""
+        """Immediately drop a tracklet (e.g. user-requested removal)."""
         self._tracks.pop(obj_id, None)
 
     # ------------------------------------------------------------------
     # Query API
     # ------------------------------------------------------------------
 
-    def is_dead(self, obj_id: int) -> bool:
-        """Return True if the tracklet has transitioned to DEAD."""
-        return self._tracks[obj_id].state is TrackletState.DEAD
+    def removed_ids(self) -> Set[int]:
+        """Tracklets purged this session (within-hotstart failures)."""
+        return {oid for oid, info in self._tracks.items() if info.removed}
 
-    def get_state(self, obj_id: int) -> TrackletState:
-        """Return the current ``TrackletState`` for the given obj_id."""
-        return self._tracks[obj_id].state
+    def alive_ids(self) -> Set[int]:
+        """Tracklets still tracked (not removed) -- propagated, memory retained."""
+        return {oid for oid, info in self._tracks.items() if not info.removed}
 
-    def active_ids(self) -> Set[int]:
-        """Return the set of non-DEAD tracklet IDs."""
+    def visible_ids(self) -> Set[int]:
+        """Tracklets shown in output (alive and not suppressed)."""
         return {
-            oid
-            for oid, info in self._tracks.items()
-            if info.state is not TrackletState.DEAD
+            oid for oid, info in self._tracks.items()
+            if not info.removed and info.keep_alive > 0
         }
 
     def confirmed_ids(self) -> Set[int]:
-        """Return the set of CONFIRMED tracklet IDs."""
+        """CONFIRMED (past the confirmation gate), not removed."""
         return {
-            oid
-            for oid, info in self._tracks.items()
-            if info.state is TrackletState.CONFIRMED
+            oid for oid, info in self._tracks.items()
+            if not info.removed and info.state is TrackletState.CONFIRMED
         }
 
     def __len__(self) -> int:
         return len(self._tracks)
 
     def __repr__(self) -> str:
-        counts: Dict[str, int] = {}
-        for info in self._tracks.values():
-            counts[info.state.value] = counts.get(info.state.value, 0) + 1
-        return f"TrackletManager({counts})"
+        n_removed = sum(1 for i in self._tracks.values() if i.removed)
+        n_vis = len(self.visible_ids())
+        return f"TrackletManager(n={len(self._tracks)}, visible={n_vis}, removed={n_removed})"
