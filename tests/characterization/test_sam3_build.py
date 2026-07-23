@@ -135,23 +135,22 @@ def test_associate_novel_high_score_det_is_new():
     assert 0 in new_dets, "non-overlapping high-score det must appear in new_dets"
 
 
-def test_tracklet_manager_kills_unmatched_track():
-    """A track unmatched for kill_thresh=3 consecutive frames must become DEAD.
+def test_tracklet_manager_removes_within_hotstart_only():
+    """A within-hotstart object unmatched for hotstart_unmatch_thresh is removed; an
+    ESTABLISHED (past-hotstart) object is never removed, only suppressed."""
+    mgr = TrackletManager(hotstart_delay=15, hotstart_unmatch_thresh=8)
+    mgr.spawn(obj_id=0, frame_idx=0)
+    for f in range(1, 9):                      # unmatched within the hotstart window
+        mgr.step(set(), set(), frame_idx=f)
+    assert 0 in mgr.removed_ids(), "within-hotstart object must be removed after 8 unmatched"
 
-    Step 1, 2: not yet dead (unmatched count < kill_thresh).
-    Step 3: unmatched_count == kill_thresh → DEAD.
-    """
-    mgr = TrackletManager(confirmation_thresh=3, kill_thresh=3)
-    mgr.spawn(obj_id=0)
-
-    mgr.step(matched_track_ids=set(), new_det_ids=set())
-    assert not mgr.is_dead(0), "track must not be dead after 1 unmatched frame"
-
-    mgr.step(matched_track_ids=set(), new_det_ids=set())
-    assert not mgr.is_dead(0), "track must not be dead after 2 unmatched frames"
-
-    mgr.step(matched_track_ids=set(), new_det_ids=set())
-    assert mgr.is_dead(0), "track must be dead after 3 consecutive unmatched frames"
+    mgr.spawn(obj_id=1, frame_idx=0)
+    for f in range(1, 30):                     # establish it well past hotstart
+        mgr.step({1}, set(), frame_idx=f)
+    for f in range(30, 50):                    # long absence, but established
+        mgr.step(set(), set(), frame_idx=f)
+    assert 1 not in mgr.removed_ids(), "established object must never be removed"
+    assert 1 in mgr.alive_ids() and 1 not in mgr.visible_ids()  # dormant, hidden
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +174,7 @@ def test_remove_object_purges_everything():
     state.bank.conditional_memories[obj_id] = ["dummy_cond_memory"]
     state.bank.non_conditional_memories[obj_id] = ["dummy_non_cond_memory"]
     # Register in tracklet manager.
-    state.tracklet_mgr.spawn(obj_id)
+    state.tracklet_mgr.spawn(obj_id, 0)
 
     # Sanity: object is present in all four stores before removal.
     assert obj_id in state.bank.known_obj_ids
@@ -206,7 +205,7 @@ def test_alloc_obj_id_monotonic_after_remove():
 
     # Register and then remove.
     state.bank.known_obj_ids.add(first_id)
-    state.tracklet_mgr.spawn(first_id)
+    state.tracklet_mgr.spawn(first_id, 0)
     pred.remove_object(state, first_id)
 
     # Allocate again: must NOT reuse the removed id (no collision with stale memories).
@@ -216,34 +215,31 @@ def test_alloc_obj_id_monotonic_after_remove():
 
 
 def test_kill_path_removes_dead_tracklet():
-    """The is_dead → remove_object kill path must purge a DEAD tracklet from bank + tracklet_mgr.
+    """The removed_ids -> remove_object kill path purges a within-hotstart failure.
 
-    Drives a spawned tracklet to DEAD via TrackletManager.step() (kill_thresh=3 unmatched
-    frames), then exercises the same kill-path loop used in _associate_and_update at the
-    unit level without needing model weights.
+    Drives a within-hotstart tracklet to removed (hotstart_unmatch_thresh unmatched
+    frames), then exercises the same purge loop used in _associate_and_update.
     """
     pred = _predictor()
     state = _state()
     obj_id = 7
-    kill_thresh = 3  # matches TrackletManager default
 
     # Register in bank and tracklet_mgr.
     state.bank.known_obj_ids.add(obj_id)
     state.bank.conditional_memories[obj_id] = ["dummy_cond"]
     state.bank.non_conditional_memories[obj_id] = ["dummy_non_cond"]
     mgr = state.tracklet_mgr
-    mgr.spawn(obj_id)
+    mgr.spawn(obj_id, 0)
 
-    # Drive to DEAD: kill_thresh consecutive unmatched frames.
-    for _ in range(kill_thresh):
-        mgr.step(matched_track_ids=set(), new_det_ids=set())
+    # Drive to removed: hotstart_unmatch_thresh unmatched frames within the window.
+    for f in range(1, mgr.hotstart_unmatch_thresh + 1):
+        mgr.step(set(), set(), frame_idx=f)
 
-    assert mgr.is_dead(obj_id), "tracklet must be DEAD after kill_thresh unmatched frames"
+    assert obj_id in mgr.removed_ids(), "within-hotstart tracklet must be removed"
 
-    # Exercise the kill-path logic from _associate_and_update (mirrors lines 461-464).
-    for oid in list(mgr._tracks):
-        if mgr.is_dead(oid):
-            pred.remove_object(state, oid)
+    # Exercise the purge loop from _associate_and_update.
+    for oid in mgr.removed_ids():
+        pred.remove_object(state, oid)
 
     # All four stores must be purged after the kill path runs.
     assert obj_id not in state.bank.known_obj_ids, "dead tracklet must be purged from known_obj_ids"

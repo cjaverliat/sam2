@@ -463,6 +463,17 @@ class Sam3VideoPredictor(nn.Module):
                 d.pop(obj_id, None)
         state.tracklet_mgr.remove(obj_id)
 
+    @staticmethod
+    def _filter_visible(state, results: dict) -> dict:
+        """Keep only visible tracklet objects; non-managed ids (e.g. click-seeded)
+        always pass. Suppressed (dormant) objects propagate but are hidden."""
+        managed = set(state.tracklet_mgr._tracks)
+        visible = state.tracklet_mgr.visible_ids()
+        return {
+            oid: r for oid, r in results.items()
+            if oid not in managed or oid in visible
+        }
+
     # ------------------------------------------------------------------
     # Streaming forward (spec §10 data-flow)
     # ------------------------------------------------------------------
@@ -538,7 +549,7 @@ class Sam3VideoPredictor(nn.Module):
                     det.masks_logits[det_idx].float(), None, H, W
                 )
             results.update(geom_results)
-            return results
+            return self._filter_visible(state, results)
 
     # ------------------------------------------------------------------
     # Streaming helpers
@@ -605,23 +616,28 @@ class Sam3VideoPredictor(nn.Module):
             if float(trk_results[o]["object_score_logits"].reshape(-1)[0]) <= 0.0:
                 matched_track_ids.discard(o)
 
+        frame_idx = state.num_frames_processed - 1
+
         # spawn new tracklets (allocator-issued ids) for the new detections
         new_objects: list[tuple[int, int]] = []
         for det_idx in new_dets:
             oid = self._alloc_obj_id(state)
             new_objects.append((oid, int(det_idx)))
-            state.tracklet_mgr.spawn(oid)
+            state.tracklet_mgr.spawn(oid, frame_idx)
         new_ids = {oid for oid, _ in new_objects}
 
         # make sure every live track is registered before stepping the lifecycle
         for o in active_ids:
             if o not in state.tracklet_mgr._tracks:
-                state.tracklet_mgr.spawn(o)
-        state.tracklet_mgr.step(matched_track_ids, new_ids)
+                state.tracklet_mgr.spawn(o, frame_idx)
+        state.tracklet_mgr.step(matched_track_ids, new_ids, frame_idx)
 
-        # kill dead tracklets: purge bank + manager so VRAM stays bounded
-        for oid in list(state.tracklet_mgr._tracks):
-            if state.tracklet_mgr.is_dead(oid):
+        # purge ONLY removed tracklets (within-hotstart failures). Absent established
+        # objects are suppressed, not removed -> memory retained for re-ID.
+        for oid in state.tracklet_mgr.removed_ids():
+            if oid in state.bank.known_obj_ids:
+                if state.mux_state is not None and oid in (state.mux_obj_ids or []):
+                    self._shrink_mux_state(state, oid)
                 self.remove_object(state, oid)
         return new_objects
 
@@ -727,7 +743,7 @@ class Sam3VideoPredictor(nn.Module):
 
         if is_new:
             output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
-            state.tracklet_mgr.spawn(obj_id)
+            state.tracklet_mgr.spawn(obj_id, frame_idx)
         else:
             sel = state.bank.select_memories(
                 obj_ids=[obj_id], current_frame_idx=frame_idx,
@@ -1007,7 +1023,19 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     results.update(self._grow_mux_state(
                         state, frame_idx, click_masks, True, click_ids, bf_int, bf_prop
                     ))
-            return results
+            return self._filter_visible(state, results)
+
+    def _shrink_mux_state(self, state, obj_id: int) -> None:
+        """Drop a removed object from the live mux state (frees its bucket slot).
+
+        Marks the object's slot removed in the ``MultiplexState`` (``demux`` then
+        excludes it) and drops it from the obj-id map. The threaded bucket-space
+        memory keeps the (now-removed) slot; ``demux`` skips it, so per-object views
+        stay aligned to ``mux_obj_ids``.
+        """
+        idx = state.mux_obj_ids.index(obj_id)
+        state.mux_state.remove_objects([idx])
+        state.mux_obj_ids = [o for o in state.mux_obj_ids if o != obj_id]
 
     # ------------------------------------------------------------------
     # Multiplex helpers (mux/demux internal; bank sees per-object)
