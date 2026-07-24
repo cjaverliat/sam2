@@ -665,8 +665,9 @@ class Sam3VideoPredictor(nn.Module):
         new_ids = {oid for oid, _ in new_objects}
 
         # make sure every live track is registered before stepping the lifecycle
+        managed = state.tracklet_mgr.managed_ids()
         for o in active_ids:
-            if o not in state.tracklet_mgr._tracks:
+            if o not in managed:
                 state.tracklet_mgr.spawn(o, frame_idx)
         state.tracklet_mgr.step(matched_track_ids, new_ids, frame_idx)
 
@@ -674,10 +675,13 @@ class Sam3VideoPredictor(nn.Module):
         # objects are suppressed, not removed -> memory retained for re-ID.
         for oid in state.tracklet_mgr.removed_ids():
             if oid in state.bank.known_obj_ids:
-                if state.mux_state is not None and oid in (state.mux_obj_ids or []):
-                    self._shrink_mux_state(state, oid)
-                self.remove_object(state, oid)
+                self._purge_removed(state, oid)
         return new_objects
+
+    def _purge_removed(self, state, obj_id: int) -> None:
+        """Fully drop a removed tracklet. Subclasses that own extra per-object state
+        (e.g. a multiplex slot) override to release it too."""
+        self.remove_object(state, obj_id)
 
     def _propagate_object(self, state, frame_idx, obj_id, vis, vpos, feat_sizes, num_frames):
         """Propagate one tracklet a single frame, conditioned on its bank memories."""
@@ -1013,17 +1017,9 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             )
             num_frames = frame_idx + 1
             concept = state.concepts[0] if state.concepts else None
-            # box prompts bias THIS frame's detection (GEOMETRIC slot); point prompts
-            # go to the interactive click path below.
-            box_prompts = [p for p in geometry_prompts if p.boxes is not None]
-            point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
-            box_geo = None
-            if box_prompts:
-                packed = [_pack_geometry(p, (H, W), device) for p in box_prompts]
-                box_geo = {
-                    "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
-                    "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
-                }
+            box_geo, point_prompts = self._split_and_pack_geometry(
+                geometry_prompts, (H, W), device
+            )
 
             # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -1050,17 +1046,11 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     state, det, active_ids, trk_low_masks, trk_results
                 )
 
-            # 4) seed (first frame) or grow (mid-stream) new detector instances
+            # 4) seed (first frame) or grow (mid-stream) the new detector instances
             if new_objects:
-                if state.mux_state is None:
-                    self._seed_multiplex(
-                        state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames
-                    )
-                else:
-                    new_masks, new_ids = self._det_masks_for_seed(det, new_objects)
-                    self._grow_mux_state(
-                        state, frame_idx, new_masks, False, new_ids, bf_int, bf_prop
-                    )
+                self._detector_add(
+                    state, frame_idx, det, new_objects, bf_int, bf_prop, num_frames
+                )
 
             # 5) build outputs: existing -> tracker masks; new dets -> detector masks
             results: dict[int, MaskletResult] = {}
@@ -1075,21 +1065,60 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     det.masks_logits[det_idx].float(), None, H, W
                 )
 
-            # 6) interactive point clicks: seed the set (first frame) or grow it
-            # (mid-stream / co-seed after a detector seed on this frame).
+            # 6) interactive point clicks: seed (first frame) or grow (mid-stream /
+            # co-seed after a detector seed on this frame)
             if point_prompts:
-                if state.mux_state is None:
-                    results.update(self._seed_points_multiplex(
-                        state, frame_idx, point_prompts, bf_int, bf_prop, num_frames
-                    ))
-                else:
-                    click_masks, click_ids = self._click_masks_multiplex(
-                        point_prompts, (H, W), bf_int
-                    )
-                    results.update(self._grow_mux_state(
-                        state, frame_idx, click_masks, True, click_ids, bf_int, bf_prop
-                    ))
+                results.update(self._clicks_add(
+                    state, frame_idx, point_prompts, bf_int, bf_prop, num_frames
+                ))
             return self._filter_visible(state, results)
+
+    def _split_and_pack_geometry(self, geometry_prompts, hw, device):
+        """Split prompts into a packed box-geo dict (biases detection via the
+        GEOMETRIC slot) and the list of point prompts (interactive click path)."""
+        box_prompts = [p for p in geometry_prompts if p.boxes is not None]
+        point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
+        box_geo = None
+        if box_prompts:
+            packed = [_pack_geometry(p, hw, device) for p in box_prompts]
+            box_geo = {
+                "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
+                "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
+            }
+        return box_geo, point_prompts
+
+    def _detector_add(self, state, frame_idx, det, new_objects, bf_int, bf_prop, num_frames):
+        """Seed (first frame) or grow (mid-stream) the mux state with detector
+        instances. Output masks are built by the caller from the detector logits."""
+        if state.mux_state is None:
+            self._seed_multiplex(
+                state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames
+            )
+        else:
+            new_masks, new_ids = self._det_masks_for_seed(det, new_objects)
+            self._grow_mux_state(
+                state, frame_idx, new_masks, False, new_ids, bf_int, bf_prop
+            )
+
+    def _clicks_add(self, state, frame_idx, point_prompts, bf_int, bf_prop, num_frames) -> dict:
+        """Seed (first frame) or grow (mid-stream) the mux state from point clicks;
+        return per-object masklets for the clicked objects."""
+        if state.mux_state is None:
+            return self._seed_points_multiplex(
+                state, frame_idx, point_prompts, bf_int, bf_prop, num_frames
+            )
+        click_masks, click_ids = self._click_masks_multiplex(
+            point_prompts, state.video_hw, bf_int
+        )
+        return self._grow_mux_state(
+            state, frame_idx, click_masks, True, click_ids, bf_int, bf_prop
+        )
+
+    def _purge_removed(self, state, obj_id: int) -> None:
+        """Free the object's live mux slot (if seeded) before the base bank purge."""
+        if state.mux_state is not None and obj_id in (state.mux_obj_ids or []):
+            self._shrink_mux_state(state, obj_id)
+        super()._purge_removed(state, obj_id)
 
     def _shrink_mux_state(self, state, obj_id: int) -> None:
         """Drop a removed object from the live mux state (frees its bucket slot).
