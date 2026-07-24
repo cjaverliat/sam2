@@ -1052,11 +1052,18 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     state, frame_idx, det, new_objects, bf_int, bf_prop, num_frames
                 )
 
-            # 5) build outputs: existing -> tracker masks; new dets -> detector masks
+            # 5) build outputs: existing -> tracker masks; new dets -> detector masks.
+            # Skip the full-res masklet build for suppressed (dormant) tracklets --
+            # they still propagate + retain memory, but their output would be dropped
+            # by _filter_visible, so upsampling it is wasted work.
+            managed = state.tracklet_mgr.managed_ids()
+            visible = state.tracklet_mgr.visible_ids()
             results: dict[int, MaskletResult] = {}
             for oid in active_ids:
                 if oid not in state.bank.known_obj_ids:
                     continue  # killed this frame
+                if oid in managed and oid not in visible:
+                    continue  # dormant -> hidden from output anyway
                 results[oid] = self._masklet_from_lowres(
                     trk_low_masks[oid], trk_results[oid], H, W
                 )

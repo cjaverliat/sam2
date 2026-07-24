@@ -242,6 +242,7 @@ class Sam3DetectionResult:
   seeds via the existing association pipeline (our streaming/forgetful-bank arch). Spec+plan:
   `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-video-box-prompt*`. Parity: frame-0 mask
   matches the golden (14737 vs 14711 px), tracked object matches on the later frames.
+- [x] **Efficiency: skip suppressed-tracklet masklet build** — dormant objects still propagate + retain memory; their discarded output masklet is no longer upsampled to full res. Output byte-identical (parity green).
 - [ ] **Hotstart visibility for box-only tracking** — upstream HIDES a box-seeded object
   during its hotstart-delay warm-up (no detection); our lifecycle only steps on a detection,
   so it shows the tracked object (correct masks) during that window. Step the lifecycle every
