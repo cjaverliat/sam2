@@ -302,20 +302,19 @@ def test_build_predictor_instantiates(builder, config, cls):
 # before self.device, so a no-parameter stub is sufficient.
 # ---------------------------------------------------------------------------
 
-def test_sam3p1_video_rejects_geometry_prompts():
-    """Sam3MultiplexVideoPredictor.forward must raise NotImplementedError for geometry prompts.
+def test_sam3p1_video_rejects_mask_prompts():
+    """Sam3MultiplexVideoPredictor.forward rejects MASK geometry prompts loudly.
 
-    The multiplex predictor does not support GeometryPrompt (click/box/mask prompting);
-    users should use the base build_sam3_video_predictor for that. The error must be raised
-    loudly (not silently dropped like the base class routes them) and BEFORE any computation,
-    so no checkpoint or GPU is required.
+    Point and box prompts are supported; mask geometry has no ``mask_encoder``
+    weights in either checkpoint, so it raises. The check (``_check_mux_geometry``)
+    precedes ``self.device`` / any tensor ops, so no checkpoint or GPU is required.
     """
     from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor, Sam3VideoPredictorState
 
     # Instantiate with no weights (the check precedes self.device / any tensor ops).
     pred = Sam3MultiplexVideoPredictor()
     state = Sam3VideoPredictorState(video_hw=(288, 512))
-    gp = GeometryPrompt(obj_id=0, boxes=torch.tensor([[0.0, 0.0, 100.0, 100.0]]))
+    gp = GeometryPrompt(obj_id=0, masks_logits=torch.zeros(288, 512))
 
-    with pytest.raises(NotImplementedError, match="geometry prompts"):
+    with pytest.raises(NotImplementedError, match="mask"):
         pred.forward(state, frame_idx=0, frame=None, geometry_prompts=[gp])

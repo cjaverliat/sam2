@@ -140,6 +140,10 @@ class TrackletManager:
     # Query API
     # ------------------------------------------------------------------
 
+    def managed_ids(self) -> Set[int]:
+        """All obj_ids this manager tracks (regardless of state)."""
+        return set(self._tracks)
+
     def removed_ids(self) -> Set[int]:
         """Tracklets purged this session (within-hotstart failures)."""
         return {oid for oid, info in self._tracks.items() if info.removed}

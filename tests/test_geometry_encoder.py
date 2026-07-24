@@ -43,12 +43,12 @@ def test_geometry_encoder_box_and_point_token_counts():
 
 def test_pack_geometry_box_and_point():
     import numpy as np
-    from sam.models.sam3_predictor import Sam3Predictor
+    from sam.models.sam3_predictor import _pack_geometry
     from sam.prompts import GeometryPrompt
     dev = torch.device("cpu")
     # box xyxy pixel -> cxcywh normalized
     p = GeometryPrompt(obj_id=1, boxes=torch.tensor([[100.0, 200.0, 300.0, 400.0]]))
-    geo = Sam3Predictor._pack_geometry(p, (540, 960), dev)
+    geo = _pack_geometry(p, (540, 960), dev)
     assert geo["box_coords"].shape == (1, 1, 4)
     cx, cy, bw, bh = geo["box_coords"][0, 0].tolist()
     assert abs(cx - 200 / 960) < 1e-6 and abs(cy - 300 / 540) < 1e-6
@@ -56,6 +56,6 @@ def test_pack_geometry_box_and_point():
     # point
     pp = GeometryPrompt(obj_id=1, points_coords=torch.tensor([[480.0, 270.0]]),
                         points_labels=torch.tensor([1]))
-    g2 = Sam3Predictor._pack_geometry(pp, (540, 960), dev)
+    g2 = _pack_geometry(pp, (540, 960), dev)
     assert g2["point_coords"].shape == (1, 1, 2)
     assert abs(g2["point_coords"][0, 0, 0].item() - 0.5) < 1e-6

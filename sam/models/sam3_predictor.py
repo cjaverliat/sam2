@@ -109,39 +109,6 @@ class Sam3Predictor(nn.Module):
         """
         return None
 
-    @staticmethod
-    def _pack_geometry(prompt, image_hw, device):
-        """Pack a point/box ``GeometryPrompt`` into the detector's geometry inputs.
-
-        Points -> normalized xy ``(N,1,2)`` + labels ``(N,1)``; boxes xyxy (pixel, or
-        normalized via ``is_normalized``) -> normalized cxcywh ``(N,1,4)`` + labels
-        ``(N,1)``. Mask geometry has no weights in either checkpoint -> raises.
-        """
-        if prompt is None:
-            return None
-        if prompt.masks_logits is not None:
-            raise NotImplementedError(
-                "mask geometry prompts are unsupported (no mask_encoder weights); "
-                "use box or point prompts"
-            )
-        h, w = image_hw
-        geo = {}
-        if prompt.points_coords is not None:
-            c = prompt.points_coords.to(device).float()
-            c = c if prompt.is_normalized else c / torch.tensor([w, h], device=device)
-            geo["point_coords"] = c[:, None, :]
-            geo["point_labels"] = prompt.points_labels.to(device)[:, None]
-        if prompt.boxes is not None:
-            b = prompt.boxes.to(device).float()
-            b = b if prompt.is_normalized else b / torch.tensor([w, h, w, h], device=device)
-            cx = (b[:, 0] + b[:, 2]) / 2
-            cy = (b[:, 1] + b[:, 3]) / 2
-            bw = (b[:, 2] - b[:, 0]).abs()
-            bh = (b[:, 3] - b[:, 1]).abs()
-            geo["box_coords"] = torch.stack([cx, cy, bw, bh], -1)[:, None, :]
-            geo["box_labels"] = torch.ones(b.shape[0], 1, device=device)
-        return geo or None
-
     def detect(
         self,
         feats: List[torch.Tensor],
@@ -199,7 +166,7 @@ class Sam3Predictor(nn.Module):
             exemplar_emb = (
                 self.encode_exemplars(concept.exemplars) if concept.exemplars else None
             )
-            geo = self._pack_geometry(geometry, image_hw, device)
+            geo = _pack_geometry(geometry, image_hw, device)
             return self.detect(
                 feats, pos, text_emb, text_mask, image_hw,
                 confidence_threshold=confidence_threshold, exemplar_emb=exemplar_emb,
@@ -268,6 +235,39 @@ def _build_mux_point_inputs(prompts, video_hw, image_size, device):
     return {"point_coords": coords, "point_labels": labels}, obj_ids
 
 
+def _pack_geometry(prompt, image_hw, device):
+    """Pack a point/box ``GeometryPrompt`` into the detector's geometry inputs.
+
+    Points -> normalized xy ``(N,1,2)`` + labels ``(N,1)``; boxes xyxy (pixel, or
+    normalized via ``is_normalized``) -> normalized cxcywh ``(N,1,4)`` + labels
+    ``(N,1)``. Mask geometry has no weights in either checkpoint -> raises.
+    """
+    if prompt is None:
+        return None
+    if prompt.masks_logits is not None:
+        raise NotImplementedError(
+            "mask geometry prompts are unsupported (no mask_encoder weights); "
+            "use box or point prompts"
+        )
+    h, w = image_hw
+    geo = {}
+    if prompt.points_coords is not None:
+        c = prompt.points_coords.to(device).float()
+        c = c if prompt.is_normalized else c / torch.tensor([w, h], device=device)
+        geo["point_coords"] = c[:, None, :]
+        geo["point_labels"] = prompt.points_labels.to(device)[:, None]
+    if prompt.boxes is not None:
+        b = prompt.boxes.to(device).float()
+        b = b if prompt.is_normalized else b / torch.tensor([w, h, w, h], device=device)
+        cx = (b[:, 0] + b[:, 2]) / 2
+        cy = (b[:, 1] + b[:, 3]) / 2
+        bw = (b[:, 2] - b[:, 0]).abs()
+        bh = (b[:, 3] - b[:, 1]).abs()
+        geo["box_coords"] = torch.stack([cx, cy, bw, bh], -1)[:, None, :]
+        geo["box_labels"] = torch.ones(b.shape[0], 1, device=device)
+    return geo or None
+
+
 class Sam3MultiplexPredictor(Sam3Predictor):
     """SAM 3.1 (multiplex) image concept predictor (text-only path).
 
@@ -306,7 +306,7 @@ class Sam3MultiplexPredictor(Sam3Predictor):
             x = preprocess_to_1008(image, device=device)
             feats, pos = self.encode_image(x)
             text_emb, text_mask = self.encode_text(concept)
-            geo = self._pack_geometry(geometry, image_hw, device)
+            geo = _pack_geometry(geometry, image_hw, device)
             out = self.detector.forward_grounding(feats, pos, text_emb, text_mask, geo=geo)
 
         pred_logits = out["pred_logits"]              # (P, nq, 1) -- JOINT (presence folded)
@@ -505,7 +505,7 @@ class Sam3VideoPredictor(nn.Module):
     def _filter_visible(state, results: dict) -> dict:
         """Keep only visible tracklet objects; non-managed ids (e.g. click-seeded)
         always pass. Suppressed (dormant) objects propagate but are hidden."""
-        managed = set(state.tracklet_mgr._tracks)
+        managed = state.tracklet_mgr.managed_ids()
         visible = state.tracklet_mgr.visible_ids()
         return {
             oid: r for oid, r in results.items()
@@ -999,7 +999,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
     ) -> dict[int, MaskletResult]:
         geometry_prompts = geometry_prompts or []
         if geometry_prompts:
-            self._check_mux_geometry(state, geometry_prompts)
+            self._check_mux_geometry(geometry_prompts)
         device = self.device
         H, W = state.video_hw
         state.num_frames_processed += 1
@@ -1019,7 +1019,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
             box_geo = None
             if box_prompts:
-                packed = [Sam3Predictor._pack_geometry(p, (H, W), device) for p in box_prompts]
+                packed = [_pack_geometry(p, (H, W), device) for p in box_prompts]
                 box_geo = {
                     "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
                     "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
@@ -1148,13 +1148,10 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         self._prune_mux_memory(state, frame_idx)
         return self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
 
-    def _check_mux_geometry(self, state, geometry_prompts) -> None:
-        """Reject the geometry-prompt cases this predictor does not yet support.
-
-        Feature 1a supports only point clicks that SEED the first frame (no text
-        concept, no existing mux state). Boxes/masks are the detector geometry-
-        encoder (exemplar) path; mid-stream add and text co-seed are Feature 1b.
-        """
+    @staticmethod
+    def _check_mux_geometry(geometry_prompts) -> None:
+        """Validate geometry prompts: points and boxes are supported; masks are not
+        (no ``mask_encoder`` weights in either checkpoint)."""
         for prompt in geometry_prompts:
             if prompt.masks_logits is not None:
                 raise NotImplementedError(
@@ -1165,52 +1162,41 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 raise ValueError("geometry prompt has neither points nor boxes")
 
     def _click_masks_multiplex(self, prompts, video_hw, bf_int):
-        """Decode point clicks into binarised ``(n, 1, ims, ims)`` masks.
+        """Build point inputs from clicks and decode them into binarised masks.
 
-        Runs the interactive head (prompt encoder + mask decoder) on the clicks to
-        produce a mask per object, which :meth:`_grow_mux_state` then adds to the
-        live mux state as a conditioning mask (mirrors upstream add_sam2_new_points).
+        The interactive-head decode is owned by the tracker
+        (:meth:`Sam3MultiplexTracker.masks_from_points`); the predictor only maps the
+        prompts into the tracker's normalized ``point_inputs``.
         """
         point_inputs, new_ids = _build_mux_point_inputs(
             prompts, video_hw, self.tracker.image_size, self.device
         )
-        int_feats = bf_int["vision_feats"]
-        int_sizes = bf_int["feat_sizes"]
-        int_hi = None
-        if len(int_feats) > 1:
-            int_hi = [
-                x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
-                for x, s in zip(int_feats[:-1], int_sizes[:-1])
-            ]
-        interactive_pix_feat = self.tracker._get_interactive_pix_mem(int_feats, int_sizes)
-        sam_out = self.tracker._forward_sam_heads(
-            backbone_features=interactive_pix_feat,
-            point_inputs=point_inputs,
-            interactive_high_res_features=int_hi,
-            multimask_output=self.tracker._use_multimask(True, point_inputs),
-            objects_to_interact=list(range(len(new_ids))),
-        )
-        ims = self.tracker.input_mask_size
-        masks = F.interpolate(
-            (sam_out["high_res_masks"] > 0).float(), size=(ims, ims),
-            mode="bilinear", align_corners=False,
-        )
-        return masks, new_ids
+        return self.tracker.masks_from_points(point_inputs, bf_int), new_ids
 
-    def _seed_points_multiplex(
-        self, state, frame_idx, prompts, bf_int, bf_prop, num_frames
-    ) -> dict:
-        """Seed click-prompted objects on the seed frame (interactive VOS, no text).
+    def _masklets_from_demux(self, out, mux_state, demux_ids, height, width, return_ids=None):
+        """Demux a joint ``track_step`` output into per-object ``MaskletResult``s.
 
-        Structural twin of :meth:`_seed_multiplex`: builds the persistent
-        ``MultiplexState`` from a single JOINT interactive ``track_step`` (points ->
-        interactive prompt encoder + mask decoder + joint memory encoder), records
-        the obj-id map, registers ids on the bank, and returns per-object masklets.
+        ``demux_ids`` is the full object order of ``mux_state`` (needed for correct
+        slicing); ``return_ids`` (default: all) selects which to return.
         """
-        height, width = state.video_hw
-        point_inputs, new_ids = _build_mux_point_inputs(
-            prompts, (height, width), self.tracker.image_size, self.device
-        )
+        per_obj = self._demux_outputs(out, mux_state, demux_ids)
+        ids = demux_ids if return_ids is None else return_ids
+        return {
+            oid: self._masklet_from_lowres(
+                per_obj[oid]["pred_masks"][0, 0].float(), per_obj[oid], height, width
+            )
+            for oid in ids
+        }
+
+    def _seed_mux_state(self, state, frame_idx, new_ids, *, point_inputs=None,
+                        mask_inputs=None, bf_int, bf_prop, num_frames):
+        """Build the persistent ``MultiplexState`` from ONE init-cond ``track_step``.
+
+        Shared by the detector-mask seed (:meth:`_seed_multiplex`) and the click seed
+        (:meth:`_seed_points_multiplex`): allocate the state, run the joint cond-frame
+        track_step (point OR mask inputs), record the obj-id map + cond-frame output,
+        and register the ids on the bank. Returns the raw ``out``.
+        """
         mux_state = self.tracker.multiplex_controller.get_state(
             len(new_ids), self.device, torch.float32, random=False
         )
@@ -1220,23 +1206,17 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             backbone_features_interactive=bf_int,
             backbone_features_propagation=bf_prop,
             point_inputs=point_inputs,
-            mask_inputs=None,
+            mask_inputs=mask_inputs,
             output_dict={"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
             num_frames=num_frames,
             multiplex_state=mux_state,
         )
         state.mux_state = mux_state
-        state.mux_obj_ids = new_ids
+        state.mux_obj_ids = list(new_ids)
         state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
         for obj_id in new_ids:
             state.bank.known_obj_ids.add(obj_id)
-        per_obj = self._demux_outputs(out, mux_state, new_ids)
-        return {
-            obj_id: self._masklet_from_lowres(
-                per_obj[obj_id]["pred_masks"][0, 0].float(), per_obj[obj_id], height, width
-            )
-            for obj_id in new_ids
-        }
+        return out
 
     def _det_masks_for_seed(self, det, new_objects):
         """Binarised ``(n, 1, ims, ims)`` masks + ids for detector-spawned objects."""
@@ -1249,6 +1229,28 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             )
             masks.append((m > 0.0).float())
         return torch.cat(masks, dim=0), [oid for oid, _ in new_objects]
+
+    def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
+        """Seed new detector instances jointly (multiplex ``mask_as_output`` cond frame)."""
+        mask_inputs, new_ids = self._det_masks_for_seed(det, new_objects)
+        self._seed_mux_state(
+            state, frame_idx, new_ids, mask_inputs=mask_inputs,
+            bf_int=bf_int, bf_prop=bf_prop, num_frames=num_frames,
+        )
+
+    def _seed_points_multiplex(
+        self, state, frame_idx, prompts, bf_int, bf_prop, num_frames
+    ) -> dict:
+        """Seed click-prompted objects on the seed frame (interactive VOS, no text)."""
+        height, width = state.video_hw
+        point_inputs, new_ids = _build_mux_point_inputs(
+            prompts, (height, width), self.tracker.image_size, self.device
+        )
+        out = self._seed_mux_state(
+            state, frame_idx, new_ids, point_inputs=point_inputs,
+            bf_int=bf_int, bf_prop=bf_prop, num_frames=num_frames,
+        )
+        return self._masklets_from_demux(out, state.mux_state, new_ids, height, width)
 
     def _grow_mux_state(
         self, state, frame_idx, new_masks, is_mask_from_pts, new_ids, bf_int, bf_prop
@@ -1266,7 +1268,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         was_cond = prev is None
         if was_cond:  # seed-frame co-seed: grow the cond-frame output in place
             prev = state.mux_output_dict["cond_frame_outputs"][frame_idx]
-        out, new_idx = self.tracker.add_new_masks_to_existing_state(
+        out, _ = self.tracker.add_new_masks_to_existing_state(
             prev, new_masks, bf_int, bf_prop, state.mux_state, is_mask_from_pts
         )
         if not was_cond:
@@ -1275,44 +1277,9 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         state.mux_obj_ids = state.mux_obj_ids + list(new_ids)
         for obj_id in new_ids:
             state.bank.known_obj_ids.add(obj_id)
-        per_obj = self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
-        return {
-            oid: self._masklet_from_lowres(
-                per_obj[oid]["pred_masks"][0, 0].float(), per_obj[oid], height, width
-            )
-            for oid in new_ids
-        }
-
-    def _seed_multiplex(self, state, frame_idx, new_objects, det, bf_int, bf_prop, num_frames):
-        """Seed new detector instances JOINTLY (multiplex ``mask_as_output`` cond frame).
-
-        Mirrors the base ``_seed_object`` (resize each detector mask to ``input_mask_size`` +
-        BINARIZE) but stacks all new objects into ONE multiplex ``track_step`` (cond-frame
-        interactive head + joint memory encoder). Builds the persistent ``MultiplexState`` for the
-        tracked set, records the obj-index -> obj_id map, registers the ids on the bank
-        (lifecycle), and stores the cond-frame output in ``output_dict``.
-        """
-        new_ids = [oid for oid, _ in new_objects]
-        mux_state = self.tracker.multiplex_controller.get_state(
-            len(new_ids), self.device, torch.float32, random=False
+        return self._masklets_from_demux(
+            out, state.mux_state, state.mux_obj_ids, height, width, return_ids=new_ids
         )
-        mask_inputs, _ = self._det_masks_for_seed(det, new_objects)  # (n, 1, ims, ims)
-        out = self.tracker.track_step(
-            frame_idx=frame_idx,
-            is_init_cond_frame=True,
-            backbone_features_interactive=bf_int,
-            backbone_features_propagation=bf_prop,
-            point_inputs=None,
-            mask_inputs=mask_inputs,
-            output_dict={"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
-            num_frames=num_frames,
-            multiplex_state=mux_state,
-        )
-        state.mux_state = mux_state
-        state.mux_obj_ids = new_ids
-        state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
-        for oid in new_ids:
-            state.bank.known_obj_ids.add(oid)
 
     def _demux_outputs(self, out, mux_state, obj_ids) -> dict:
         """Slice the joint track_step output into per-object dicts. ``pred_masks`` /

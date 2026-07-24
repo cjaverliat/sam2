@@ -836,6 +836,46 @@ class Sam3MultiplexTracker(Sam3Tracker):
 
         return current_out
 
+    def _interactive_high_res_features(self, backbone_features):
+        """Unflatten the hi-res interactive/propagation vision levels to NCHW.
+
+        ``vision_feats`` are seq-first ``(HW, B, C)``; the SAM heads consume the
+        upper levels as ``(B, C, H, W)`` feature maps.
+        """
+        feats = backbone_features["vision_feats"]
+        sizes = backbone_features["feat_sizes"]
+        if len(feats) <= 1:
+            return None
+        return [
+            x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
+            for x, s in zip(feats[:-1], sizes[:-1])
+        ]
+
+    def masks_from_points(self, point_inputs, backbone_features_interactive):
+        """Decode point clicks into binarised ``(n, 1, ims, ims)`` conditioning masks.
+
+        Runs the interactive prompt encoder + mask decoder on ``point_inputs`` and
+        resizes to ``input_mask_size`` (the seed/grow mask grid). Symmetric with
+        :meth:`add_new_masks_to_existing_state`, which consumes these masks.
+        """
+        int_feats = backbone_features_interactive["vision_feats"]
+        int_sizes = backbone_features_interactive["feat_sizes"]
+        n = point_inputs["point_coords"].shape[0]
+        sam_out = self._forward_sam_heads(
+            backbone_features=self._get_interactive_pix_mem(int_feats, int_sizes),
+            point_inputs=point_inputs,
+            interactive_high_res_features=self._interactive_high_res_features(
+                backbone_features_interactive
+            ),
+            multimask_output=self._use_multimask(True, point_inputs),
+            objects_to_interact=list(range(n)),
+        )
+        return F.interpolate(
+            (sam_out["high_res_masks"] > 0).float(),
+            size=(self.input_mask_size, self.input_mask_size),
+            mode="bilinear", align_corners=False,
+        )
+
     def add_new_masks_to_existing_state(
         self, prev_output, new_masks, backbone_features_interactive,
         backbone_features_propagation, multiplex_state, is_mask_from_pts,
@@ -861,12 +901,7 @@ class Sam3MultiplexTracker(Sam3Tracker):
         num_new = new_masks.shape[0]
         int_feats = backbone_features_interactive["vision_feats"]
         int_sizes = backbone_features_interactive["feat_sizes"]
-        int_hi = None
-        if len(int_feats) > 1:
-            int_hi = [
-                x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
-                for x, s in zip(int_feats[:-1], int_sizes[:-1])
-            ]
+        int_hi = self._interactive_high_res_features(backbone_features_interactive)
         prop_feats = backbone_features_propagation["vision_feats"]
         prop_sizes = backbone_features_propagation["feat_sizes"]
 
