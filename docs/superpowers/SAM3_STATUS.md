@@ -69,6 +69,27 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   re-hardcoding `ones`: `box_prompt_neg` fails `3 detections vs golden 2` while
   `box_prompt` stays green.
 
+- **Exemplar / VISUAL slot — removed, not implemented (2026-08-17).** Same disposition
+  as `negative_phrases`, for a sharper reason: the slot's *consumer* is live but it has
+  NO producer. `sam3_image.py:205` concatenates
+  `[txt_feats, geo_feats, visual_prompt_embed]`, and that prompt feeds both the VL
+  encoder and `DotProductScoring.mean_pool_text` (`model_misc.py:734-741`, which pools
+  EVERY valid token) — a tensor placed there really does move `pred_logits`. But nothing
+  builds one: the sole live `_encode_prompt` call (`sam3_image.py:449`) passes 3
+  positional args, the `sam3_video_base.py:1982` wrapper has zero callers, and all 4
+  assignments to `inference_state["visual_prompt_embed"]` are `= None`. No encoder module
+  exists for it. Training doesn't fill it either — `TextQueryToVisual`
+  (`train/transforms/filter_query_transforms.py:532-567`) implements "image exemplar" as
+  `input_bbox` + caption `"visual"`, i.e. the GEOMETRIC slot, which is 2a/2b. The
+  `sam3_video_inference.py:177` comment ("a single visual prompt embedding is shared for
+  all frames") reads as scaffolding for CROSS-IMAGE exemplars, unreleased. Implementing it
+  would feed untrained input to a live scorer — worse than a no-op.
+  Dropped `ConceptPrompt.exemplars`, both `encode_exemplars` stubs, `ConceptState
+  .exemplar_emb`, and the `exemplar_emb` parameter from `detect` / `forward_grounding`
+  (with its deferral assert). Reference geometry is a `GeometryPrompt` box/point.
+  Mask exemplars were separately, permanently out — 0 `mask_encoder` keys in BOTH
+  checkpoints.
+
 - **Quality pass** — dedup (shared `_seed_mux_state` / `_masklets_from_demux` /
   tracker `masks_from_points` + `_interactive_high_res_features`), decomposed the
   mux `forward` god-method (`_split_and_pack_geometry` / `_detector_add` /
@@ -89,33 +110,20 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 
 ## Open (recommended order)
 
-1. **Exemplar (VISUAL slot)** — likely to be RETIRED, not implemented; decide first.
-   Traced on 2026-08-17: the slot's *consumer* is live but it has NO producer.
-   `sam3_image.py:205` concatenates `[txt_feats, geo_feats, visual_prompt_embed]`, and
-   that prompt feeds both the VL encoder and `DotProductScoring.mean_pool_text`
-   (`model_misc.py:734-741`, pools EVERY valid token) — so a tensor placed there does
-   move `pred_logits`. But nothing ever builds one: the sole live `_encode_prompt` call
-   (`sam3_image.py:449`) passes 3 positional args, the `sam3_video_base.py:1982`
-   wrapper has zero callers, and all 4 assignments to
-   `inference_state["visual_prompt_embed"]` are `= None`. No encoder module exists for
-   it. Training doesn't fill it either — `TextQueryToVisual`
-   (`train/transforms/filter_query_transforms.py:532-567`) implements "image exemplar"
-   as `input_bbox` + caption `"visual"`, i.e. the GEOMETRIC slot, which is 2a/2b.
-   The `sam3_video_inference.py:177` comment ("a single visual prompt embedding is
-   shared for all frames") suggests scaffolding for CROSS-IMAGE exemplars, unreleased.
-   Wiring it means feeding untrained input to a live scorer — worse than a no-op.
-   NOTE: mask exemplars are separately, permanently out — 0 `mask_encoder` keys in
-   BOTH checkpoints.
-2. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
-3. **Geometry-prompt bit-exact parity** — image box path matches upstream at
+1. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
+2. **Geometry-prompt bit-exact parity** — image box path matches upstream at
    box-IoU ≥ 0.8 / score atol 0.06, looser than text-only's 2px/1e-2 (geometry
    tokens lengthen the decoder → bf16 drift). Investigate if bit-exact is wanted.
-4. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
+3. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
    encoder pyramid) fails vs golden — fails on `HEAD~` too (NOT this work); stale
-   golden / env drift. Recapture or retolerance.
-5. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
-6. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
+   golden / env drift. Recapture or retolerance. Re-confirmed by stash-and-rerun on
+   **2026-08-17** (identical failure with a clean tree).
+4. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+5. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
    `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
+6. **Stale doc:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 still claims
+   text+click co-seed, mid-stream add and box prompts raise `NotImplementedError`.
+   All three ship now (1a/1b/2a/2b). Pre-existing; not touched.
 
 ### Closed by the `Emit` policy — the retroactive-reveal residue
 
