@@ -259,7 +259,7 @@ class Sam3DetectionResult:
   on EVERY frame (`_advance_lifecycle`), not only when a detection pass ran; a frame with no
   detector output simply counts every managed tracklet as unmatched, which is what upstream's
   `_process_hotstart_gpu` does (it runs unconditionally). Before, a box-only session left
-  `state.concepts` empty, so `det is None` from frame 1 on, `_associate_and_update` never ran,
+  `state.concept` unset, so `det is None` from frame 1 on, `_associate_and_update` never ran,
   and the counters froze at `unmatched=0, keep_alive=1` — the object stayed visible forever
   and could never be killed. Click-seeded objects stay unmanaged and so are exempt, matching
   upstream: a click-only session takes its `propagation_partial` branch (plain SAM 2
@@ -283,7 +283,28 @@ class Sam3DetectionResult:
   multiplex). So our `keep_alive > 0` visibility rule has no upstream counterpart — it agrees
   with upstream on frames 1-4 by coincidence, not by mechanism. Adopting the real rule means
   gating on CONFIRMED with a `thresh-1` lookahead, i.e. buffering output by 2 frames.
-- [ ] **Exemplar (VISUAL slot)** and **multi-concept** — separate features.
+- [x] **Multi-concept — dropped, won't implement (2026-08-17).** Upstream has NO concurrent
+  multi-concept: its only multi-concept path (`sam3_multiplex_tracking.py` `forward`, ~1756-1815,
+  benchmark eval only — "This method is only used for benchmark eval (not used in the demo)")
+  loops over the phrases, and for each one calls `add_prompt(frame_idx=0, text_str=prompt)`,
+  propagates the WHOLE video, offsets the object ids by `max(seen)+1`, then `reset_state`s.
+  So concepts never interact: no shared association, no cross-concept dedup/NMS, separate id
+  spaces merged by an offset, and an object matching two phrases is emitted twice.
+  That is exactly N independent sessions, which our streaming API already supports today
+  (one `Sam3VideoPredictorState` per concept, feed the video once per state) at upstream's own
+  cost — upstream also re-encodes the video per phrase. Nothing to build.
+  Sharing ONE session across concepts would NOT be upstream-equivalent, for two reasons:
+  `associate_det_trk` matches all dets × all tracks (so concept A's detection could capture
+  concept B's tracklet — upstream can never do this), and the multiplex bucket memory is a
+  joint K-object encoding, so co-bucketing two concepts' objects perturbs their masks.
+  Retired the scaffolding that existed only for the concurrent variant: `MAX_CONCEPTS`,
+  `ConceptState.concept_id` (always 0), and `Sam3VideoPredictorState.concepts: list` ->
+  `concept: ConceptState | None` (killing the `concepts[0] if concepts else None` dance in both
+  `forward`s). `set_concept` keeps both guards and still returns 0; its docstring now carries
+  the N-sessions recipe. Supersedes the phase-1 Step 3 `MAX_CONCEPTS` line.
+- [x] **Exemplar (VISUAL slot) — dropped, won't implement (2026-08-17).** The slot's consumer
+  is live but it has no producer in any released code path, training included. Full write-up in
+  `docs/superpowers/SAM3_STATUS.md`.
 - [ ] **Geometry-prompt bit-exact parity** — the image box path matches upstream to a
   looser tolerance than the text-only 2px/1e-2 (geometry tokens + bf16 drift); tighten if needed.
 - [ ] **Pre-existing:** `test_sam3_parity.py::test_encoder_parity` (vision encoder) fails

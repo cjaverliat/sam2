@@ -1,12 +1,12 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (135 commits ahead of `main`). Tree clean,
-nothing pushed (44 ahead of `origin/feat/sam3-integration`). Latest: per-box
-labels on `GeometryPrompt` (`54ef29d`) + the exemplar/VISUAL-slot retirement
-(`8dd1364`).
+**Branch:** `feat/sam3-integration` (136 commits ahead of `main`). Tree clean,
+nothing pushed (45 ahead of `origin/feat/sam3-integration`). Latest: the
+multi-concept retirement, after the exemplar/VISUAL-slot one (`8dd1364`) and
+per-box labels on `GeometryPrompt` (`54ef29d`).
 **Last session:** 2026-08-17. **Read this first to resume.**
 
-**Next up:** open item 1, multi-concept (`MAX_CONCEPTS>1`).
+**Next up:** open item 1, geometry-prompt bit-exact parity.
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -111,20 +111,41 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   encodes (bit-identical — the old batch was already `[text]` with `n_pos=1`).
   Re-verified against `origin/main` `8f0b7f4` (2026-08-13) on **2026-08-17**: unchanged.
 
+- **Multi-concept — removed, not implemented (2026-08-17).** Upstream has NO concurrent
+  multi-concept. Its only multi-concept path (`sam3_multiplex_tracking.py` `forward`,
+  ~1756-1815, labelled "only used for benchmark eval (not used in the demo)") loops the
+  phrases and for each one calls `add_prompt(frame_idx=0, text_str=prompt)`, propagates the
+  WHOLE video, offsets the obj ids by `max(seen)+1`, then `reset_state`s. Concepts therefore
+  never interact: no shared association, no cross-concept dedup/NMS, separate id spaces, and
+  an object matching two phrases is emitted twice with two ids.
+  That IS N independent sessions — already supported today with no new code: one
+  `Sam3VideoPredictorState` per concept, feed the video once per state, merge with an id
+  offset. Same cost as upstream, which also re-encodes the video per phrase.
+  Sharing ONE session across concepts would NOT be upstream-equivalent: `associate_det_trk`
+  matches all dets × all tracks, so concept A's detection could capture concept B's tracklet
+  (upstream can never do that), and multiplex bucket memory is a joint K-object encoding, so
+  co-bucketing two concepts' objects perturbs their masks.
+  Retired the scaffolding that existed only for the concurrent variant: `MAX_CONCEPTS`,
+  `ConceptState.concept_id` (always 0), and `Sam3VideoPredictorState.concepts: list` ->
+  `concept: ConceptState | None` — which kills the `concepts[0] if concepts else None` dance
+  in both `forward`s. `set_concept` keeps both guards (pre-roll-only + already-set) and still
+  returns 0; the N-sessions recipe lives in its docstring. Behaviour unchanged (a pure field
+  rename behind `set_concept`): CPU-fast set green (28 passed) and the full 7-file GPU gate
+  green (20 passed).
+
 ## Open (recommended order)
 
-1. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
-2. **Geometry-prompt bit-exact parity** — image box path matches upstream at
+1. **Geometry-prompt bit-exact parity** — image box path matches upstream at
    box-IoU ≥ 0.8 / score atol 0.06, looser than text-only's 2px/1e-2 (geometry
    tokens lengthen the decoder → bf16 drift). Investigate if bit-exact is wanted.
-3. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
+2. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
    encoder pyramid) fails vs golden — fails on `HEAD~` too (NOT this work); stale
    golden / env drift. Recapture or retolerance. Re-confirmed by stash-and-rerun on
    **2026-08-17** (identical failure with a clean tree).
-4. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
-5. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
+3. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+4. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
    `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
-6. **Stale doc:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 still claims
+5. **Stale doc:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 still claims
    text+click co-seed, mid-stream add and box prompts raise `NotImplementedError`.
    All three ship now (1a/1b/2a/2b). Pre-existing; not touched.
 

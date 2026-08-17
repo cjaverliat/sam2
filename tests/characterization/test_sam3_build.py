@@ -3,7 +3,7 @@
 
 Verifies:
   - set_concept returns concept id 0 on the first call.
-  - A second set_concept raises RuntimeError (MAX_CONCEPTS=1 guard).
+  - A second set_concept raises RuntimeError (one concept per session).
   - set_concept raises RuntimeError when called after the first frame is processed
     (state.started guard).
 
@@ -19,7 +19,6 @@ from sam.prompts import ConceptPrompt, GeometryPrompt
 from sam.models.sam3_predictor import (
     Sam3VideoPredictor,
     Sam3VideoPredictorState,
-    MAX_CONCEPTS,
 )
 
 
@@ -59,11 +58,11 @@ def test_set_concept_returns_id_zero():
 
 
 def test_set_concept_raises_on_second_concept():
-    """A second set_concept must raise when MAX_CONCEPTS=1."""
+    """A second set_concept must raise: one concept per session."""
     pred = _predictor()
     state = _state()
     pred.set_concept(state, ConceptPrompt(text="cat"))
-    with pytest.raises(RuntimeError, match="at most"):
+    with pytest.raises(RuntimeError, match="already set"):
         pred.set_concept(state, ConceptPrompt(text="dog"))
 
 

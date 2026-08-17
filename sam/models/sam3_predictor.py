@@ -5,15 +5,14 @@ Provides:
   Sam3Predictor             — IMAGE concept predictor (Task 8). OWNS the shared PE vision
                               encoder + text tower + DETR detector and exposes
                               ``predict(image, ConceptPrompt) -> Sam3DetectionResult``.
-  ConceptState              — per-concept encoded state stored in Sam3VideoPredictorState.
-  Sam3VideoPredictorState   — streaming-session state (bank + concepts + frame counter).
-  MAX_CONCEPTS              — current concept-count cap (D9: 1; raise to relax).
+  ConceptState              — the session's encoded concept, stored in Sam3VideoPredictorState.
+  Sam3VideoPredictorState   — streaming-session state (bank + concept + frame counter).
   Sam3VideoPredictor        — streaming skeleton class (Task 6 guard); its ``encode_text``
                               is wired to the real text tower in the streaming task, and
                               takes the full ``ConceptPrompt``.
 
 Guard contract (spec §9):
-  set_concept checks ``state.started`` THEN ``MAX_CONCEPTS`` BEFORE calling encode_text,
+  set_concept checks ``state.started`` THEN "already set" BEFORE calling encode_text,
   so the two error-path tests never reach encoding and stay CPU-only / checkpoint-free.
 """
 from __future__ import annotations
@@ -324,7 +323,6 @@ class Sam3MultiplexPredictor(Sam3Predictor):
 
 @dataclass
 class ConceptState:
-    concept_id: int
     prompt: ConceptPrompt            # original (text)
     text_emb: torch.Tensor           # encoded once (positive slice, (seq, n_pos, d))
     text_mask: torch.Tensor | None = None  # (n_pos, seq) True-where-PAD, for the detector
@@ -334,7 +332,7 @@ class ConceptState:
 class Sam3VideoPredictorState:
     video_hw: tuple[int, int]
     bank: ObjectMemoryBank = field(default_factory=ForgetfulObjectMemoryBank)
-    concepts: list[ConceptState] = field(default_factory=list)  # 0..1 now; list keeps multi open
+    concept: ConceptState | None = None  # set once, before the first frame (see set_concept)
     num_frames_processed: int = 0
     _next_obj_id: int = 0
     # Tracklet lifecycle state machine (Task 7).  Holds per-obj-id
@@ -355,9 +353,6 @@ class Sam3VideoPredictorState:
     @property
     def started(self) -> bool:
         return self.num_frames_processed > 0
-
-
-MAX_CONCEPTS = 1   # relax (or remove) to enable multi-concept
 
 
 def select_emitted(
@@ -475,11 +470,41 @@ class Sam3VideoPredictor(nn.Module):
     # ------------------------------------------------------------------
 
     def set_concept(self, state: Sam3VideoPredictorState, concept: ConceptPrompt) -> int:
+        """Encode ``concept`` into ``state`` — once, before the first frame.
+
+        A session tracks ONE concept. Upstream SAM 3 is the same: its only
+        multi-concept path (``Sam3MultiplexTracking.forward``, benchmark eval)
+        re-runs the whole video once per phrase and calls ``reset_state`` in
+        between, offsetting the object ids to merge the runs. There is no
+        cross-concept interaction anywhere — no shared association, no dedup,
+        separate id spaces — so N concepts means N independent sessions:
+
+            for phrase in phrases:
+                state = Sam3VideoPredictorState(video_hw=hw)
+                pred.set_concept(state, ConceptPrompt(phrase))
+                for i, frame in enumerate(frames):
+                    results[phrase][i] = pred(state, i, frame)
+
+        Sharing one session across concepts would NOT be upstream-equivalent:
+        ``associate_det_trk`` matches every detection against every tracklet (so
+        one concept's detection could capture another's tracklet), and the
+        multiplex bucket memory is a joint K-object encoding, so co-bucketing
+        two concepts' objects changes their masks.
+
+        Returns:
+            The concept id, always 0 (one concept per session).
+
+        Raises:
+            RuntimeError: if a frame has already been processed, or a concept is
+                already set.
+        """
         if state.started:
             raise RuntimeError("concept must be set before the first frame is processed")
-        if len(state.concepts) >= MAX_CONCEPTS:
-            raise RuntimeError(f"at most {MAX_CONCEPTS} concept(s) supported")
-        cid = len(state.concepts)
+        if state.concept is not None:
+            raise RuntimeError(
+                "a concept is already set; one concept per session — run one session "
+                "per concept (see set_concept's docstring)"
+            )
         encoded = self.encode_text(concept)
         # The real tower returns (text_emb, text_mask); the CPU guard-test stub returns a bare
         # tensor — handle both so those tests stay checkpoint-free.
@@ -487,8 +512,8 @@ class Sam3VideoPredictor(nn.Module):
             text_emb, text_mask = encoded
         else:
             text_emb, text_mask = encoded, None
-        state.concepts.append(ConceptState(cid, concept, text_emb, text_mask))
-        return cid
+        state.concept = ConceptState(concept, text_emb, text_mask)
+        return 0
 
     # ------------------------------------------------------------------
     # Object-id allocator + removal (spec §10 "session API")
@@ -536,7 +561,7 @@ class Sam3VideoPredictor(nn.Module):
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)
 
-            concept = state.concepts[0] if state.concepts else None
+            concept = state.concept
 
             # 1) propagate existing tracklets (memory-conditioned, per object)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -970,7 +995,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         if getattr(self, "_geo_concept", None) is None:
             text = "<text placeholder>"
             emb, mask = self.encode_text(ConceptPrompt(text))
-            self._geo_concept = ConceptState(0, ConceptPrompt(text), emb, mask)
+            self._geo_concept = ConceptState(ConceptPrompt(text), emb, mask)
         return self._geo_concept
 
     def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
@@ -1036,7 +1061,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 int_f, int_p, self.tracker.interactive_sam_mask_decoder
             )
             num_frames = frame_idx + 1
-            concept = state.concepts[0] if state.concepts else None
+            concept = state.concept
             box_geo, point_prompts = self._split_and_pack_geometry(
                 geometry_prompts, (H, W), device
             )
