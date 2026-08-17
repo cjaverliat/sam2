@@ -11,6 +11,7 @@ class GeometryPrompt:
         points_coords: torch.Tensor | None = None,
         points_labels: torch.Tensor | None = None,
         boxes: torch.Tensor | None = None,
+        boxes_labels: torch.Tensor | None = None,
         masks_logits: torch.Tensor | None = None,
         is_normalized: bool = False,
     ):
@@ -37,7 +38,13 @@ class GeometryPrompt:
         
         if boxes is not None and (boxes.ndim != 2 or boxes.shape[1] != 4):
             raise ValueError(f"Expected boxes to be of shape (N, 4), got {boxes.shape}")
-        
+
+        if boxes_labels is not None and boxes is None:
+            raise ValueError("boxes must be provided if boxes_labels is provided")
+
+        if boxes_labels is not None and (boxes_labels.ndim != 1 or boxes_labels.shape[0] != boxes.shape[0]):
+            raise ValueError(f"Expected boxes_labels to be of shape (N,), got {boxes_labels.shape}")
+
         if masks_logits is not None:
             mask_res = masks_logits.shape[-2:]
             masks_logits = masks_logits.reshape(1, *mask_res) # Reshape to (1, H, W)
@@ -46,6 +53,7 @@ class GeometryPrompt:
         self.points_coords = points_coords
         self.points_labels = points_labels
         self.boxes = boxes
+        self.boxes_labels = boxes_labels
         self.masks_logits = masks_logits
         self.is_normalized = is_normalized
 
@@ -57,6 +65,9 @@ class GeometryPrompt:
             self.points_labels.to(device) if self.points_labels is not None else None
         )
         boxes = self.boxes.to(device) if self.boxes is not None else None
+        boxes_labels = (
+            self.boxes_labels.to(device) if self.boxes_labels is not None else None
+        )
         masks_logits = (
             self.masks_logits.to(device) if self.masks_logits is not None else None
         )
@@ -65,6 +76,7 @@ class GeometryPrompt:
             points_coords=points_coords,
             points_labels=points_labels,
             boxes=boxes,
+            boxes_labels=boxes_labels,
             masks_logits=masks_logits,
             is_normalized=self.is_normalized,
         )
@@ -75,6 +87,7 @@ class GeometryPrompt:
             points_coords=self.points_coords.clone() if self.points_coords is not None else None,
             points_labels=self.points_labels.clone() if self.points_labels is not None else None,
             boxes=self.boxes.clone() if self.boxes is not None else None,
+            boxes_labels=self.boxes_labels.clone() if self.boxes_labels is not None else None,
             masks_logits=self.masks_logits.clone() if self.masks_logits is not None else None,
             is_normalized=self.is_normalized,
         )

@@ -14,8 +14,15 @@ Run ONCE in the isolated reference env (NOT this repo's pixi env):
 
 Scenario (single-image PHRASE-GROUNDED detection with a geometric BOX prompt):
   Frame notebooks/videos/bedroom/00000.jpg (960x540), text phrase "person", and
-  ONE geometric box prompt at native-pixel xyxy [300, 150, 470, 420] (label 1),
+  ONE geometric box prompt at native-pixel xyxy [300, 150, 470, 420],
   confidence_threshold 0.5.
+
+  ``--label`` selects the box sign (upstream ``add_geometric_prompt(box, label)``;
+  the label indexes ``geometry_encoder.label_embed``, an ``nn.Embedding(2, d)``):
+    1 (default) -> positive box, written to ``box_prompt{,_scenario}.*``
+    0           -> negative box, written to ``box_prompt_neg{,_scenario}.*``
+  The default run reproduces the original detections; the scenario json now also
+  records ``box_label`` explicitly.
 
 API path: MODEL API (Sam3MultiplexTrackingWithInteractivity.detector, a
   Sam3MultiplexDetector -> Sam3MultiplexImageBase -> Sam3Image). We build the full
@@ -78,7 +85,6 @@ from PIL import Image
 
 PHRASE = "person"
 BOX_XYXY = [300.0, 150.0, 470.0, 420.0]  # native 960x540 pixel
-BOX_LABEL = 1
 CONF_THRESH = 0.5
 
 
@@ -152,8 +158,11 @@ def main():
     ap.add_argument("--frame", required=True)
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--label", type=int, choices=(0, 1), default=1,
+                    help="box sign: 1 positive (default), 0 negative")
     ap.add_argument("--patches", action="store_true")
     args = ap.parse_args()
+    stem = "box_prompt" if args.label == 1 else "box_prompt_neg"
 
     assert torch.cuda.is_available(), "CUDA required"
     _determinism()
@@ -194,7 +203,7 @@ def main():
     bw = (x1 - x0) / w0
     bh = (y1 - y0) / h0
     print(f"[capture] box native xyxy={BOX_XYXY} -> norm cxcywh="
-          f"({cx:.5f}, {cy:.5f}, {bw:.5f}, {bh:.5f}) label={BOX_LABEL}")
+          f"({cx:.5f}, {cy:.5f}, {bw:.5f}, {bh:.5f}) label={args.label}")
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="sam3_box_ref_"))
     try:
@@ -228,7 +237,7 @@ def main():
                 box_cxcywh = torch.tensor(
                     [cx, cy, bw, bh], dtype=torch.float32, device=device
                 )
-                labels = torch.tensor([BOX_LABEL], dtype=torch.long, device=device)
+                labels = torch.tensor([args.label], dtype=torch.long, device=device)
                 geom.append_boxes(
                     boxes=box_cxcywh.view(-1, 1, 4),
                     labels=labels.view(-1, 1),
@@ -289,21 +298,22 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        out_dir / "box_prompt.npz",
+        out_dir / f"{stem}.npz",
         boxes=boxes,
         scores=scores,
         presence=np.float32(presence),
         masks=masks,
         n=np.int64(n),
     )
-    (out_dir / "box_prompt_scenario.json").write_text(json.dumps({
+    (out_dir / f"{stem}_scenario.json").write_text(json.dumps({
         "phrase": PHRASE,
         "box_xyxy": [int(v) for v in BOX_XYXY],
+        "box_label": args.label,
         "confidence_threshold": CONF_THRESH,
         "hw": [h0, w0],
         "frame": "notebooks/videos/bedroom/00000.jpg",
     }, indent=2))
-    print(f"\n[capture] saved box_prompt.npz (n={n}) + scenario.json -> {out_dir}")
+    print(f"\n[capture] saved {stem}.npz (n={n}) + {stem}_scenario.json -> {out_dir}")
 
 
 if __name__ == "__main__":

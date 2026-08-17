@@ -236,7 +236,8 @@ def _pack_geometry(prompt, image_hw, device):
 
     Points -> normalized xy ``(N,1,2)`` + labels ``(N,1)``; boxes xyxy (pixel, or
     normalized via ``is_normalized``) -> normalized cxcywh ``(N,1,4)`` + labels
-    ``(N,1)``. Mask geometry has no weights in either checkpoint -> raises.
+    ``(N,1)``, defaulting to all-positive when the prompt carries no
+    ``boxes_labels``. Mask geometry has no weights in either checkpoint -> raises.
     """
     if prompt is None:
         return None
@@ -260,7 +261,11 @@ def _pack_geometry(prompt, image_hw, device):
         bw = (b[:, 2] - b[:, 0]).abs()
         bh = (b[:, 3] - b[:, 1]).abs()
         geo["box_coords"] = torch.stack([cx, cy, bw, bh], -1)[:, None, :]
-        geo["box_labels"] = torch.ones(b.shape[0], 1, device=device)
+        geo["box_labels"] = (
+            torch.ones(b.shape[0], 1, device=device)
+            if prompt.boxes_labels is None
+            else prompt.boxes_labels.to(device)[:, None]
+        )
     return geo or None
 
 

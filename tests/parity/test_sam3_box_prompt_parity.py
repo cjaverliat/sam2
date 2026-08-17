@@ -7,6 +7,15 @@ bf16 the outputs drift more than the bit-exact text-only path (which passes at
 2px/1e-2 in test_sam3_parity). We therefore assert a matched detection set with
 close-but-not-bitexact tolerances: same count + presence, each matched box IoU
 high, score and mask close. Tightening to bit-exact is tracked as follow-up.
+
+Both box signs are covered (upstream ``add_geometric_prompt(box, label)``; the
+label indexes ``geometry_encoder.label_embed``, an ``nn.Embedding(2, d)``):
+
+- ``box_prompt`` (label 1, positive) -- the prompt carries no ``boxes_labels``,
+  exercising the all-positive default.
+- ``box_prompt_neg`` (label 0, negative) -- "not this one". Upstream drops the
+  detection enclosed by the box (3 dets -> 2, presence 0.99999 -> 0.8606), so
+  this case fails outright if ``boxes_labels`` is ignored.
 """
 import json
 import os
@@ -23,8 +32,9 @@ FIX = Path("tests/parity/fixtures/sam3")
 CKPT = "checkpoints/sam3.1_multiplex.pt"
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or not os.path.isfile(CKPT)
-    or not (FIX / "box_prompt.npz").is_file(),
-    reason="needs CUDA + sam3.1_multiplex.pt + captured golden",
+    or not (FIX / "box_prompt.npz").is_file()
+    or not (FIX / "box_prompt_neg.npz").is_file(),
+    reason="needs CUDA + sam3.1_multiplex.pt + captured goldens",
 )
 
 BOX_IOU_MIN = 0.80
@@ -49,18 +59,25 @@ def _mask_iou(a, b):
     return 1.0 if union == 0 else inter / union
 
 
-def test_image_box_prompt_parity():
+@pytest.mark.parametrize("stem", ["box_prompt", "box_prompt_neg"])
+def test_image_box_prompt_parity(stem):
     from sam.build_sam import build_sam3_multiplex
 
-    scn = json.loads((FIX / "box_prompt_scenario.json").read_text())
-    g = np.load(FIX / "box_prompt.npz")
+    scn = json.loads((FIX / f"{stem}_scenario.json").read_text())
+    g = np.load(FIX / f"{stem}.npz")
     g_boxes, g_scores = g["boxes"], g["scores"]
     g_presence, g_masks = float(g["presence"]), g["masks"]
     frame = np.asarray(Image.open(scn["frame"]).convert("RGB"))
 
     pred = build_sam3_multiplex(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=CKPT, device="cuda")
-    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32))
+    # a scenario without "box_label" exercises the all-positive default
+    labels = (
+        None if "box_label" not in scn
+        else torch.tensor([scn["box_label"]], dtype=torch.long)
+    )
+    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32),
+                         boxes_labels=labels)
     det = pred.predict(frame, ConceptPrompt(scn["phrase"]),
                        confidence_threshold=scn["confidence_threshold"], geometry=box)
 

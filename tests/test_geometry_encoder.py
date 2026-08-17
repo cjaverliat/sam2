@@ -59,3 +59,46 @@ def test_pack_geometry_box_and_point():
     g2 = _pack_geometry(pp, (540, 960), dev)
     assert g2["point_coords"].shape == (1, 1, 2)
     assert abs(g2["point_coords"][0, 0, 0].item() - 0.5) < 1e-6
+
+
+def test_pack_geometry_defaults_box_labels_to_positive():
+    from sam.models.sam3_predictor import _pack_geometry
+    from sam.prompts import GeometryPrompt
+    p = GeometryPrompt(obj_id=1, boxes=torch.tensor([[100.0, 200.0, 300.0, 400.0]]))
+    geo = _pack_geometry(p, (540, 960), torch.device("cpu"))
+    assert geo["box_labels"].shape == (1, 1)
+    assert geo["box_labels"].flatten().tolist() == [1]
+
+
+def test_pack_geometry_forwards_negative_box_labels():
+    from sam.models.sam3_predictor import _pack_geometry
+    from sam.prompts import GeometryPrompt
+    p = GeometryPrompt(
+        obj_id=1,
+        boxes=torch.tensor([[100.0, 200.0, 300.0, 400.0], [10.0, 20.0, 30.0, 40.0]]),
+        boxes_labels=torch.tensor([1, 0]),
+    )
+    geo = _pack_geometry(p, (540, 960), torch.device("cpu"))
+    assert geo["box_labels"].shape == (2, 1)
+    assert geo["box_labels"].flatten().tolist() == [1, 0]
+
+
+def test_geometry_prompt_rejects_boxes_labels_length_mismatch():
+    from sam.prompts import GeometryPrompt
+    with pytest.raises(ValueError):
+        GeometryPrompt(obj_id=1, boxes=torch.zeros(2, 4),
+                       boxes_labels=torch.tensor([1]))
+
+
+def test_geometry_prompt_rejects_boxes_labels_without_boxes():
+    from sam.prompts import GeometryPrompt
+    with pytest.raises(ValueError):
+        GeometryPrompt(obj_id=1, boxes_labels=torch.tensor([1]))
+
+
+def test_geometry_prompt_clone_and_to_preserve_boxes_labels():
+    from sam.prompts import GeometryPrompt
+    p = GeometryPrompt(obj_id=1, boxes=torch.zeros(1, 4),
+                       boxes_labels=torch.tensor([0]))
+    assert p.clone().boxes_labels.flatten().tolist() == [0]
+    assert p.to(torch.device("cpu")).boxes_labels.flatten().tolist() == [0]
