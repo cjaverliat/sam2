@@ -81,29 +81,27 @@ class GeometryPrompt:
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
-# SAM 3 concept prompt — carries text, optional exemplars, and optional
-# negative phrases.  Encoding (positives AND negatives → embeddings) is the
-# predictor's responsibility; this type is a pure data carrier.
+# SAM 3 concept prompt — carries text and optional exemplars.  Encoding
+# (text → embeddings) is the predictor's responsibility; this type is a pure
+# data carrier.
 
 
 class ConceptPrompt:
     """Per-concept SAM 3 prompt.
 
+    There is no negative-phrase field: upstream SAM 3 has no inference-time
+    semantics for one (see :meth:`sam.models.sam3_predictor.Sam3Predictor.encode_text`).
+
     Args:
         text: Positive description of the concept to segment (e.g. "cat").
         exemplars: Optional reference geometry (boxes/masks on a reference
             frame) to supplement the text embedding.
-        negative_phrases: Optional list of phrases that should *not* match.
-            The predictor's ``encode_text`` embeds both positives and negatives
-            so that the presence head can suppress near-misses.
     """
 
     def __init__(
         self,
         text: str,
         exemplars=None,
-        negative_phrases=None,
     ):
         self.text = text
         self.exemplars = exemplars
-        self.negative_phrases = negative_phrases

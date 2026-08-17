@@ -247,7 +247,19 @@ class Sam3DetectionResult:
   during its hotstart-delay warm-up (no detection); our lifecycle only steps on a detection,
   so it shows the tracked object (correct masks) during that window. Step the lifecycle every
   frame (tracker object-score as the match signal) to match upstream's show/hide timing.
-- [ ] **Exemplar (VISUAL slot)**, **negative_phrases**, **multi-concept** — separate features.
+- [x] **`negative_phrases` — dropped, won't implement (2026-08-17).** Upstream has no
+  inference-time semantics for negatives: `SAM3VLBackbone.forward_text` piggy-backs an
+  optional `additional_text` onto the caption batch and exports `additional_text_features`,
+  but no caller passes it and nothing reads it (every hit is inside `vl_combiner.py`;
+  `VisionOnly.forward_text` ignores the arg). Upstream's negative supervision is
+  dataset-level `include_negatives` (a caption with zero GT instances trains the presence
+  head towards "absent") — not a per-concept negative list, and no head takes one as input.
+  Removed the field from `ConceptPrompt`; both `encode_text` are now plain single-phrase
+  encodes, bit-identical to before (the batch was already `[text]`, `n_pos=1`). Supersedes
+  the phase-1 Step 3 line "encode_text embeds positives **and** negatives".
+  Checked against `facebookresearch/sam3` `8f0b7f4` (2026-08-13) — unchanged since the
+  `5dd401d` pin.
+- [ ] **Exemplar (VISUAL slot)** and **multi-concept** — separate features.
 - [ ] **Geometry-prompt bit-exact parity** — the image box path matches upstream to a
   looser tolerance than the text-only 2px/1e-2 (geometry tokens + bf16 drift); tighten if needed.
 - [ ] **Pre-existing:** `test_sam3_parity.py::test_encoder_parity` (vision encoder) fails

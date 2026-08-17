@@ -141,9 +141,13 @@ detector) and reaches tracker block methods via `self.tracker.…` (delegation, 
 
 ## 6. New data types
 
-- `ConceptPrompt` [sam3] — `text: str`, optional `exemplars` (boxes/masks on a ref frame),
-  optional `negative_phrases`. Per-*concept*. `encode_text` embeds positives **and** negatives; both
-  flow into `detect()` (negatives sharpen the presence head / suppress near-misses).
+- `ConceptPrompt` [sam3] — `text: str`, optional `exemplars` (boxes/masks on a ref frame).
+  Per-*concept*. `encode_text` embeds the text; the embedding flows into `detect()`.
+  **Superseded 2026-08-17:** this originally specified an optional `negative_phrases` whose
+  embeddings would "sharpen the presence head / suppress near-misses". That behaviour does not
+  exist upstream — `additional_text` is encoded but never consumed, and no head accepts a
+  negative-caption input — so the field was dropped rather than invented. See the phase-1
+  plan's Post-phase1 ledger.
 - `Sam3DetectionResult` [sam3] — `masks_logits (N,H,W)`, `boxes (N,4)`, `scores (N,)`,
   `presence: float`, `instance_ids`. The detector's per-frame set output.
 - `GeometryPrompt` [shared, was `SAM2Prompt`] — points/boxes/mask per `obj_id`. **Dual role:**

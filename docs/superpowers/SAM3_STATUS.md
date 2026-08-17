@@ -33,28 +33,37 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   `_clicks_add`), base→mux `_purge_removed` override hook, `_pack_geometry` →
   module fn, and skipped the full-res masklet build for suppressed tracklets.
 
+- **`negative_phrases` — removed, not implemented.** Upstream has NO inference-time
+  semantics for negatives: `SAM3VLBackbone.forward_text` encodes an optional
+  `additional_text` and exports `additional_text_features`, but **no caller passes it
+  and nothing reads it** (all 16 hits live in `vl_combiner.py`; `VisionOnly.forward_text`
+  ignores the arg outright). Upstream's negative supervision is a different mechanism —
+  dataset-level `include_negatives` (a caption with zero GT instances trains the presence
+  head to say "absent"), not a per-concept negative list. No head accepts a
+  negative-caption input, so honouring them would mean inventing untrained behaviour.
+  Dropped the field from `ConceptPrompt`; both `encode_text` are now plain single-phrase
+  encodes (bit-identical — the old batch was already `[text]` with `n_pos=1`).
+  Re-verified against `origin/main` `8f0b7f4` (2026-08-13) on **2026-08-17**: unchanged.
+
 ## Open (recommended order)
 
-1. **`negative_phrases`** (smallest) — currently embedded then dropped in
-   `Sam3Predictor.encode_text` / video `encode_text`; feed them into the detector
-   presence/score head so they suppress matches.
-2. **Hotstart visibility for box-only tracking** — upstream HIDES a box-seeded
+1. **Hotstart visibility for box-only tracking** — upstream HIDES a box-seeded
    object during its `hotstart_delay=15` warm-up; ours SHOWS it (correct masks,
    wrong show/hide timing — see `test_sam3p1_video_box_parity` docstring, frames 1-4
    ungated). Fix: step the tracklet lifecycle every frame using the tracker
    object-score as the match signal, not only when a detection ran.
-3. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
+2. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
    Reuses the 2a encoder; wire the VISUAL slot in `forward_grounding`. NOTE: mask
    exemplars are permanently out — 0 `mask_encoder` keys in BOTH checkpoints.
-4. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
-5. **Geometry-prompt bit-exact parity** — image box path matches upstream at
+3. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
+4. **Geometry-prompt bit-exact parity** — image box path matches upstream at
    box-IoU ≥ 0.8 / score atol 0.06, looser than text-only's 2px/1e-2 (geometry
    tokens lengthen the decoder → bf16 drift). Investigate if bit-exact is wanted.
-6. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
+5. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
    encoder pyramid) fails vs golden — fails on `HEAD~` too (NOT this work); stale
    golden / env drift. Recapture or retolerance.
-7. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
-8. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
+6. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+7. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
    `_build_mux_point_inputs`; dead `TrackletManager.confirmed_ids()` + the CONFIRMED
    machinery if truly unused; small scale-tensor rebuilds on prompt frames.
 

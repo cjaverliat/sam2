@@ -17792,7 +17792,7 @@ packages:
 - pypi: ./
   name: sam
   version: 1.2.0
-  sha256: 1b765d166e30e8a6942411c00415d04227302a527227153bb13c19e0e41385ef
+  sha256: 3b6ae22cb8fcc679e28ea00118c4c996172963d06b91c911c41f3f8f2c51f2a3
   requires_dist:
   - numpy>=1.24.4
   - tqdm>=4.66.1

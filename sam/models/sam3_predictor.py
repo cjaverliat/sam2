@@ -76,29 +76,25 @@ class Sam3Predictor(nn.Module):
         return self.vision_encoder(image_tensor)
 
     def encode_text(self, concept: ConceptPrompt) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Embed the concept's positive text AND ``negative_phrases`` (spec §6/§9).
+        """Embed the concept's text (spec §6/§9) -> ``(text_emb, text_mask)``.
 
-        The positive phrase and any ``concept.negative_phrases`` are run through the text
-        tower together (negatives piggy-backed onto the same forward, mirroring upstream
-        ``SAM3VLBackbone.forward_text``'s ``additional_text``). Returns the positive slice
-        ``(text_emb, text_mask)`` the base per-object detector consumes:
-        ``text_emb`` (seq, n_pos, d_model), ``text_mask`` (n_pos, seq) True-where-PAD. With
-        no negatives this reduces to encoding the single positive — bitwise-identical to the
-        captured golden. (Feeding the embedded negatives into the presence head is deferred:
-        the base detect path is text-positive-only, like the Task 4 detector.)
+        Returns what the base per-object detector consumes: ``text_emb``
+        (seq, 1, d_model) and ``text_mask`` (1, seq) True-where-PAD.
+
+        No negative phrases: upstream SAM 3 encodes an optional ``additional_text``
+        alongside the captions (``SAM3VLBackbone.forward_text``) but no caller ever
+        passes it and nothing reads the resulting ``additional_text_features`` — the
+        positives-only slice is what reaches the detector. Verified against
+        facebookresearch/sam3 @ ``8f0b7f4`` (2026-08-13). No head takes a
+        negative-caption input, so honouring negatives would mean inventing untrained
+        behaviour.
         """
-        positives = [concept.text]
-        negatives = list(concept.negative_phrases or [])
-        all_phrases = positives + negatives
         # forward returns (text_attention_mask (batch, seq) True-where-PAD,
         #                  text_memory_resized (seq, batch, d_model), inputs_embeds_T)
         text_attention_mask, text_memory_resized, _ = self.text_encoder(
-            all_phrases, device=self.device
+            [concept.text], device=self.device
         )
-        n_pos = len(positives)
-        text_emb = text_memory_resized[:, :n_pos]   # (seq, n_pos, d_model)
-        text_mask = text_attention_mask[:n_pos]     # (n_pos, seq) True where PAD
-        return text_emb, text_mask
+        return text_memory_resized, text_attention_mask
 
     def encode_exemplars(self, exemplars) -> Optional[torch.Tensor]:
         """Embed optional reference geometry (deferred — base text-only path).
@@ -438,19 +434,15 @@ class Sam3VideoPredictor(nn.Module):
         return sam3_f, sam3_p, sam2_f, sam2_p
 
     def encode_text(self, concept: ConceptPrompt):
-        """Embed the concept's positive text AND ``negative_phrases`` -> ``(text_emb, text_mask)``.
+        """Embed the concept's text -> ``(text_emb, text_mask)``.
 
-        Mirrors :meth:`Sam3Predictor.encode_text` (negatives piggy-backed on the same forward;
-        the positive slice is returned for the base per-object detector).
+        Mirrors :meth:`Sam3Predictor.encode_text` (including why there are no
+        negative phrases).
         """
-        positives = [concept.text]
-        negatives = list(concept.negative_phrases or [])
-        all_phrases = positives + negatives
         text_attention_mask, text_memory_resized, _ = self.text_encoder(
-            all_phrases, device=self.device
+            [concept.text], device=self.device
         )
-        n_pos = len(positives)
-        return text_memory_resized[:, :n_pos], text_attention_mask[:n_pos]
+        return text_memory_resized, text_attention_mask
 
     def encode_exemplars(self, exemplars) -> torch.Tensor | None:
         """Embed optional reference geometry (deferred — base text-only path; returns None)."""
