@@ -1,7 +1,8 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (125 commits ahead of `main`). Tree clean.
-**Last session:** 2026-07-23/24. **Read this first to resume.**
+**Branch:** `feat/sam3-integration` (128 commits ahead of `main`, head `2e25c0b`).
+Tree clean, nothing pushed.
+**Last session:** 2026-08-17. **Read this first to resume.**
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -62,6 +63,22 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
    frames — an output-contract change. Would also close the frames 5-7 gap in
    `test_sam3p1_video_box_parity` (upstream reveals a hotstart-killed object for
    the frames preceding its death; we keep it hidden).
+
+   Resume notes: upstream's rule is assembled in `sam3_multiplex_tracking.py`
+   `_postprocess_output` (~704-714, the `obj_ids_to_hide` list) fed by the
+   `propagate_in_video` hotstart buffer (~336-390, `unconfirmed_status_delay =
+   thresh - 1`, clamped to `num_frames - 1`); status itself is updated in
+   `sam3_multiplex_base.py` ~2786-2802 (sticky once CONFIRMED, counter resets on a
+   miss). `masklet_confirmation_enable=True` + `thresh=3` come from the demo builder
+   (`model_builder.py` ~1184). Our side already tracks the counter
+   (`TrackletManager.consecutive_det_count` -> `TrackletState.CONFIRMED`,
+   `confirmed_ids()`) — it is computed and currently unused, so the work is the
+   output path, not the state machine. **This decision is open, not settled** —
+   whether to take the 2-frame latency at all is a judgement call for the owner.
+   Re-verify any hypothesis with
+   `tests/parity/reference_sam3/debug_sam3p1_video_box_hotstart.py` before coding;
+   two plausible stories (empty masks vs. lifecycle gate) were indistinguishable
+   from the golden alone last time, and only the instrumented rerun separated them.
 2. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
    Reuses the 2a encoder; wire the VISUAL slot in `forward_grounding`. NOTE: mask
    exemplars are permanently out — 0 `mask_encoder` keys in BOTH checkpoints.
@@ -102,7 +119,11 @@ tests/test_sam3p1_point_inputs.py tests/characterization/test_sam3_build.py -q`.
 - `sam/modeling/tracking/sam3_multiplex_tracker.py` — `track_step`,
   `add_new_masks_to_existing_state`, `masks_from_points`, `_interactive_high_res_features`.
 - `sam/modeling/association/tracklet.py` — `TrackletManager` (hotstart kill +
-  keep-alive suppress; `removed/alive/visible/managed_ids`).
+  keep-alive suppress; `removed/alive/visible/managed_ids`). `step()` is driven by
+  `_advance_lifecycle` in the predictor, which runs on EVERY frame — including
+  frames with no detection pass (all managed tracklets count as unmatched then).
+  Only *managed* ids step: click-seeded objects are intentionally never registered,
+  which is what keeps them out of hotstart (upstream parity — see the ledger).
 - `sam/modeling/decoders/detr_decoder.py` — `Sam3GeometryEncoder` (box/point),
   `_concat_padded_sequences`, `Sam3DetrDetector.forward_grounding(..., geo=)`.
 
@@ -116,4 +137,10 @@ tests/test_sam3p1_point_inputs.py tests/characterization/test_sam3_build.py -q`.
   NMS/CC; triton/FA3 absent). Box-only prompt keeps the TEXT slot at the literal
   `"<text placeholder>"` (NOT `"geometric"`).
 - Goldens/fixtures under `tests/parity/fixtures/sam3{,p1}/`; capture scripts under
-  `tests/parity/reference_sam3/`.
+  `tests/parity/reference_sam3/`. That dir also holds
+  `debug_sam3p1_video_box_hotstart.py`, an instrumented (write-nothing) rerun that
+  prints upstream's per-frame hide sets, keep-alive / unmatch counters and
+  confirmation status — use it before theorising about visibility behaviour.
+- A golden's empty frame does NOT tell you *why* upstream hid an object (empty mask?
+  suppressed? unconfirmed? removed?). Instrument before fixing — the box-only
+  visibility item had two equally plausible explanations that only the rerun split.
