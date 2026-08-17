@@ -97,6 +97,7 @@ def run_streaming_parity(mask_iou):
 
     from sam.models.sam3_predictor import Sam3VideoPredictorState
     from sam.prompts import ConceptPrompt
+    from sam.results import Emit
 
     def _run(predictor, fixture, *, min_gate=0.98, mean_gate=0.99):
         frames = fixture["video_frames_rgb"]  # (T,H,W,3) uint8
@@ -104,6 +105,11 @@ def run_streaming_parity(mask_iou):
         phrase = str(fixture["video_phrase"])
         n_frames = int(frames.shape[0])
 
+        # The goldens captured upstream's OBSERVABLE, which shows an object from its
+        # first frame (upstream decides visibility non-causally). Emit.CONFIRMED -- the
+        # shipped default -- cannot show those birth frames, so parity is measured in
+        # Emit.VISIBLE mode.
+        predictor.emit = Emit.VISIBLE
         state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
         predictor.set_concept(state, ConceptPrompt(phrase))
 

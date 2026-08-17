@@ -31,6 +31,7 @@ import torch
 from PIL import Image
 
 from sam.prompts import GeometryPrompt
+from sam.results import Emit
 
 FIX = Path("tests/parity/fixtures/sam3p1")
 CKPT = "checkpoints/sam3.1_multiplex.pt"
@@ -63,6 +64,9 @@ def test_video_box_prompt_seed_parity():
 
     pred = build_sam3_multiplex_video_predictor(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=CKPT, device="cuda")
+    # Frame 0 shows the box-seeded object in the golden while it is still PENDING
+    # (confirmation needs 3 consecutive detections), so measure in VISIBLE mode.
+    pred.emit = Emit.VISIBLE
     st = Sam3VideoPredictorState(video_hw=(h, w))
     box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32))
 

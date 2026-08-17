@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Set
 
+from sam.results import Emit
+
 
 class TrackletState(Enum):
     PENDING = "pending"      # newly spawned; awaiting confirmation
@@ -165,6 +167,19 @@ class TrackletManager:
             oid for oid, info in self._tracks.items()
             if not info.removed and info.state is TrackletState.CONFIRMED
         }
+
+    def emitted_ids(self, emit: Emit) -> Set[int]:
+        """The managed ids an ``Emit`` policy puts in the predictor's output."""
+        if emit is Emit.CONFIRMED:
+            return self.confirmed_ids()
+        if emit is Emit.VISIBLE:
+            return self.visible_ids()
+        return self.alive_ids()
+
+    def state_of(self, obj_id: int) -> TrackletState | None:
+        """Lifecycle state of ``obj_id``, or None if this manager does not track it."""
+        info = self._tracks.get(obj_id)
+        return None if info is None else info.state
 
     def __len__(self) -> int:
         return len(self._tracks)

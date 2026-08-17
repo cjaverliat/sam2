@@ -82,6 +82,7 @@ def test_efficientsam3_video_parity(variant, determinism_no_det_algos):
     from sam.build_sam import build_sam3_video_predictor
     from sam.models.sam3_predictor import Sam3VideoPredictorState
     from sam.prompts import ConceptPrompt
+    from sam.results import Emit
 
     g = dict(np.load(gold_npz, allow_pickle=True))
     frames = g["video_frames_rgb"]  # (T,H,W,3) uint8
@@ -93,6 +94,7 @@ def test_efficientsam3_video_parity(variant, determinism_no_det_algos):
     predictor = build_sam3_video_predictor(config_file=config_file, ckpt_path=str(ckpt), device="cuda")
     predictor.eval()
 
+    predictor.emit = Emit.VISIBLE   # the golden shows objects from their birth frame
     state = Sam3VideoPredictorState(video_hw=(video_h, video_w))
     predictor.set_concept(state, ConceptPrompt(phrase))
 

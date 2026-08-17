@@ -1,7 +1,7 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (128 commits ahead of `main`, head `2e25c0b`).
-Tree clean, nothing pushed.
+**Branch:** `feat/sam3-integration` (129 commits ahead of `main`, head `1d6d2b4`).
+Nothing pushed. The `Emit` output policy below is in the working tree, UNCOMMITTED.
 **Last session:** 2026-08-17. **Read this first to resume.**
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
@@ -33,6 +33,24 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   concept-less box session decays and can be killed like upstream. Click-seeded objects
   stay unmanaged and exempt (upstream runs click-only sessions through SAM 2 partial
   propagation, bypassing hotstart). Ledger has the measured trace.
+- **Output policy `Emit` (2026-08-17)** — closes the "buffered confirmation gate" item
+  WITHOUT buffering. `forward()` keeps its synchronous contract (feed frame `f`, get
+  frame `f`); the predictor gained `emit: Emit` (`CONFIRMED` default / `VISIBLE` /
+  `ALIVE`, `sam/results.py`) and every `MaskletResult` now carries its
+  `tracklet_state`, so a caller can layer its own display policy. `select_emitted`
+  (module fn, `sam3_predictor.py`) applies the policy, always drops empty masks
+  (upstream's unconditional `mask.any()`), and lets unmanaged (click-seeded) ids pass.
+  `TrackletManager.confirmed_ids()` is live now via `emitted_ids()`.
+
+  Parity reasoning: upstream's causal half ("show nothing until 3 consecutive
+  detections") is now reproducible exactly, at zero latency, by running the default.
+  Its non-causal half (the retroactive reveal of frames preceding a hotstart kill)
+  stays out of reach for any streaming design — and out of reach for a streaming
+  *consumer* too, which cannot un-draw a frame it already displayed. The goldens
+  captured the observable of a non-causal pipeline (objects visible from their birth
+  frame), so every golden-measuring test now sets `pred.emit = Emit.VISIBLE`; the
+  `CONFIRMED` default is covered by `tests/test_emit_modes.py` (CPU).
+
 - **Quality pass** — dedup (shared `_seed_mux_state` / `_masklets_from_demux` /
   tracker `masks_from_points` + `_interactive_high_res_features`), decomposed the
   mux `forward` god-method (`_split_and_pack_geometry` / `_detector_add` /
@@ -53,46 +71,43 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 
 ## Open (recommended order)
 
-1. **Buffered confirmation gate** — upstream's multiplex hide-set is
-   `unconfirmed(min(f + thresh-1, last)) ∪ empty-mask`, nothing else: keep-alive
-   suppression is dead code there (`to_suppress_mask` never consumed;
-   `suppressed_obj_ids` only written by the CPU `_process_hotstart`, never called
-   in the multiplex path). Our `keep_alive > 0` rule agrees with it on the frames
-   we test, but by coincidence, not mechanism. Matching it means gating on
-   CONFIRMED with a `thresh-1` lookahead, i.e. buffering `forward()` output by 2
-   frames — an output-contract change. Would also close the frames 5-7 gap in
-   `test_sam3p1_video_box_parity` (upstream reveals a hotstart-killed object for
-   the frames preceding its death; we keep it hidden).
-
-   Resume notes: upstream's rule is assembled in `sam3_multiplex_tracking.py`
-   `_postprocess_output` (~704-714, the `obj_ids_to_hide` list) fed by the
-   `propagate_in_video` hotstart buffer (~336-390, `unconfirmed_status_delay =
-   thresh - 1`, clamped to `num_frames - 1`); status itself is updated in
-   `sam3_multiplex_base.py` ~2786-2802 (sticky once CONFIRMED, counter resets on a
-   miss). `masklet_confirmation_enable=True` + `thresh=3` come from the demo builder
-   (`model_builder.py` ~1184). Our side already tracks the counter
-   (`TrackletManager.consecutive_det_count` -> `TrackletState.CONFIRMED`,
-   `confirmed_ids()`) — it is computed and currently unused, so the work is the
-   output path, not the state machine. **This decision is open, not settled** —
-   whether to take the 2-frame latency at all is a judgement call for the owner.
-   Re-verify any hypothesis with
-   `tests/parity/reference_sam3/debug_sam3p1_video_box_hotstart.py` before coding;
-   two plausible stories (empty masks vs. lifecycle gate) were indistinguishable
-   from the golden alone last time, and only the instrumented rerun separated them.
-2. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
+1. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
    Reuses the 2a encoder; wire the VISUAL slot in `forward_grounding`. NOTE: mask
    exemplars are permanently out — 0 `mask_encoder` keys in BOTH checkpoints.
-3. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
-4. **Geometry-prompt bit-exact parity** — image box path matches upstream at
+2. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
+3. **Geometry-prompt bit-exact parity** — image box path matches upstream at
    box-IoU ≥ 0.8 / score atol 0.06, looser than text-only's 2px/1e-2 (geometry
    tokens lengthen the decoder → bf16 drift). Investigate if bit-exact is wanted.
-5. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
+4. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
    encoder pyramid) fails vs golden — fails on `HEAD~` too (NOT this work); stale
    golden / env drift. Recapture or retolerance.
-6. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
-7. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
-   `_build_mux_point_inputs`; dead `TrackletManager.confirmed_ids()` + the CONFIRMED
-   machinery if truly unused; small scale-tensor rebuilds on prompt frames.
+5. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+6. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
+   `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
+
+### Closed by the `Emit` policy — the retroactive-reveal residue
+
+Upstream's multiplex hide-set is `unconfirmed(min(f + thresh-1, last)) ∪ empty-mask`,
+nothing else: keep-alive suppression is dead code there (`to_suppress_mask` never
+consumed; `suppressed_obj_ids` only written by the CPU `_process_hotstart`, never
+called in the multiplex path). `Emit.CONFIRMED` + the unconditional empty-mask drop
+now reproduce that rule *causally*. What remains unreproducible is the LOOKAHEAD:
+upstream buffers `propagate_in_video` output by `hotstart_delay` (15) frames and
+snapshots the removed set on the way out, so a hotstart kill retroactively reveals the
+frames preceding the death (the frames 5-7 gap in `test_sam3p1_video_box_parity`).
+Deliberately not implemented: it would cost a 15-frame output lag, and a streaming
+consumer cannot act on it anyway (a frame already shown cannot be un-shown).
+
+Upstream references if this is ever revisited: `sam3_multiplex_tracking.py`
+`_postprocess_output` (~703-714, `keep = masks.any()` then `obj_ids_to_hide`) fed by
+the `propagate_in_video` hotstart buffer (~336-390, `unconfirmed_status_delay =
+thresh - 1`, clamped to `num_frames - 1`); status updated in `sam3_multiplex_base.py`
+~2786-2802 (sticky once CONFIRMED, counter resets on a miss);
+`masklet_confirmation_enable=True` + `thresh=3` from the demo builder
+(`model_builder.py` ~1184). Re-verify any hypothesis with
+`tests/parity/reference_sam3/debug_sam3p1_video_box_hotstart.py` before coding — two
+plausible stories (empty masks vs. lifecycle gate) were indistinguishable from the
+golden alone, and only the instrumented rerun separated them.
 
 ## How to verify (regression gate)
 
@@ -108,14 +123,22 @@ MPLBACKEND=Agg pixi run -e notebooks pytest \
 # then revert the pixi.lock churn: git checkout pixi.lock
 ```
 CPU-fast (no GPU): `pixi run pytest tests/test_tracklet_reid.py
-tests/test_sam3p1_point_inputs.py tests/characterization/test_sam3_build.py -q`.
+tests/test_sam3p1_point_inputs.py tests/characterization/test_sam3_build.py
+tests/test_emit_modes.py -q`.
+
+The 7-file GPU gate does NOT cover `tests/parity/conftest.py::run_streaming_parity`
+(5 video-parity tests live outside it). After touching that fixture also run
+`pytest tests/parity/test_sam3_parity.py -k video_parity
+tests/parity/reference_efficientsam3/ -q`. On this host the 4 efficientsam3 ones skip
+(checkpoints absent), so only 2 of the 5 execute.
 
 ## Key code map
 
 - `sam/models/sam3_predictor.py` — predictors. Mux video `forward` (orchestration),
   `_seed_mux_state` / `_grow_mux_state` / `_seed_multiplex` / `_seed_points_multiplex`,
   `_detector_add` / `_clicks_add`, `_detect(concept, geo=)`, `_placeholder_concept`,
-  `_filter_visible`, `_purge_removed`, module fns `_build_mux_point_inputs` / `_pack_geometry`.
+  `_purge_removed`, module fns `select_emitted` (output policy + empty-mask drop +
+  `tracklet_state` stamp) / `_build_mux_point_inputs` / `_pack_geometry`.
 - `sam/modeling/tracking/sam3_multiplex_tracker.py` — `track_step`,
   `add_new_masks_to_existing_state`, `masks_from_points`, `_interactive_high_res_features`.
 - `sam/modeling/association/tracklet.py` — `TrackletManager` (hotstart kill +

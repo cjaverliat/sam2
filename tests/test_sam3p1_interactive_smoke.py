@@ -7,6 +7,7 @@ import torch
 from PIL import Image
 
 from sam.prompts import ConceptPrompt, GeometryPrompt
+from sam.results import Emit
 
 CKPT = "checkpoints/sam3.1_multiplex.pt"
 CFG = "configs/sam3/sam3.1.yaml"
@@ -18,7 +19,12 @@ needs_gpu = pytest.mark.skipif(
 
 def _build():
     from sam.build_sam import build_sam3_multiplex_video_predictor
-    return build_sam3_multiplex_video_predictor(config_file=CFG, ckpt_path=CKPT, device="cuda")
+    pred = build_sam3_multiplex_video_predictor(config_file=CFG, ckpt_path=CKPT, device="cuda")
+    # These assert the keep-alive suppress semantics (a seeded object visible on its
+    # prompt frame, hidden once unmatched), which is Emit.VISIBLE; the shipped
+    # Emit.CONFIRMED default additionally hides an object's first two frames.
+    pred.emit = Emit.VISIBLE
+    return pred
 
 
 def _state(hw):

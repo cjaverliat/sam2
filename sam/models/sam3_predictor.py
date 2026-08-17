@@ -33,7 +33,7 @@ from sam.modeling.memory.bank import ObjectMemoryBank
 from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
 from sam.modeling.tracking.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam.prompts import ConceptPrompt, GeometryPrompt
-from sam.results import MaskletResult
+from sam.results import Emit, MaskletResult
 from sam.utils.sam3_transforms import preprocess_to_1008, preprocess_to_1008_video
 
 if TYPE_CHECKING:
@@ -371,6 +371,39 @@ class Sam3VideoPredictorState:
 MAX_CONCEPTS = 1   # relax (or remove) to enable multi-concept
 
 
+def select_emitted(
+    results: dict[int, MaskletResult],
+    mgr: TrackletManager,
+    emit: Emit,
+) -> dict[int, MaskletResult]:
+    """Apply the output policy to one frame's masklets and stamp their state.
+
+    Ids the manager does not track (click-seeded objects) always pass: upstream runs
+    a click-only session through SAM 2 partial propagation, which never subjects it to
+    detection-driven confirmation or hotstart. Empty masks are dropped in every mode,
+    mirroring the unconditional ``mask.any()`` in upstream ``_postprocess_output``.
+
+    Args:
+        results: this frame's masklets, keyed by obj_id.
+        mgr: the session's tracklet lifecycle state machine.
+        emit: which objects to keep.
+
+    Returns:
+        The kept subset, each result carrying its ``tracklet_state``.
+    """
+    emitted = mgr.emitted_ids(emit)
+    managed = mgr.managed_ids()
+    kept = {}
+    for obj_id, result in results.items():
+        if obj_id in managed and obj_id not in emitted:
+            continue
+        if not bool((result.masks_logits > 0.0).any()):
+            continue
+        result.tracklet_state = mgr.state_of(obj_id)
+        kept[obj_id] = result
+    return kept
+
+
 class Sam3VideoPredictor(nn.Module):
     """SAM 3 streaming video concept predictor (spec §10).
 
@@ -395,12 +428,16 @@ class Sam3VideoPredictor(nn.Module):
         text_encoder: nn.Module | None = None,
         detector: nn.Module | None = None,
         tracker: nn.Module | None = None,
+        emit: Emit = Emit.CONFIRMED,
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
         self.detector = detector
         self.tracker = tracker
+        # Output policy (see Emit). Constant for a session in practice, so it lives on
+        # the predictor rather than on every forward() call; reassign it to switch.
+        self.emit = emit
         # Output-mask hole-fill / sprinkle-removal area (upstream build_sam3_video_model uses 16);
         # applied to the low-res OUTPUT masks only (not to seeding / memory, matching upstream).
         self.fill_hole_area = 16
@@ -493,17 +530,6 @@ class Sam3VideoPredictor(nn.Module):
                 d.pop(obj_id, None)
         state.tracklet_mgr.remove(obj_id)
 
-    @staticmethod
-    def _filter_visible(state, results: dict) -> dict:
-        """Keep only visible tracklet objects; non-managed ids (e.g. click-seeded)
-        always pass. Suppressed (dormant) objects propagate but are hidden."""
-        managed = state.tracklet_mgr.managed_ids()
-        visible = state.tracklet_mgr.visible_ids()
-        return {
-            oid: r for oid, r in results.items()
-            if oid not in managed or oid in visible
-        }
-
     # ------------------------------------------------------------------
     # Streaming forward (spec §10 data-flow)
     # ------------------------------------------------------------------
@@ -581,7 +607,7 @@ class Sam3VideoPredictor(nn.Module):
                     det.masks_logits[det_idx].float(), None, H, W
                 )
             results.update(geom_results)
-            return self._filter_visible(state, results)
+            return select_emitted(results, state.tracklet_mgr, self.emit)
 
     # ------------------------------------------------------------------
     # Streaming helpers
@@ -1065,17 +1091,17 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 )
 
             # 5) build outputs: existing -> tracker masks; new dets -> detector masks.
-            # Skip the full-res masklet build for suppressed (dormant) tracklets --
-            # they still propagate + retain memory, but their output would be dropped
-            # by _filter_visible, so upsampling it is wasted work.
+            # Skip the full-res masklet build for tracklets the emit policy will drop --
+            # they still propagate + retain memory, but their output would go straight
+            # out of select_emitted, so upsampling it is wasted work.
             managed = state.tracklet_mgr.managed_ids()
-            visible = state.tracklet_mgr.visible_ids()
+            emitted = state.tracklet_mgr.emitted_ids(self.emit)
             results: dict[int, MaskletResult] = {}
             for oid in active_ids:
                 if oid not in state.bank.known_obj_ids:
                     continue  # killed this frame
-                if oid in managed and oid not in visible:
-                    continue  # dormant -> hidden from output anyway
+                if oid in managed and oid not in emitted:
+                    continue  # policy hides it -> nothing to build
                 results[oid] = self._masklet_from_lowres(
                     trk_low_masks[oid], trk_results[oid], H, W
                 )
@@ -1090,7 +1116,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 results.update(self._clicks_add(
                     state, frame_idx, point_prompts, bf_int, bf_prop, num_frames
                 ))
-            return self._filter_visible(state, results)
+            return select_emitted(results, state.tracklet_mgr, self.emit)
 
     def _split_and_pack_geometry(self, geometry_prompts, hw, device):
         """Split prompts into a packed box-geo dict (biases detection via the

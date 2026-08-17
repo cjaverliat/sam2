@@ -18,6 +18,7 @@ import torch
 from PIL import Image
 
 from sam.prompts import ConceptPrompt
+from sam.results import Emit
 
 FIX = Path("tests/parity/fixtures/sam3p1")
 CKPT = "checkpoints/sam3.1_multiplex.pt"
@@ -69,6 +70,9 @@ def test_modelfind_detector_midstream_parity():
 
     pred = build_sam3_multiplex_video_predictor(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=CKPT, device="cuda")
+    # The golden shows every object from its birth frame (upstream decides visibility
+    # non-causally); the shipped Emit.CONFIRMED default cannot, so measure in VISIBLE.
+    pred.emit = Emit.VISIBLE
     st = Sam3VideoPredictorState(video_hw=(h, w))
     pred.set_concept(st, ConceptPrompt(scn["phrase"]))
 
