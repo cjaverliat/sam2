@@ -8,10 +8,9 @@ Provides:
   ConceptState              — per-concept encoded state stored in Sam3VideoPredictorState.
   Sam3VideoPredictorState   — streaming-session state (bank + concepts + frame counter).
   MAX_CONCEPTS              — current concept-count cap (D9: 1; raise to relax).
-  Sam3VideoPredictor        — streaming skeleton class (Task 6 guard); its encode_text /
-                              encode_exemplars are wired to real encoders in the streaming
-                              task. Its ``encode_text`` seam now takes the full
-                              ``ConceptPrompt`` so positives AND negatives are embedded.
+  Sam3VideoPredictor        — streaming skeleton class (Task 6 guard); its ``encode_text``
+                              is wired to the real text tower in the streaming task, and
+                              takes the full ``ConceptPrompt``.
 
 Guard contract (spec §9):
   set_concept checks ``state.started`` THEN ``MAX_CONCEPTS`` BEFORE calling encode_text,
@@ -96,15 +95,6 @@ class Sam3Predictor(nn.Module):
         )
         return text_memory_resized, text_attention_mask
 
-    def encode_exemplars(self, exemplars) -> Optional[torch.Tensor]:
-        """Embed optional reference geometry (deferred — base text-only path).
-
-        The base per-object detector runs the text-only geometry cls path; full
-        exemplar / geometry-prompt encoding is deferred to the streaming task, so this
-        returns ``None``.
-        """
-        return None
-
     def detect(
         self,
         feats: List[torch.Tensor],
@@ -113,13 +103,12 @@ class Sam3Predictor(nn.Module):
         text_mask: torch.Tensor,
         image_hw: Tuple[int, int],
         confidence_threshold: float = 0.5,
-        exemplar_emb: Optional[torch.Tensor] = None,
         geo: Optional[dict] = None,
     ) -> "Sam3DetectionResult":
         """Ground the encoded text into per-object detections via the owned detector."""
         return self.detector.detect(
             feats, pos, text_emb, text_mask, image_hw,
-            confidence_threshold=confidence_threshold, exemplar_emb=exemplar_emb, geo=geo,
+            confidence_threshold=confidence_threshold, geo=geo,
         )
 
     # ------------------------------------------------------------------
@@ -136,7 +125,7 @@ class Sam3Predictor(nn.Module):
         Args:
             image: ``(H, W, 3)`` uint8 RGB array. The predictor owns its preprocessing
                 (GPU resize -> 1008 + normalise; CPU resize fails parity).
-            concept: the :class:`~sam.prompts.ConceptPrompt` (text [+ negatives]).
+            concept: the :class:`~sam.prompts.ConceptPrompt` (text).
             confidence_threshold: presence-weighted score threshold (default 0.5).
             dtype: autocast dtype (default ``torch.bfloat16``).  Pass
                 ``torch.float32`` to disable mixed-precision, e.g. when comparing
@@ -159,14 +148,10 @@ class Sam3Predictor(nn.Module):
             x = preprocess_to_1008(image, device=device)
             feats, pos = self.encode_image(x)
             text_emb, text_mask = self.encode_text(concept)
-            exemplar_emb = (
-                self.encode_exemplars(concept.exemplars) if concept.exemplars else None
-            )
             geo = _pack_geometry(geometry, image_hw, device)
             return self.detect(
                 feats, pos, text_emb, text_mask, image_hw,
-                confidence_threshold=confidence_threshold, exemplar_emb=exemplar_emb,
-                geo=geo,
+                confidence_threshold=confidence_threshold, geo=geo,
             )
 
 
@@ -340,9 +325,8 @@ class Sam3MultiplexPredictor(Sam3Predictor):
 @dataclass
 class ConceptState:
     concept_id: int
-    prompt: ConceptPrompt            # original (text, exemplars, negatives)
+    prompt: ConceptPrompt            # original (text)
     text_emb: torch.Tensor           # encoded once (positive slice, (seq, n_pos, d))
-    exemplar_emb: torch.Tensor | None
     text_mask: torch.Tensor | None = None  # (n_pos, seq) True-where-PAD, for the detector
 
 
@@ -486,10 +470,6 @@ class Sam3VideoPredictor(nn.Module):
         )
         return text_memory_resized, text_attention_mask
 
-    def encode_exemplars(self, exemplars) -> torch.Tensor | None:
-        """Embed optional reference geometry (deferred — base text-only path; returns None)."""
-        return None
-
     # ------------------------------------------------------------------
     # Concept management (spec §9)
     # ------------------------------------------------------------------
@@ -507,8 +487,7 @@ class Sam3VideoPredictor(nn.Module):
             text_emb, text_mask = encoded
         else:
             text_emb, text_mask = encoded, None
-        ex_emb = self.encode_exemplars(concept.exemplars) if concept.exemplars else None
-        state.concepts.append(ConceptState(cid, concept, text_emb, ex_emb, text_mask))
+        state.concepts.append(ConceptState(cid, concept, text_emb, text_mask))
         return cid
 
     # ------------------------------------------------------------------
@@ -991,7 +970,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         if getattr(self, "_geo_concept", None) is None:
             text = "<text placeholder>"
             emb, mask = self.encode_text(ConceptPrompt(text))
-            self._geo_concept = ConceptState(0, ConceptPrompt(text), emb, None, mask)
+            self._geo_concept = ConceptState(0, ConceptPrompt(text), emb, mask)
         return self._geo_concept
 
     def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":

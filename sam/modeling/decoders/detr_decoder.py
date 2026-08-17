@@ -6,15 +6,15 @@
 #   * sam3/model/decoder.py            -> TransformerDecoder/Layer (200-query set decoder
 #                                         with box-refine, log-boxRPB, and a presence token)
 #   * sam3/model/model_misc.py         -> MultiheadAttention, DotProductScoring, MLP, helpers
-#   * sam3/model/geometry_encoders.py  -> SequenceGeometryEncoder (TEXT-ONLY cls-token path
-#                                         only; the box/point/mask/exemplar encoders are kept
-#                                         as dormant submodules for strict state_dict loading
-#                                         but not exercised -- DEFERRED to a later task)
+#   * sam3/model/geometry_encoders.py  -> SequenceGeometryEncoder (cls token + the box/point
+#                                         encoders; the mask encoder stays dormant for strict
+#                                         state_dict loading -- no mask_encoder weights exist
+#                                         in either checkpoint)
 #   * sam3/model/sam3_image.py         -> Sam3Image.forward_grounding (the reference forward
 #                                         this module's forward_grounding/detect reproduce)
 #
 # Stripped (not needed for the base text-only image inference path): the SAM 3.1 multiplex
-# decoder, the full geometry/exemplar encoders, training (matcher/DAC/aux losses), multi-GPU,
+# decoder, the mask geometry encoder, training (matcher/DAC/aux losses), multi-GPU,
 # activation checkpointing, torch.compile, and the FA3/flash-attn fast paths. The hardcoded
 # flash-attn is replaced by torch SDPA (flash+math+mem-efficient enabled, auto-selected) --
 # numerically equivalent under bf16 autocast within the parity tolerance.
@@ -923,12 +923,12 @@ class TransformerWrapper(nn.Module):
 
 
 # =====================================================================================
-# Geometry encoder -- TEXT-ONLY cls-token path (vendored from geometry_encoders.py).
-# For a null geometric prompt (text-only), _encode_points / _encode_boxes produce empty
-# sequences, so the only contribution is the CLS token, which is image-conditioned by the
-# 3 ``encode`` cross-attention layers. The box/point/mask submodules are built (so the
-# checkpoint subtree loads strictly) but DORMANT; full geometry/exemplar encoding is
-# DEFERRED to a later task.
+# Geometry encoder (vendored from geometry_encoders.py). For a null geometric prompt
+# (text-only), _encode_points / _encode_boxes produce empty sequences, so the only
+# contribution is the CLS token, which is image-conditioned by the 3 ``encode``
+# cross-attention layers. Box and point prompts are live. The mask submodule is built
+# (so the checkpoint subtree loads strictly) but DORMANT -- neither checkpoint carries
+# mask_encoder weights, so mask geometry is permanently out.
 # =====================================================================================
 class Sam3GeometryEncoder(nn.Module):
     def __init__(self, d_model, layer, num_layers, roi_size=7):
@@ -1103,12 +1103,8 @@ class Sam3DetrDetector(nn.Module):
         pos: List[Tensor],
         text_emb: Tensor,
         text_mask: Tensor,
-        exemplar_emb: Optional[Tensor] = None,
         geo: Optional[dict] = None,
     ) -> Dict[str, Tensor]:
-        assert exemplar_emb is None, (
-            "exemplar (VISUAL-slot) prompts are deferred; pass box/point via `geo`"
-        )
         src = feats[-1]  # principal level (num_feature_levels=1), batch-first (bs,c,H,W)
         bs = src.shape[0]
         h, w = src.shape[-2:]
@@ -1190,12 +1186,11 @@ class Sam3DetrDetector(nn.Module):
         text_mask: Tensor,
         image_hw: Tuple[int, int],
         confidence_threshold: float = 0.5,
-        exemplar_emb: Optional[Tensor] = None,
         geo: Optional[dict] = None,
     ):
         from sam.results import Sam3DetectionResult
 
-        out = self.forward_grounding(feats, pos, text_emb, text_mask, exemplar_emb, geo)
+        out = self.forward_grounding(feats, pos, text_emb, text_mask, geo)
         pred_boxes = out["pred_boxes"]              # (P, nq, 4) cxcywh, normalised
         pred_logits = out["pred_logits"]            # (P, nq, 1)
         pred_masks = out["pred_masks"]              # (P, nq, h, w) logits

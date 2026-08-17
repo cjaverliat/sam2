@@ -24,20 +24,17 @@ from sam.models.sam3_predictor import (
 
 
 # ---------------------------------------------------------------------------
-# CPU-only stub: overrides the two encode_* methods so no model is loaded.
+# CPU-only stub: overrides encode_text so no model is loaded.
 # ---------------------------------------------------------------------------
 
 class _FakeSam3VideoPredictor(Sam3VideoPredictor):
-    """Minimal test double — encode_text / encode_exemplars return dummy tensors.
+    """Minimal test double — encode_text returns a dummy tensor.
 
     ``encode_text`` takes the full ``ConceptPrompt`` (the Task 8 seam fix) rather than a
     bare ``text: str``, matching ``Sam3VideoPredictor.encode_text``'s updated signature.
     """
 
     def encode_text(self, concept) -> torch.Tensor:
-        return torch.zeros(1, 256)
-
-    def encode_exemplars(self, exemplars) -> torch.Tensor:
         return torch.zeros(1, 256)
 
 

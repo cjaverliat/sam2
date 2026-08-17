@@ -94,27 +94,23 @@ class GeometryPrompt:
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
-# SAM 3 concept prompt — carries text and optional exemplars.  Encoding
-# (text → embeddings) is the predictor's responsibility; this type is a pure
-# data carrier.
+# SAM 3 concept prompt — carries the concept text.  Encoding (text → embeddings)
+# is the predictor's responsibility; this type is a pure data carrier.
 
 
 class ConceptPrompt:
     """Per-concept SAM 3 prompt.
 
-    There is no negative-phrase field: upstream SAM 3 has no inference-time
-    semantics for one (see :meth:`sam.models.sam3_predictor.Sam3Predictor.encode_text`).
+    Text is the only field. Upstream SAM 3 has no inference-time semantics for
+    a negative phrase (see :meth:`sam.models.sam3_predictor.Sam3Predictor.encode_text`)
+    nor for a VISUAL-slot exemplar: ``visual_prompt_embed`` reaches a live
+    consumer but no released code path — training included — ever builds one.
+    Reference geometry is expressed as a :class:`GeometryPrompt` box/point, which
+    is what upstream's own "image exemplar" resolves to.
 
     Args:
         text: Positive description of the concept to segment (e.g. "cat").
-        exemplars: Optional reference geometry (boxes/masks on a reference
-            frame) to supplement the text embedding.
     """
 
-    def __init__(
-        self,
-        text: str,
-        exemplars=None,
-    ):
+    def __init__(self, text: str):
         self.text = text
-        self.exemplars = exemplars
