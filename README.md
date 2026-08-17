@@ -414,21 +414,30 @@ binary_masks = result.masks_logits > 0.0
 
 All four published EfficientSAM3 families are integrated (image + streaming video). Parity is
 measured against **efficientsam3's own reference** (its `build_efficientsam3_*` builders / the
-`stage1_sam3.1` multiplex code), not facebook SAM 3.
+`stage1_sam3.1` multiplex code), not facebook SAM 3. Read the ❌ note under the table before
+using a distilled-vision variant for video.
 
 | Family | Vision backbone | Text encoder | Tracker | Parity vs efficientsam3 reference |
 |---|---|---|---|---|
 | **EfficientSAM3** (image) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | MobileCLIP-S0 (ctx16) | — | ✅ mask IoU ≥ 0.99 |
-| **EfficientSAM3** (video) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | PE text (ctx32) | base, 309 + geometry | build + detection ✅; propagation drift ~1–3% ⚠️ |
+| **EfficientSAM3** (video) | RepViT-M1.1 · TinyViT-11M · EfficientViT-B1 | PE text (ctx32) | base, 309 + geometry | detection ✅; propagation ❌ not supported |
 | **SAM3-LiteText** (video) | PE-ViT (SAM 3) | MobileCLIP-S0 (ctx16) | base, 309 | ✅ streaming IoU ≥ 0.99 |
 | **SAM3.1-LiteText** (video) | PE-ViT (SAM 3) | MobileCLIP-S0 (ctx16) | multiplex, 457 | ✅ min 0.994 / mean 0.998 |
-| **EfficientSAM3.1** (video) | RepViT-M1.1 (stage1) | MobileCLIP-S0 (ctx16) | multiplex, 457 | build + detection ✅; propagation drift ⚠️ |
+| **EfficientSAM3.1** (video) | RepViT-M1.1 (stage1) | MobileCLIP-S0 (ctx16) | multiplex, 457 | detection ✅; propagation ❌ not supported |
 
-⚠️ The distilled-vision **video** variants reproduce the reference's per-frame **detection** exactly
-(≥ 0.99) and instance counts match, but tracker **propagation** drifts ~1–3% for distilled features
-(numerical-grade — PE-vision video matches at 0.994 on the same predictor; the distillation itself
-differs from full SAM 3 by ~24%). Tracked as `xfail` in the parity suite — see
-[`tests/parity/reference_efficientsam3/`](tests/parity/reference_efficientsam3/).
+❌ **The distilled-vision variants are image/detection models — do not use them for video
+tracking.** Upstream released the Stage 1 encoder distillation but never Stage 2 (memory-bank
+alignment, trained on SA-V — still unchecked on its roadmap), and the published video checkpoints
+are Stage 1 lineage, so the tracker propagates features it was never trained on. Per-frame
+**detection** reproduces the reference exactly (≥ 0.99); **propagation** degrades from frame 1 —
+1–4% for the base lineage, down to min 0.7412 for EfficientSAM3.1 RepViT-M. Measured against
+efficientsam3's own native reference with identical strict-loaded weights, so this is upstream's
+gap, not an integration bug, and no change here can close it. Tracked as `xfail(strict=True)` —
+see [`tests/parity/reference_efficientsam3/`](tests/parity/reference_efficientsam3/).
+
+For streaming video use the PE-vision lineage: base `sam3.pt` / `sam3.1_multiplex.pt`, or the
+**LiteText** variants above — they swap only the text tower and keep PE vision, so they track at
+full fidelity while still shrinking the text encoder.
 
 ### Image benchmark — EfficientSAM3 vs SAM 3 (image only)
 

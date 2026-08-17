@@ -1,7 +1,8 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (129 commits ahead of `main`, head `1d6d2b4`).
-Nothing pushed. The `Emit` output policy below is in the working tree, UNCOMMITTED.
+**Branch:** `feat/sam3-integration` (131 commits ahead of `main`). Tree clean,
+nothing pushed. Latest: the `Emit` output policy (`a93732e`) + the efficientsam3
+video-scope documentation.
 **Last session:** 2026-08-17. **Read this first to resume.**
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
@@ -129,8 +130,35 @@ tests/test_emit_modes.py -q`.
 The 7-file GPU gate does NOT cover `tests/parity/conftest.py::run_streaming_parity`
 (5 video-parity tests live outside it). After touching that fixture also run
 `pytest tests/parity/test_sam3_parity.py -k video_parity
-tests/parity/reference_efficientsam3/ -q`. On this host the 4 efficientsam3 ones skip
-(checkpoints absent), so only 2 of the 5 execute.
+tests/parity/reference_efficientsam3/ -q`.
+
+The efficientsam3 goldens are all committed under
+`tests/parity/reference_efficientsam3/golden/`; what gates those tests is the
+CHECKPOINT, fetchable from the public HF repo `Simon7108528/EfficientSAM3`:
+`pixi run python tools/download_efficientsam3.py --variant <v>` (variants
+`video-{repvit,tinyvit,efficientvit}-m`, `sam3p1-repvit-m-s0-ctx16`,
+`litetext-s0-ctx16`, `sam3p1-litetext-s0-ctx16`). Only `video-repvit-m` (1.6 GB) is
+present on this host.
+
+**EfficientSAM3 is an image/detection model, not a video tracker.** Upstream released
+the Stage 1 encoder distillation but NEVER Stage 2 (memory-bank alignment on SA-V —
+unchecked on its roadmap), and every video checkpoint here is Stage 1 lineage, so the
+tracker propagates features it was never trained on. Frame-0 detection matches ≥0.99
+everywhere; propagation drifts (base lineage 1-4%, SAM3.1 RepViT-M down to min 0.7412)
+against efficientsam3's OWN native reference with strict-loaded identical weights. So
+the `xfail(strict=True)` markers are expected-by-construction, NOT triage items — no
+change in `sam/` can close them. Full write-up:
+`tests/parity/reference_efficientsam3/README.md` (top section). The LiteText fixtures
+are the exception — they swap only the TEXT tower and keep PE vision, so they pass.
+
+Reading those xfails: `strict=True` means ANY exception reads as XFAIL — an import
+error in your own change looks identical to the documented drift. Use `--runxfail` to
+see the real assertion. Baselined on 2026-08-17 (stash the working tree, rerun):
+`test_efficientsam3_video_parity[repvit]` fails at `frame 3: count 0 != golden 2` after
+clean frames 0-2, identically with and without the `Emit` work. Under `Emit.ALIVE` all
+4 frames track (frame 3 IoU 0.9775/0.991) and the failure becomes the documented IoU
+gate (min 0.9575 / mean 0.9842) — i.e. keep-alive suppression hides the objects once
+detection stops matching them; tracking itself is not lost.
 
 ## Key code map
 

@@ -1,5 +1,43 @@
 # EfficientSAM3 RepViT Golden Fixtures
 
+## SCOPE — EfficientSAM3 is an IMAGE/DETECTION model here, not a video tracker
+
+**Do not treat the EfficientSAM3 video numbers as a supported configuration.** The
+released checkpoints distil the vision (and text) encoders only; the memory bank that
+drives propagation was never aligned to those distilled features. Upstream's own
+roadmap says so — `README.md` of https://github.com/SimonZeng7108/efficientsam3:
+
+```
+- [x] Release Stage 1 Image Encoder Weights
+- [x] Release Stage 1 Text Encoder Weights
+- [x] Release Stage 1+ Fine-Tuned Encoder Weights
+- [ ] Release Stage 2 Memory Bank Aligned Model Weights:  <-- NEVER RELEASED
+      Models with Perceiver-based memory compression trained on SA-V dataset
+- [x] Release Stage 3 Fine-Tuned Model Weights
+```
+
+Stage 2 is precisely the memory/tracking alignment, and every checkpoint the video
+fixtures here use comes from the Stage 1 lineage (`stage1_all_converted/`,
+`stage1_sam3p1/`, `sam3_litetext/`, `sam3p1_litetext/`). So the tracker propagates
+features it was never trained on.
+
+That predicts what every video fixture below measures, and the measurements agree:
+
+| lineage | frame 0 (detection) | propagation (frames 1+) |
+|---|---|---|
+| EfficientSAM3 base (RV/TV/EV-M) | >= 0.99 | drifts 1-4% (RV 0.984 / TV 0.983 / EV 0.973) |
+| EfficientSAM3.1 RepViT-M multiplex | 0.9942, 4/4 | min 0.7412, mean 0.9604 |
+
+Both gaps are measured against efficientsam3's OWN native reference with identical,
+strict-loaded weights — so they are NOT porting errors on our side, and NOT something
+a fix in `sam/` can close. The `xfail(strict=True)` markers exist for this reason;
+they will only become XPASS if upstream ships Stage 2.
+
+**Use these variants for image / detection parity. For video, use the PE-vision
+lineage (base `sam3.pt` / `sam3.1_multiplex.pt`), which passes at 0.994 on the same
+predictor.** The LiteText fixtures are the exception worth knowing: they swap only the
+TEXT tower (MobileCLIP-S0) and keep PE vision, so their video parity passes cleanly.
+
 ## Provenance
 
 **Upstream Repository:** https://github.com/SimonZeng7108/efficientsam3

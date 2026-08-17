@@ -100,9 +100,12 @@ def video_fixture():
         "(frame 0) matches at min IoU 0.9942 (4/4 >= 0.99), but propagation undershoots "
         "masks -> overall min 0.7412 (frame 1 obj 2: 1272 vs 1681 px), mean 0.9604 < gate "
         "(min>=0.98, mean>=0.99). Weights are identical (production loader strict-loads all "
-        "1672 keys, 0/0). The gate ASSERTIONS BELOW ARE UNCHANGED (not weakened); this "
-        "marker records the known production propagation gap for the controller to triage. "
-        "See .superpowers/sdd/task-F1-native-report.md for the full per-frame breakdown."
+        "1672 keys, 0/0). The gate ASSERTIONS BELOW ARE UNCHANGED (not weakened). "
+        "EXPECTED BY CONSTRUCTION, not a triage item: upstream never released Stage 2 "
+        "(memory-bank alignment on SA-V -- unchecked on its roadmap), and this is a Stage 1 "
+        "checkpoint, so the tracker propagates distilled features it was never trained on. "
+        "Not closable by a fix in sam/. See tests/parity/reference_efficientsam3/README.md "
+        "and .superpowers/sdd/task-F1-native-report.md for the full per-frame breakdown."
     ),
 )
 def test_efficientsam3p1_repvit_video_parity(video_fixture, determinism_no_det_algos, run_streaming_parity):

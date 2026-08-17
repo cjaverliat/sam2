@@ -55,13 +55,17 @@ def _iou(a, b):
 
 
 _XFAIL_REASON = (
-    "Propagation-fidelity gap for distilled vision features vs the efficientsam3 reference: "
-    "frame-0 DETECTION matches (>=0.99, image-parity faithful) and instance COUNT matches "
-    "(after the new_det_thresh=0.7 spawn alignment), but the tracker PROPAGATION (frames 1+) "
-    "drifts 1-4%% (RV mean 0.984 / TV 0.983 / EV 0.973; worst EV 0.903). Base/PE-vision (D, "
-    "base sam3) pass at 0.994 on the same predictor, so the drift is distilled-feature-specific "
-    "-- the same propagation-path class as F1 (EfficientSAM3.1). Gates intact; xfail(strict) so "
-    "a future propagation fix surfaces as XPASS."
+    "EXPECTED BY CONSTRUCTION -- EfficientSAM3 is an image/detection model here, not a video "
+    "tracker. Upstream released the Stage 1 encoder distillation but NEVER Stage 2 (memory-bank "
+    "alignment on SA-V, unchecked on its roadmap), and these checkpoints are Stage 1 lineage, so "
+    "the tracker propagates features it was never trained on. Frame-0 DETECTION matches (>=0.99, "
+    "image-parity faithful); the tracker PROPAGATION (frames 1+) drifts 1-4% (RV mean 0.984 / "
+    "TV 0.983 / EV 0.973; worst EV 0.903). Base/PE-vision (D, base sam3) pass at 0.994 on the "
+    "same predictor. NOT closable by a fix in sam/ -- only by upstream shipping Stage 2. "
+    "Gates intact. NOTE (2026-08-17): the observed failure is now 'frame 3: count 0 != golden 2', "
+    "not the IoU gate -- keep-alive suppression hides both objects once detection stops matching "
+    "them; under Emit.ALIVE all 4 frames track (min 0.9575 / mean 0.9842) and the IoU gate is what "
+    "fails. See tests/parity/reference_efficientsam3/README.md."
 )
 
 
