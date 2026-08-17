@@ -1,9 +1,9 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (136 commits ahead of `main`). Tree clean,
-nothing pushed (45 ahead of `origin/feat/sam3-integration`). Latest: the
-multi-concept retirement, after the exemplar/VISUAL-slot one (`8dd1364`) and
-per-box labels on `GeometryPrompt` (`54ef29d`).
+**Branch:** `feat/sam3-integration` (138 commits ahead of `main`), pushed to
+`origin/feat/sam3-integration`. Tree clean. Latest: the multi-concept
+retirement, after the exemplar/VISUAL-slot one (`8dd1364`) and per-box labels
+on `GeometryPrompt` (`54ef29d`).
 **Last session:** 2026-08-17. **Read this first to resume.**
 
 **Next up:** open item 1, geometry-prompt bit-exact parity.
