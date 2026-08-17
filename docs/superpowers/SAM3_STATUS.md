@@ -1,9 +1,12 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (131 commits ahead of `main`). Tree clean,
-nothing pushed. Latest: the `Emit` output policy (`a93732e`) + the efficientsam3
-video-scope documentation.
+**Branch:** `feat/sam3-integration` (135 commits ahead of `main`). Tree clean,
+nothing pushed (44 ahead of `origin/feat/sam3-integration`). Latest: per-box
+labels on `GeometryPrompt` (`54ef29d`) + the exemplar/VISUAL-slot retirement
+(`8dd1364`).
 **Last session:** 2026-08-17. **Read this first to resume.**
+
+**Next up:** open item 1, multi-concept (`MAX_CONCEPTS>1`).
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
