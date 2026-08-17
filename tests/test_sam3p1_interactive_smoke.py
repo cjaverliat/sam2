@@ -41,7 +41,15 @@ def _click(obj_id, xy):
 
 
 @needs_gpu
-def test_video_box_prompt_spawns_and_tracks():
+def test_video_box_prompt_spawns_then_suppresses_while_unmatched():
+    """A box seeds a managed tracklet; with no concept, nothing re-matches it.
+
+    The box biases the prompt frame only, so later frames run no detection pass and
+    every managed tracklet counts as unmatched -- keep_alive decays below zero and the
+    object is suppressed (still alive, memory retained, so it un-hides if a detection
+    ever matches it again). Upstream hides it over the same window; see
+    tests/parity/test_sam3p1_video_box_parity.py.
+    """
     pred = _build()
     frames = _bedroom(4)
     h, w, _ = frames[0].shape
@@ -49,8 +57,11 @@ def test_video_box_prompt_spawns_and_tracks():
     box = GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]))
     out0 = pred.forward(st, 0, frames[0], geometry_prompts=[box])   # box, no text concept
     assert len(out0) >= 1                              # detector found the boxed person(s)
-    out1 = pred.forward(st, 1, frames[1])              # tracks forward
-    assert len(out1) >= 1
+    seeded = set(out0)
+    out1 = pred.forward(st, 1, frames[1])              # tracked, but suppressed
+    assert not seeded & set(out1)                      # hidden while unmatched
+    assert seeded <= st.tracklet_mgr.alive_ids()       # alive: propagated, memory kept
+    assert not seeded & st.tracklet_mgr.removed_ids()  # not killed (within hotstart)
 
 
 @needs_gpu

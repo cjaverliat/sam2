@@ -548,6 +548,8 @@ class Sam3VideoPredictor(nn.Module):
                 new_objects = self._associate_and_update(
                     state, det, active_ids, trk_low_masks, trk_results
                 )
+            else:
+                self._advance_lifecycle(state, set(), set(), frame_idx)
 
             # 4) seed new detector instances into the tracker (soft-mask cond-frame memory)
             for obj_id, det_idx in new_objects:
@@ -661,6 +663,23 @@ class Sam3VideoPredictor(nn.Module):
         for o in active_ids:
             if o not in managed:
                 state.tracklet_mgr.spawn(o, frame_idx)
+        self._advance_lifecycle(state, matched_track_ids, new_ids, frame_idx)
+        return new_objects
+
+    def _advance_lifecycle(self, state, matched_track_ids, new_ids, frame_idx):
+        """Step every managed tracklet one frame, then purge the hotstart-killed ones.
+
+        Runs on EVERY frame, including frames with no detection pass -- upstream
+        advances its hotstart bookkeeping unconditionally, and "no detections" simply
+        means every track is unmatched. Skipping it froze the counters of a
+        box-seeded (concept-less) session, so its object was never suppressed or
+        killed.
+
+        Only *managed* tracklets step. Click-seeded objects are deliberately left
+        unmanaged: upstream routes a click-only session through SAM 2 partial
+        propagation, which never runs detection/hotstart for those objects, so they
+        neither decay nor die.
+        """
         state.tracklet_mgr.step(matched_track_ids, new_ids, frame_idx)
 
         # purge ONLY removed tracklets (within-hotstart failures). Absent established
@@ -668,7 +687,6 @@ class Sam3VideoPredictor(nn.Module):
         for oid in state.tracklet_mgr.removed_ids():
             if oid in state.bank.known_obj_ids:
                 self._purge_removed(state, oid)
-        return new_objects
 
     def _purge_removed(self, state, obj_id: int) -> None:
         """Fully drop a removed tracklet. Subclasses that own extra per-object state
@@ -1037,6 +1055,8 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 new_objects = self._associate_and_update(
                     state, det, active_ids, trk_low_masks, trk_results
                 )
+            else:
+                self._advance_lifecycle(state, set(), set(), frame_idx)
 
             # 4) seed (first frame) or grow (mid-stream) the new detector instances
             if new_objects:

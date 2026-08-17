@@ -243,10 +243,6 @@ class Sam3DetectionResult:
   `docs/superpowers/{specs,plans}/2026-07-23-sam3p1-video-box-prompt*`. Parity: frame-0 mask
   matches the golden (14737 vs 14711 px), tracked object matches on the later frames.
 - [x] **Efficiency: skip suppressed-tracklet masklet build** — dormant objects still propagate + retain memory; their discarded output masklet is no longer upsampled to full res. Output byte-identical (parity green).
-- [ ] **Hotstart visibility for box-only tracking** — upstream HIDES a box-seeded object
-  during its hotstart-delay warm-up (no detection); our lifecycle only steps on a detection,
-  so it shows the tracked object (correct masks) during that window. Step the lifecycle every
-  frame (tracker object-score as the match signal) to match upstream's show/hide timing.
 - [x] **`negative_phrases` — dropped, won't implement (2026-08-17).** Upstream has no
   inference-time semantics for negatives: `SAM3VLBackbone.forward_text` piggy-backs an
   optional `additional_text` onto the caption batch and exports `additional_text_features`,
@@ -259,6 +255,34 @@ class Sam3DetectionResult:
   the phase-1 Step 3 line "encode_text embeds positives **and** negatives".
   Checked against `facebookresearch/sam3` `8f0b7f4` (2026-08-13) — unchanged since the
   `5dd401d` pin.
+- [x] **Hotstart visibility for box-only tracking (2026-08-17)** — the lifecycle now steps
+  on EVERY frame (`_advance_lifecycle`), not only when a detection pass ran; a frame with no
+  detector output simply counts every managed tracklet as unmatched, which is what upstream's
+  `_process_hotstart_gpu` does (it runs unconditionally). Before, a box-only session left
+  `state.concepts` empty, so `det is None` from frame 1 on, `_associate_and_update` never ran,
+  and the counters froze at `unmatched=0, keep_alive=1` — the object stayed visible forever
+  and could never be killed. Click-seeded objects stay unmanaged and so are exempt, matching
+  upstream: a click-only session takes its `propagation_partial` branch (plain SAM 2
+  propagation), which never runs detection or hotstart for those objects.
+  NOTE: the fix is NOT "use the tracker object-score as the match signal" as this line
+  previously proposed — upstream counts a track matched only via detection association;
+  the object score can only demote a track to unmatched (already handled).
+  Measured against the golden (instrumented upstream rerun): frames 1-4 now hidden by both.
+  Frames 5-7 remain divergent BY DESIGN — upstream kills the object at frame 7 (8 unmatched
+  frames within hotstart), the kill compacts it out of `obj_ids_all_gpu`, which empties the
+  unconfirmed set read by its `(masklet_confirmation_consecutive_det_thresh - 1)`-frame
+  lookahead, so the frames preceding the death are revealed retroactively. Matching that
+  needs a buffered, non-causal output path (`forward()` returning frame f-2) plus replicating
+  the reveal; deferred — see the open item below.
+- [ ] **Buffered confirmation gate (would close the frames 5-7 gap)** — upstream's multiplex
+  output hide-set is `unconfirmed(min(f + thresh-1, last)) ∪ empty-mask` and NOTHING else:
+  `_process_hotstart_gpu`'s `to_suppress_mask` is dead (assigned at `sam3_multiplex_base.py`
+  ~1038, never consumed) and `suppressed_obj_ids` is only written by the CPU `_process_hotstart`,
+  which the multiplex path never calls. Both shipped configs also make keep-alive suppression
+  inert (`suppress_unmatched_only_within_hotstart=True` for the base model; dead code path for
+  multiplex). So our `keep_alive > 0` visibility rule has no upstream counterpart — it agrees
+  with upstream on frames 1-4 by coincidence, not by mechanism. Adopting the real rule means
+  gating on CONFIRMED with a `thresh-1` lookahead, i.e. buffering output by 2 frames.
 - [ ] **Exemplar (VISUAL slot)** and **multi-concept** — separate features.
 - [ ] **Geometry-prompt bit-exact parity** — the image box path matches upstream to a
   looser tolerance than the text-only 2px/1e-2 (geometry tokens + bf16 drift); tighten if needed.

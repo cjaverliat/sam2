@@ -27,6 +27,11 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 - **2b — video box prompt** — a box `GeometryPrompt` biases the prompt frame's
   detection (GEOMETRIC slot, `"<text placeholder>"` concept) and seeds via the
   existing association pipeline. Video box parity.
+- **Hotstart visibility for box-only tracking (2026-08-17)** — the tracklet lifecycle
+  now steps on every frame (`_advance_lifecycle`), not only when a detection ran, so a
+  concept-less box session decays and can be killed like upstream. Click-seeded objects
+  stay unmanaged and exempt (upstream runs click-only sessions through SAM 2 partial
+  propagation, bypassing hotstart). Ledger has the measured trace.
 - **Quality pass** — dedup (shared `_seed_mux_state` / `_masklets_from_demux` /
   tracker `masks_from_points` + `_interactive_high_res_features`), decomposed the
   mux `forward` god-method (`_split_and_pack_geometry` / `_detector_add` /
@@ -47,11 +52,16 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 
 ## Open (recommended order)
 
-1. **Hotstart visibility for box-only tracking** — upstream HIDES a box-seeded
-   object during its `hotstart_delay=15` warm-up; ours SHOWS it (correct masks,
-   wrong show/hide timing — see `test_sam3p1_video_box_parity` docstring, frames 1-4
-   ungated). Fix: step the tracklet lifecycle every frame using the tracker
-   object-score as the match signal, not only when a detection ran.
+1. **Buffered confirmation gate** — upstream's multiplex hide-set is
+   `unconfirmed(min(f + thresh-1, last)) ∪ empty-mask`, nothing else: keep-alive
+   suppression is dead code there (`to_suppress_mask` never consumed;
+   `suppressed_obj_ids` only written by the CPU `_process_hotstart`, never called
+   in the multiplex path). Our `keep_alive > 0` rule agrees with it on the frames
+   we test, but by coincidence, not mechanism. Matching it means gating on
+   CONFIRMED with a `thresh-1` lookahead, i.e. buffering `forward()` output by 2
+   frames — an output-contract change. Would also close the frames 5-7 gap in
+   `test_sam3p1_video_box_parity` (upstream reveals a hotstart-killed object for
+   the frames preceding its death; we keep it hidden).
 2. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
    Reuses the 2a encoder; wire the VISUAL slot in `forward_grounding`. NOTE: mask
    exemplars are permanently out — 0 `mask_encoder` keys in BOTH checkpoints.
