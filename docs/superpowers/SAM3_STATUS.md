@@ -52,6 +52,23 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   frame), so every golden-measuring test now sets `pred.emit = Emit.VISIBLE`; the
   `CONFIRMED` default is covered by `tests/test_emit_modes.py` (CPU).
 
+- **Negative box labels (2026-08-17)** — `GeometryPrompt` gained `boxes_labels`
+  (per-box sign, mirroring the existing `points_labels`); `_pack_geometry` forwards it
+  instead of hardcoding `torch.ones`, so `Sam3GeometryEncoder.label_embed`
+  (`nn.Embedding(2, d)`) row 0 is reachable on the box path. No `boxes_labels` -> the
+  old all-positive default, byte-identical. Golden captured from upstream
+  `add_geometric_prompt(box, label=0)` via `capture_sam3_box_golden.py --label 0`
+  (the script's `BOX_LABEL` constant became a `--label {0,1}` arg; stem
+  `box_prompt` / `box_prompt_neg`). `test_sam3_box_prompt_parity` is now
+  parametrized over both stems.
+
+  Strongly discriminative, and the semantics are exactly "not this one": the same box
+  at `[300,150,470,420]` on "person" gives 3 dets / presence 0.99999 when positive
+  (incl. the boxed person at `[302.5,158.9,468.7,412.4]`, score 0.914) and 2 dets /
+  presence 0.8606 when negative, with that detection gone. Falsified the test by
+  re-hardcoding `ones`: `box_prompt_neg` fails `3 detections vs golden 2` while
+  `box_prompt` stays green.
+
 - **Quality pass** — dedup (shared `_seed_mux_state` / `_masklets_from_demux` /
   tracker `masks_from_points` + `_interactive_high_res_features`), decomposed the
   mux `forward` god-method (`_split_and_pack_geometry` / `_detector_add` /
@@ -72,9 +89,23 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 
 ## Open (recommended order)
 
-1. **Exemplar (VISUAL slot)** — reference box/mask supplementing a text concept.
-   Reuses the 2a encoder; wire the VISUAL slot in `forward_grounding`. NOTE: mask
-   exemplars are permanently out — 0 `mask_encoder` keys in BOTH checkpoints.
+1. **Exemplar (VISUAL slot)** — likely to be RETIRED, not implemented; decide first.
+   Traced on 2026-08-17: the slot's *consumer* is live but it has NO producer.
+   `sam3_image.py:205` concatenates `[txt_feats, geo_feats, visual_prompt_embed]`, and
+   that prompt feeds both the VL encoder and `DotProductScoring.mean_pool_text`
+   (`model_misc.py:734-741`, pools EVERY valid token) — so a tensor placed there does
+   move `pred_logits`. But nothing ever builds one: the sole live `_encode_prompt` call
+   (`sam3_image.py:449`) passes 3 positional args, the `sam3_video_base.py:1982`
+   wrapper has zero callers, and all 4 assignments to
+   `inference_state["visual_prompt_embed"]` are `= None`. No encoder module exists for
+   it. Training doesn't fill it either — `TextQueryToVisual`
+   (`train/transforms/filter_query_transforms.py:532-567`) implements "image exemplar"
+   as `input_bbox` + caption `"visual"`, i.e. the GEOMETRIC slot, which is 2a/2b.
+   The `sam3_video_inference.py:177` comment ("a single visual prompt embedding is
+   shared for all frames") suggests scaffolding for CROSS-IMAGE exemplars, unreleased.
+   Wiring it means feeding untrained input to a live scorer — worse than a no-op.
+   NOTE: mask exemplars are separately, permanently out — 0 `mask_encoder` keys in
+   BOTH checkpoints.
 2. **Multi-concept (`MAX_CONCEPTS>1`)** — loop the detector over concepts + merge.
 3. **Geometry-prompt bit-exact parity** — image box path matches upstream at
    box-IoU ≥ 0.8 / score atol 0.06, looser than text-only's 2px/1e-2 (geometry
