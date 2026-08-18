@@ -79,6 +79,49 @@ def _point_cuda_home_at_conda():
         os.environ["CUDA_HOME"] = base
 
 
+def _sanitize_torch_cuda_arch_list():
+    """Drop TORCH_CUDA_ARCH_LIST entries the installed torch rejects.
+
+    conda-forge's cuda-nvcc activation exports a toolkit-wide default
+    (...;10.0;10.1;12.0+PTX). torch's _get_cuda_arch_flags() raises on any entry
+    it does not know -- torch 2.11 knows 10.0/10.3/12.0/12.1 but not 10.1 -- so
+    an inherited list fails the _C compile on a fully supported GPU. Keeping only
+    the accepted entries preserves an intentional CI cross-compile list while
+    surviving a polluted one. Mirrors the runtime JIT logic in
+    sam/utils/misc.py.
+
+    An unset, empty or "native" list is left alone. If every entry is rejected
+    the variable is cleared, which makes torch fall back to detecting the local
+    device's arch.
+
+    Returns:
+        The rejected entries, so the caller can warn about them.
+    """
+    raw = os.environ.get("TORCH_CUDA_ARCH_LIST")
+    if not raw or raw.strip() == "native":
+        return []
+
+    try:
+        from torch.utils.cpp_extension import _get_cuda_arch_flags
+    except ImportError:
+        # Private API; if a future torch drops it, leave the list untouched
+        # rather than guessing which arches are valid.
+        return []
+
+    kept, dropped = [], []
+    for entry in (e for e in raw.replace(" ", ";").split(";") if e):
+        os.environ["TORCH_CUDA_ARCH_LIST"] = entry
+        try:
+            _get_cuda_arch_flags()
+        except ValueError:
+            dropped.append(entry)
+        else:
+            kept.append(entry)
+
+    os.environ["TORCH_CUDA_ARCH_LIST"] = ";".join(kept)
+    return dropped
+
+
 def get_package_version():
     text = (THIS_DIR / "sam" / "version.py").read_text()
     return re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text).group(1)
@@ -369,6 +412,14 @@ else:
         aborting the install."""
 
         def build_extensions(self):
+            dropped = _sanitize_torch_cuda_arch_list()
+            if dropped:
+                warnings.warn(
+                    "sam: ignoring TORCH_CUDA_ARCH_LIST entries this torch does "
+                    f"not support ({', '.join(dropped)}); building for "
+                    f"{os.environ['TORCH_CUDA_ARCH_LIST'] or 'the local device'}.",
+                    stacklevel=2,
+                )
             try:
                 super().build_extensions()
             except Exception as e:
