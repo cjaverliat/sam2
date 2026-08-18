@@ -6,7 +6,7 @@ lifecycle fix and its 30-frame golden, after the notebook box-prompt/dark-figure
 
 **Next up:** open item 1, the box-seeded object's propagation drift — the only known
 divergence left. Everything else is green: `tests/parity` 26 passed, 16 skipped,
-1 xfailed; the rest of `tests/` 72 passed, 8 skipped.
+1 xfailed; the rest of `tests/` 76 passed, 8 skipped.
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -54,6 +54,27 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   captured the observable of a non-causal pipeline (objects visible from their birth
   frame), so every golden-measuring test now sets `pred.emit = Emit.VISIBLE`; the
   `CONFIRMED` default is covered by `tests/test_emit_modes.py` (CPU).
+
+- **Explicit box routing + explicit detection opt-in (2026-08-18)** — a DELIBERATE API
+  divergence from upstream, on the user's call; behaviour after the explicit call is
+  unchanged, and every golden still passes.
+
+  Upstream overloads a box two ways at once: it means "detector geometric slot", and it
+  silently adopts a placeholder caption (`sam3_video_inference.py:868-877`) that switches
+  detection on for the whole session. So `GeometryPrompt(boxes=...)` used to track things
+  the caller never asked for — on the bedroom clip, both children, then neither once the
+  hotstart rule purged them at frame 8.
+
+  Now `GeometryPrompt` carries `box_route: BoxRoute` (`sam/prompts.py`), defaulting to
+  `TRACKER`: the box is encoded as its two corner points (labels 2/3) via
+  `GeometryPrompt.tracker_points()` and seeds ONE object through the tracker, which is
+  what `Sam2VideoPredictor` already does (`sam2_predictor.py:553-565`). `BoxRoute.DETECTOR`
+  selects upstream's route, and `_concept_for_detection` now RAISES if that box arrives
+  with no concept instead of adopting one; `set_placeholder_concept(state)` is the
+  explicit form of upstream's caption (same cached encode, so parity numerics are
+  bit-identical — the video-box goldens pass unchanged with the explicit calls added).
+  `boxes_labels` on a tracker-route box raises rather than being ignored.
+  Tests: `tests/test_sam3_explicit_concept.py`.
 
 - **Prompt API aligned with SAM 2 + mask prompts (2026-08-18)** — `forward`'s prompt
   argument is now `prompts` on both SAM 3 lineages, the name `Sam2VideoPredictor.forward`

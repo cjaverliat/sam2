@@ -398,15 +398,17 @@ neg = GeometryPrompt(
 On **video**, prompts are passed per frame, and they take one of two routes — the same split
 upstream makes.
 
-**Interactive VOS**, identical to the SAM 2 interface: **points**, a **mask**, or a **box
-expressed as its two corner points** (labels `2`/`3`) all go to the tracker's prompt encoder
-and seed exactly one object under the `obj_id` you choose. No detection runs, and the object
-tracks until the clip ends.
+**Interactive VOS** is the default, and is the SAM 2 interface unchanged: **points**, a
+**box**, or a **mask** go to the tracker's prompt encoder and seed exactly one object under the
+`obj_id` you choose. A box is encoded as its two corner points, exactly as
+`Sam2VideoPredictor` does. No detection runs, nothing else can appear, and the object tracks
+until the clip ends.
 
-**Detection-driven**, SAM 3 only: a **box** passed as `boxes=` goes to the detector's geometric
-slot instead. It biases that frame's detection and the boxed instance seeds a tracklet through
-the normal association path — but detection then keeps running on every frame, so every other
-instance it matches is tracked too. Neither route needs a text concept:
+**Detection-driven** is SAM 3 only and must be asked for: `box_route=BoxRoute.DETECTOR` sends
+the box to the detector's geometric slot, where it biases that frame's detection. Detection
+then runs on every frame, so every instance the concept matches is tracked, not only the boxed
+one — which is why this route needs a concept (`set_concept`, or `set_placeholder_concept` for
+upstream's box-only caption). Upstream adopts that caption implicitly; we don't.
 
 ```python
 state = Sam3VideoPredictorState(video_hw=(height, width))
@@ -416,39 +418,41 @@ for frame_idx, frame in enumerate(frames):
     prompts = []
     if frame_idx == 0:
         prompts = [
+            # interactive VOS: one object each, no concept needed
             GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]])),
             GeometryPrompt(
                 obj_id=2,
                 points_coords=torch.tensor([[640.0, 300.0]]),
                 points_labels=torch.tensor([1]),   # 1 = foreground, 0 = background
             ),
+            GeometryPrompt(obj_id=3, masks_logits=mask_logits),  # (1, H, W), base only
         ]
     results = video_predictor.forward(state, frame_idx, frame, prompts=prompts)
 ```
 
-To track only the object you selected, use the interactive route — here the same box as its
-corner points, or a mask you already have:
+The detector route, opted into, reproduces upstream's box behaviour:
 
 ```python
-x0, y0, x1, y1 = 300.0, 150.0, 470.0, 420.0
-corners = GeometryPrompt(
+from sam.prompts import BoxRoute
+
+state = Sam3VideoPredictorState(video_hw=(height, width))
+video_predictor.set_placeholder_concept(state)     # or set_concept(state, ConceptPrompt("person"))
+hint = GeometryPrompt(
     obj_id=1,
-    points_coords=torch.tensor([[x0, y0], [x1, y1]]),
-    points_labels=torch.tensor([2, 3]),        # 2 = top-left, 3 = bottom-right
+    boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]),
+    boxes_labels=torch.tensor([1]),                # 1 positive, 0 "everything except this"
+    box_route=BoxRoute.DETECTOR,
 )
-from_mask = GeometryPrompt(obj_id=2, masks_logits=mask_logits)  # (1, H, W), base only
 ```
 
-Objects seeded this way are force-confirmed and exempt from the hotstart kill, matching
-upstream's `add_tracker_new_points`: with no concept set nothing can ever re-match them, so
-without the exemption the lifecycle would purge them after 8 unmatched frames. A box-only
-session has no concept text, so the predictor encodes the placeholder caption its lineage uses
-(`"visual"` for base SAM 3, `"<text placeholder>"` for the 3.1 multiplex) and keeps detecting
-with it on every later frame — matching upstream, which writes that text id into all frames.
+Sending a `BoxRoute.DETECTOR` box with no concept raises rather than picking a caption for you.
+Objects seeded through the tracker are force-confirmed and exempt from the hotstart kill,
+matching upstream's `add_tracker_new_points`: with no concept set nothing can ever re-match
+them, so without the exemption the lifecycle would purge them after 8 unmatched frames.
 
 Mask prompts are base-lineage only, on the tracker's own `sam_prompt_encoder.mask_downscaling`
-weights. Pairing a mask with a box raises `NotImplementedError`: that asks for the *detector's*
-mask slot, and `mask_encoder` has no weights in either checkpoint.
+weights. Pairing a mask with a `BoxRoute.DETECTOR` box raises `NotImplementedError`: that asks
+for the *detector's* mask slot, and `mask_encoder` has no weights in either checkpoint.
 
 ### Adding objects mid-stream
 
