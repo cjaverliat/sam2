@@ -62,8 +62,8 @@ class VideoSession:
         """The underlying predictor state (None until the first frame arrives)."""
         return self._state
 
-    def __call__(self, frame, prompts=None, frame_idx: int | None = None, **kwargs):
-        """Run one frame; returns the predictor's ``dict[obj_id, MaskletResult]``.
+    def process(self, frame, prompts=None, frame_idx: int | None = None, **kwargs):
+        """Process one frame; returns the predictor's ``dict[obj_id, MaskletResult]``.
 
         Args:
             frame: the frame, in whatever form the predictor's ``forward`` takes.
@@ -71,6 +71,12 @@ class VideoSession:
             frame_idx: override the internal counter (e.g. to re-run a frame); the
                 counter resumes from ``frame_idx + 1``.
             **kwargs: passed through to the predictor's ``forward``.
+
+        In a concept session, tracker prompts (click / box / mask) are for REFINING
+        ids the session already returned. Seeding a new object with them is an id
+        minefield: detection spawns its own ids in the same call, before tracker
+        prompts apply, so a fresh id can collide and silently refine a detector
+        object instead. Seed new objects in a concept-free session.
         """
         if self._state is None:
             self._build_state(self._frame_hw(frame))

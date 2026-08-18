@@ -40,14 +40,14 @@ def test_box_is_tracker_route():
 
 
 def test_concept_box_is_detector_route():
-    prompt = GeometryPrompt.concept_box(3, (285, 0, 535, 430))
+    prompt = GeometryPrompt.concept_box((285, 0, 535, 430))
     assert prompt.box_route is BoxRoute.DETECTOR
     assert prompt.to_detector
     assert prompt.boxes_labels is None  # positive by default (packer defaults to 1)
 
 
 def test_concept_box_negative_label():
-    prompt = GeometryPrompt.concept_box(3, (10, 20, 30, 40), label=0)
+    prompt = GeometryPrompt.concept_box((10, 20, 30, 40), label=0)
     assert prompt.boxes_labels.tolist() == [0]
 
 

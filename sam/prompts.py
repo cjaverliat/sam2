@@ -105,18 +105,21 @@ class GeometryPrompt:
         return cls(obj_id=obj_id, boxes=coords.reshape(1, 4))
 
     @classmethod
-    def concept_box(cls, obj_id: int, xyxy, label: int = 1) -> GeometryPrompt:
+    def concept_box(cls, xyxy, label: int = 1) -> GeometryPrompt:
         """A detector box (SAM 3): biases the concept search on this frame.
 
         Needs a concept on the session (``set_concept`` / ``set_placeholder_concept`` /
         ``start_session(concept=...)``). ``label`` 1 keeps the boxed instance positive;
         0 means "everything matching the concept EXCEPT this one".
+
+        Takes no ``obj_id``: a detector box only biases detection, and the spawned
+        instances get their ids from the session's own counter.
         """
         coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 4:
             raise ValueError(f"concept_box expects (xmin, ymin, xmax, ymax), got {tuple(coords.shape)}")
         return cls(
-            obj_id=obj_id,
+            obj_id=-1,  # unused: detection mints the ids
             boxes=coords.reshape(1, 4),
             boxes_labels=None if label == 1 else torch.tensor([label]),
             box_route=BoxRoute.DETECTOR,

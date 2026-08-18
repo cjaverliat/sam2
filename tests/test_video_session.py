@@ -58,7 +58,7 @@ def test_interactive_session_matches_forward_loop(predictor, frames):
 
     interactive_session = predictor.start_session()
     for i, frame in enumerate(frames):
-        masklets = interactive_session(
+        masklets = interactive_session.process(
             frame, prompts=[prompt.clone()] if i == 0 else [])
         got = _masks(masklets)
         assert sorted(got) == sorted(expected[i]), f"frame {i}: ids differ"
@@ -68,15 +68,15 @@ def test_interactive_session_matches_forward_loop(predictor, frames):
 
 def test_concept_session_declares_concept_at_birth(predictor, frames):
     person_session = predictor.start_session(concept="person")
-    masklets = person_session(frames[0])
+    masklets = person_session.process(frames[0])
     assert len(masklets) == 2  # both children on frame 0 (measured elsewhere)
     assert person_session.state.concept.prompt.text == "person"
 
 
 def test_placeholder_session_runs_concept_box(predictor, frames):
     hint_session = predictor.start_session(concept=predictor.PLACEHOLDER)
-    masklets = hint_session(
-        frames[0], prompts=[GeometryPrompt.concept_box(1, (285, 0, 535, 430))])
+    masklets = hint_session.process(
+        frames[0], prompts=[GeometryPrompt.concept_box((285, 0, 535, 430))])
     assert len(masklets) == 2
     assert hint_session.state.concept.prompt.text == predictor.BOX_ONLY_CAPTION
 
@@ -84,17 +84,17 @@ def test_placeholder_session_runs_concept_box(predictor, frames):
 def test_concept_box_in_conceptless_session_raises(predictor, frames):
     interactive_session = predictor.start_session()
     with pytest.raises(ValueError, match="concept"):
-        interactive_session(
-            frames[0], prompts=[GeometryPrompt.concept_box(1, (285, 0, 535, 430))])
+        interactive_session.process(
+            frames[0], prompts=[GeometryPrompt.concept_box((285, 0, 535, 430))])
 
 
 def test_frame_idx_override(predictor, frames):
     interactive_session = predictor.start_session()
-    interactive_session(frames[0], prompts=[GeometryPrompt.click(1, (385, 230))])
-    interactive_session(frames[1])
+    interactive_session.process(frames[0], prompts=[GeometryPrompt.click(1, (385, 230))])
+    interactive_session.process(frames[1])
     # re-run frame 1, then continue: the counter must resume from the override
-    interactive_session(frames[1], frame_idx=1)
-    masklets = interactive_session(frames[2])
+    interactive_session.process(frames[1], frame_idx=1)
+    masklets = interactive_session.process(frames[2])
     assert 1 in masklets
     assert interactive_session.state.num_frames_processed == 4  # 4 forward calls
 
@@ -103,8 +103,8 @@ def test_two_sessions_share_one_model(predictor, frames):
     person_session = predictor.start_session(concept="person")
     interactive_session = predictor.start_session()
     for i, frame in enumerate(frames[:2]):
-        people = person_session(frame)
-        clicked = interactive_session(
+        people = person_session.process(frame)
+        clicked = interactive_session.process(
             frame, prompts=[GeometryPrompt.click(7, (385, 230))] if i == 0 else [])
     assert len(people) == 2
     assert sorted(clicked) == [7]

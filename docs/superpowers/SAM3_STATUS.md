@@ -69,7 +69,14 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   pixel-identical to the explicit loop (`tests/test_video_session.py`); the
   `forward`/state form stays public and the parity tests stay on it. Notebook and
   README examples migrated (sessions named by role: `person_session`,
-  `interactive_session`, `hint_session`; results are `masklets`).
+  `interactive_session`, `hint_session`; results are `masklets`). Follow-up polish on
+  user review: sessions are driven by a named `session.process(frame, ...)` (the
+  `__call__` form was judged ambiguous), and `concept_box` takes NO `obj_id` -- a
+  detector box only biases detection, the spawned ids come from the session's counter,
+  so the parameter did nothing. Measured footgun documented in `process`'s docstring:
+  in a concept session a fresh-id tracker prompt can collide with same-call detector
+  spawns and silently refine a detector object -- seed new objects in a concept-free
+  session; in concept sessions use tracker prompts only to refine returned ids.
   Tests: `tests/test_geometry_prompt_constructors.py` (CPU), `tests/test_video_session.py`.
 
 - **Explicit box routing + explicit detection opt-in (2026-08-18)** — a DELIBERATE API

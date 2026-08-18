@@ -365,7 +365,7 @@ video_predictor = build_sam3_multiplex_video_predictor(
 )
 wheel_session = video_predictor.start_session(concept="wheel")
 for frame in frames:
-    masklets = wheel_session(frame)
+    masklets = wheel_session.process(frame)
     masks = {obj_id: (m.masks_logits > 0) for obj_id, m in masklets.items()}
 ```
 
@@ -389,11 +389,11 @@ omitted), `0` negative — "not this one", which drops the enclosed detection.
 ```python
 from sam.prompts import ConceptPrompt, GeometryPrompt
 
-box = GeometryPrompt.concept_box(1, (300, 150, 470, 420))
+box = GeometryPrompt.concept_box((300, 150, 470, 420))
 result = image_predictor.predict(image, ConceptPrompt("person"), geometry=box)
 
 # "everything matching the concept EXCEPT this one"
-neg = GeometryPrompt.concept_box(1, (300, 150, 470, 420), label=0)
+neg = GeometryPrompt.concept_box((300, 150, 470, 420), label=0)
 ```
 
 On **video**, prompts are passed per frame, and they take one of two routes — the same split
@@ -414,18 +414,18 @@ caption implicitly the moment a box arrives without text; here it is an argument
 ```python
 # interactive VOS — one object per prompt, no concept
 interactive_session = video_predictor.start_session()
-masklets = interactive_session(frames[0], prompts=[
+masklets = interactive_session.process(frames[0], prompts=[
     GeometryPrompt.box(1, (300, 150, 470, 420)),
     GeometryPrompt.click(2, (640, 300)),           # label=0 for a negative click
     GeometryPrompt.mask(3, first_frame_mask),      # (H, W) bool or logits, base only
 ])
 for frame in frames[1:]:
-    masklets = interactive_session(frame)
+    masklets = interactive_session.process(frame)
 
 # detection hint — upstream's box-only mode, both choices explicit
 hint_session = video_predictor.start_session(concept=video_predictor.PLACEHOLDER)
-masklets = hint_session(frames[0], prompts=[
-    GeometryPrompt.concept_box(1, (300, 150, 470, 420)),   # label=0: "everything except this"
+masklets = hint_session.process(frames[0], prompts=[
+    GeometryPrompt.concept_box((300, 150, 470, 420)),      # label=0: "everything except this"
 ])
 ```
 
