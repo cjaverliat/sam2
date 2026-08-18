@@ -62,6 +62,15 @@ class TrackletManager:
     init_keep_alive / max_keep_alive / min_keep_alive:
         Suppress-hysteresis counter bounds (upstream ``init/max/min_trk_keep_alive``,
         defaults 0 / 8 / -4). Visible while ``keep_alive > 0``.
+    confirmation_enable:
+        Whether the PENDING -> CONFIRMED gate applies at all (upstream
+        ``masklet_confirmation_enable``). When False every tracklet is CONFIRMED from
+        birth -- the base-lineage setting.
+
+    The defaults are the MULTIPLEX lineage's (``Sam3MultiplexBase`` class defaults +
+    the demo builder's ``masklet_confirmation_enable=True``). The base video lineage
+    differs (``build_sam3_video_model``: keep-alive 30/30/-1, confirmation disabled);
+    each predictor applies its own via :meth:`configure`.
     """
 
     def __init__(
@@ -72,7 +81,9 @@ class TrackletManager:
         init_keep_alive: int = 0,
         max_keep_alive: int = 8,
         min_keep_alive: int = -4,
+        confirmation_enable: bool = True,
     ) -> None:
+        self.confirmation_enable = confirmation_enable
         self.confirmation_thresh = confirmation_thresh
         self.hotstart_delay = hotstart_delay
         self.hotstart_unmatch_thresh = hotstart_unmatch_thresh
@@ -85,15 +96,51 @@ class TrackletManager:
     # Mutation API
     # ------------------------------------------------------------------
 
+    def configure(
+        self,
+        *,
+        confirmation_enable: bool,
+        confirmation_thresh: int,
+        hotstart_delay: int,
+        hotstart_unmatch_thresh: int,
+        init_keep_alive: int,
+        max_keep_alive: int,
+        min_keep_alive: int,
+    ) -> None:
+        """Apply a lineage's upstream lifecycle constants to a not-yet-used manager.
+
+        The predictor calls this on its first frame, since a
+        ``Sam3VideoPredictorState`` is built by the caller and cannot know which
+        lineage (base / multiplex) will drive it.
+
+        Raises:
+            ValueError: if any tracklet has already been spawned.
+        """
+        if self._tracks:
+            raise ValueError("configure() must run before the first tracklet is spawned")
+        self.confirmation_enable = confirmation_enable
+        self.confirmation_thresh = confirmation_thresh
+        self.hotstart_delay = hotstart_delay
+        self.hotstart_unmatch_thresh = hotstart_unmatch_thresh
+        self.init_keep_alive = init_keep_alive
+        self.max_keep_alive = max_keep_alive
+        self.min_keep_alive = min_keep_alive
+
     def spawn(self, obj_id: int, frame_idx: int) -> None:
-        """Register a new PENDING tracklet born on ``frame_idx``."""
+        """Register a new tracklet born on ``frame_idx`` (PENDING, or CONFIRMED when
+        the confirmation gate is disabled)."""
         if obj_id in self._tracks:
             raise ValueError(
                 f"tracklet {obj_id!r} already registered; "
                 "call remove() first or use a fresh obj_id"
             )
         self._tracks[obj_id] = _TrackletInfo(
-            first_frame=frame_idx, keep_alive=self.init_keep_alive
+            first_frame=frame_idx,
+            state=(
+                TrackletState.PENDING if self.confirmation_enable
+                else TrackletState.CONFIRMED
+            ),
+            keep_alive=self.init_keep_alive,
         )
 
     def step(

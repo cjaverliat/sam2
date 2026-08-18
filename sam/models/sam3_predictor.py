@@ -406,6 +406,22 @@ class Sam3VideoPredictor(nn.Module):
     ``__init__`` args are optional so the CPU guard tests can subclass with stubbed encoders.
     """
 
+    # Upstream base-lineage tracklet lifecycle (model_builder.build_sam3_video_model ->
+    # Sam3VideoInferenceWithInstanceInteractivity, ~746-762): no masklet confirmation and a
+    # keep-alive that starts saturated, so an object stays visible through long absences.
+    # The multiplex lineage overrides this -- its constants are different (see the subclass).
+    LIFECYCLE = {
+        "confirmation_enable": False,
+        "confirmation_thresh": 3,
+        "hotstart_delay": 15,
+        "hotstart_unmatch_thresh": 8,
+        "init_keep_alive": 30,
+        "max_keep_alive": 30,
+        "min_keep_alive": -1,
+    }
+    # caption encoded for a box-only (no text) prompt -- see _placeholder_concept
+    BOX_ONLY_CAPTION = "visual"
+
     def __init__(
         self,
         vision_encoder: nn.Module | None = None,
@@ -553,6 +569,9 @@ class Sam3VideoPredictor(nn.Module):
     ) -> dict[int, MaskletResult]:
         device = self.device
         H, W = state.video_hw
+        if not state.started:
+            # the caller builds the state, so it cannot know which lineage drives it
+            state.tracklet_mgr.configure(**self.LIFECYCLE)
         state.num_frames_processed += 1
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             # encode the frame ONCE (shared by detector + tracker), in the VIDEO regime:
@@ -563,7 +582,10 @@ class Sam3VideoPredictor(nn.Module):
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)
 
-            concept = state.concept
+            box_geo, point_prompts = self._split_and_pack_geometry(
+                geometry_prompts or [], (H, W), device
+            )
+            concept = self._concept_for_detection(state, box_geo)
 
             # 1) propagate existing tracklets (memory-conditioned, per object)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -576,8 +598,11 @@ class Sam3VideoPredictor(nn.Module):
                 trk_results[obj_id] = out
                 trk_low_masks[obj_id] = out["pred_masks"][0, 0].float()
 
-            # 2) concept-driven detection (GATED: only when a concept is set)
-            det = self._detect(det_feats, det_pos, concept) if concept is not None else None
+            # 2) detection (GATED: needs a concept — text, or the box-only placeholder)
+            det = (
+                self._detect(det_feats, det_pos, concept, geo=box_geo)
+                if concept is not None else None
+            )
 
             # 3) associate det<->trk, then spawn / confirm / kill via the TrackletManager
             new_objects: list[tuple[int, int]] = []  # (obj_id, det_idx)
@@ -595,9 +620,10 @@ class Sam3VideoPredictor(nn.Module):
                     det.masks_logits[det_idx], num_frames,
                 )
 
-            # 5) route geometry prompts to the tracker (new obj_id -> spawn, existing -> refine)
+            # 5) route point clicks to the tracker (new obj_id -> spawn, existing -> refine);
+            # boxes already went through the detector's geometric slot in step 2
             geom_results: dict[int, MaskletResult] = {}
-            for prompt in (geometry_prompts or []):
+            for prompt in point_prompts:
                 oid, out = self._apply_geometry_prompt(
                     state, frame_idx, prompt, vis, vpos, feat_sizes, num_frames
                 )
@@ -638,16 +664,66 @@ class Sam3VideoPredictor(nn.Module):
         vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
         return vis, vpos, feat_sizes
 
-    def _detect(self, det_feats, det_pos, concept: ConceptState) -> "Sam3DetectionResult":
+    def _placeholder_concept(self):
+        """A cached placeholder ConceptState for box-only prompts (no text set).
+
+        The caption is lineage-specific (:attr:`BOX_ONLY_CAPTION`): a box-only
+        ``add_prompt`` selects ``TEXT_ID_FOR_VISUAL`` on the base video path
+        (``sam3_video_inference.py:868-876`` -- the encoded caption is
+        ``find_text_batch[1]``, the literal ``"visual"``), whereas the multiplex path
+        has no such else-branch (``sam3_multiplex_tracking.py:1698-1705``) and leaves
+        ``text_ids`` at 0, i.e. ``"<text placeholder>"``. The box itself drives
+        detection through the geometric slot either way.
+        """
+        if getattr(self, "_geo_concept", None) is None:
+            text = self.BOX_ONLY_CAPTION
+            emb, mask = self.encode_text(ConceptPrompt(text))
+            self._geo_concept = ConceptState(ConceptPrompt(text), emb, mask)
+        return self._geo_concept
+
+    def _concept_for_detection(self, state, box_geo):
+        """The concept driving this frame's detection, adopting the box-only placeholder.
+
+        A box-only session (no ``set_concept``) still detects on EVERY frame upstream:
+        ``add_prompt`` writes the caption's ``text_id`` into all frames' ``find_inputs``
+        (``sam3_video_inference.py:876-877``; the multiplex leaves them at their init
+        value 0, which is that lineage's placeholder), so detection keeps re-matching the
+        tracklets after the prompt frame instead of leaving them to propagate blind.
+        Adopting the placeholder into the state reproduces that.
+
+        Returns:
+            The session's :class:`ConceptState`, or None when nothing has ever been
+            prompted (detection stays gated off).
+        """
+        if state.concept is None and box_geo is not None:
+            state.concept = self._placeholder_concept()
+        return state.concept
+
+    def _split_and_pack_geometry(self, geometry_prompts, hw, device):
+        """Split prompts into a packed box-geo dict (biases detection via the
+        GEOMETRIC slot) and the list of point prompts (interactive click path)."""
+        box_prompts = [p for p in geometry_prompts if p.boxes is not None]
+        point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
+        box_geo = None
+        if box_prompts:
+            packed = [_pack_geometry(p, hw, device) for p in box_prompts]
+            box_geo = {
+                "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
+                "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
+            }
+        return box_geo, point_prompts
+
+    def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
         """Run the DETR detector at the tracker's low-res mask grid (squashed space).
 
         ``image_hw`` is set to the tracker's ``low_res_mask_size`` so the returned masks share
         the tracker's mask grid (association is mask-IoU; seeding + output resize from here).
+        ``geo`` carries the packed box/point geometry prompt for the GEOMETRIC slot.
         """
         m = self.tracker.low_res_mask_size
         return self.detector.detect(
             det_feats, det_pos, concept.text_emb, concept.text_mask,
-            image_hw=(m, m), confidence_threshold=0.5,
+            image_hw=(m, m), confidence_threshold=0.5, geo=geo,
         )
 
     def _associate_and_update(self, state, det, active_ids, trk_low_masks, trk_results):
@@ -786,12 +862,17 @@ class Sam3VideoPredictor(nn.Module):
         return out
 
     def _apply_geometry_prompt(self, state, frame_idx, prompt, vis, vpos, feat_sizes, num_frames):
-        """Route a :class:`GeometryPrompt` to the tracker (new obj_id -> spawn, existing -> refine).
+        """Route a point/mask :class:`GeometryPrompt` to the tracker (new obj_id -> spawn,
+        existing -> refine).
 
         Reuses the SAM 2 tracker prompt path: points (scaled to the 1008 input grid) and/or a
         mask drive a cond-frame ``track_step``; a new ``obj_id`` spawns a tracklet, an existing
-        one is re-conditioned (refined) at this frame. Not exercised by the parity gate (the
-        golden uses text only) but completes the spec §10 session API.
+        one is re-conditioned (refined) at this frame.
+
+        BOXES do not come here: upstream routes a box to the detector's geometry encoder
+        (``sam3_video_inference._get_visual_prompt`` stores it as the frame's GEOMETRIC
+        prompt), never to the tracker as corner points, so ``forward`` handles boxes in its
+        detection step.
         """
         device = self.device
         H, W = state.video_hw
@@ -806,15 +887,6 @@ class Sam3VideoPredictor(nn.Module):
             c = c if prompt.is_normalized else c / torch.tensor([W, H], device=device)
             coords_list.append(c * self.tracker.image_size)
             labels_list.append(prompt.points_labels.to(device))
-        if prompt.boxes is not None:
-            # encode each box as its two corners (labels 2 / 3), like the SAM prompt encoder
-            b = prompt.boxes.float()
-            b = b if prompt.is_normalized else b / torch.tensor([W, H, W, H], device=device)
-            corners = b.reshape(-1, 2, 2) * self.tracker.image_size
-            coords_list.append(corners.reshape(-1, 2))
-            labels_list.append(
-                torch.tensor([2, 3] * b.shape[0], device=device, dtype=torch.int32)
-            )
         if coords_list:
             point_inputs = {
                 "point_coords": torch.cat(coords_list, dim=0)[None],
@@ -971,6 +1043,21 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
     scope for this gate.
     """
 
+    # Upstream multiplex lifecycle: the demo builder turns masklet confirmation ON
+    # (model_builder.py ~1184, thresh 3) and leaves the keep-alive bounds at the
+    # Sam3MultiplexBase class defaults (~228-230), which are much tighter than the base
+    # lineage's -- a multiplex object is hidden after a few unmatched frames.
+    LIFECYCLE = {
+        "confirmation_enable": True,
+        "confirmation_thresh": 3,
+        "hotstart_delay": 15,
+        "hotstart_unmatch_thresh": 8,
+        "init_keep_alive": 0,
+        "max_keep_alive": 8,
+        "min_keep_alive": -4,
+    }
+    BOX_ONLY_CAPTION = "<text placeholder>"
+
     def encode_image(self, x: torch.Tensor):
         """One trunk pass -> the THREE sam3.1 pyramids (tri-neck), scalp applied to each.
 
@@ -987,18 +1074,6 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             prop_f, prop_p = prop_f[:-s], prop_p[:-s]
             int_f, int_p = int_f[:-s], int_p[:-s]
         return det_f, det_p, prop_f, prop_p, int_f, int_p
-
-    def _placeholder_concept(self):
-        """A cached placeholder ConceptState for box-only prompts (no text set).
-
-        Upstream keeps the TEXT slot at the literal ``"<text placeholder>"`` for a
-        box-only frame (the box drives detection via the geometric slot).
-        """
-        if getattr(self, "_geo_concept", None) is None:
-            text = "<text placeholder>"
-            emb, mask = self.encode_text(ConceptPrompt(text))
-            self._geo_concept = ConceptState(ConceptPrompt(text), emb, mask)
-        return self._geo_concept
 
     def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
         """Run the SAM 3.1 detector at the tracker's low-res mask grid, joint-score post-proc.
@@ -1053,6 +1128,9 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             self._check_mux_geometry(geometry_prompts)
         device = self.device
         H, W = state.video_hw
+        if not state.started:
+            # the caller builds the state, so it cannot know which lineage drives it
+            state.tracklet_mgr.configure(**self.LIFECYCLE)
         state.num_frames_processed += 1
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             # encode the frame ONCE (the sam3.1 video regime: PIL TF.resize + float16 loader)
@@ -1063,10 +1141,10 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 int_f, int_p, self.tracker.interactive_sam_mask_decoder
             )
             num_frames = frame_idx + 1
-            concept = state.concept
             box_geo, point_prompts = self._split_and_pack_geometry(
                 geometry_prompts, (H, W), device
             )
+            concept = self._concept_for_detection(state, box_geo)
 
             # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -1080,10 +1158,9 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
 
             # 2) detection (GATED) — concept text and/or a box in the geometric slot; a
             # box-only prompt uses the '<geometric>' placeholder concept.
-            det_concept = concept or (self._placeholder_concept() if box_geo else None)
             det = (
-                self._detect(det_f, det_p, det_concept, geo=box_geo)
-                if det_concept is not None else None
+                self._detect(det_f, det_p, concept, geo=box_geo)
+                if concept is not None else None
             )
 
             # 3) associate det<->trk + spawn / confirm / kill (Task 7, per-object, unchanged)
@@ -1128,20 +1205,6 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                     state, frame_idx, point_prompts, bf_int, bf_prop, num_frames
                 ))
             return select_emitted(results, state.tracklet_mgr, self.emit)
-
-    def _split_and_pack_geometry(self, geometry_prompts, hw, device):
-        """Split prompts into a packed box-geo dict (biases detection via the
-        GEOMETRIC slot) and the list of point prompts (interactive click path)."""
-        box_prompts = [p for p in geometry_prompts if p.boxes is not None]
-        point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
-        box_geo = None
-        if box_prompts:
-            packed = [_pack_geometry(p, hw, device) for p in box_prompts]
-            box_geo = {
-                "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
-                "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
-            }
-        return box_geo, point_prompts
 
     def _detector_add(self, state, frame_idx, det, new_objects, bf_int, bf_prop, num_frames):
         """Seed (first frame) or grow (mid-stream) the mux state with detector

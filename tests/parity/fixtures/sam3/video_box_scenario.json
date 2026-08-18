@@ -1,0 +1,14 @@
+{
+  "box_xyxy": [
+    300,
+    150,
+    470,
+    420
+  ],
+  "num_frames": 8,
+  "hw": [
+    540,
+    960
+  ],
+  "frames_dir": "notebooks/videos/bedroom"
+}
