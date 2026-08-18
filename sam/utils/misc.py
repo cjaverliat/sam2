@@ -90,6 +90,17 @@ def _load_connected_components_ext():
             if os.path.isfile(_nvcc):
                 os.environ["CUDA_HOME"] = _conda_cuda
 
+        # Pin the arch list to the local GPU before torch reads it.
+        # conda-forge's cuda-nvcc activation exports a toolkit-wide default
+        # (...;10.0;10.1;12.0+PTX) and torch's _get_cuda_arch_flags() raises on
+        # any entry it does not know -- torch 2.11 knows 10.0/10.3/12.0/12.1 but
+        # not 10.1 -- so an inherited list fails this compile on a fully
+        # supported GPU. At runtime only the present device's arch matters, and
+        # building one arch instead of a dozen is much faster.
+        if torch.cuda.is_available():
+            _major, _minor = torch.cuda.get_device_capability()
+            os.environ["TORCH_CUDA_ARCH_LIST"] = f"{_major}.{_minor}"
+
         import torch.utils.cpp_extension as _cpp_ext
 
         # Also patch the cached module-level variable in case cpp_extension
