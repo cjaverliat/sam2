@@ -272,17 +272,29 @@ class Sam3DetectionResult:
   frames within hotstart), the kill compacts it out of `obj_ids_all_gpu`, which empties the
   unconfirmed set read by its `(masklet_confirmation_consecutive_det_thresh - 1)`-frame
   lookahead, so the frames preceding the death are revealed retroactively. Matching that
-  needs a buffered, non-causal output path (`forward()` returning frame f-2) plus replicating
-  the reveal; deferred — see the open item below.
-- [ ] **Buffered confirmation gate (would close the frames 5-7 gap)** — upstream's multiplex
-  output hide-set is `unconfirmed(min(f + thresh-1, last)) ∪ empty-mask` and NOTHING else:
-  `_process_hotstart_gpu`'s `to_suppress_mask` is dead (assigned at `sam3_multiplex_base.py`
-  ~1038, never consumed) and `suppressed_obj_ids` is only written by the CPU `_process_hotstart`,
-  which the multiplex path never calls. Both shipped configs also make keep-alive suppression
-  inert (`suppress_unmatched_only_within_hotstart=True` for the base model; dead code path for
-  multiplex). So our `keep_alive > 0` visibility rule has no upstream counterpart — it agrees
-  with upstream on frames 1-4 by coincidence, not by mechanism. Adopting the real rule means
-  gating on CONFIRMED with a `thresh-1` lookahead, i.e. buffering output by 2 frames.
+  needs a buffered, non-causal output path plus replicating the reveal; deliberately not
+  implemented — see the confirmation-gate entry below.
+- [x] **Confirmation gate — closed by the `Emit` policy (2026-08-17), WITHOUT buffering.**
+  Upstream's multiplex output hide-set is `unconfirmed(min(f + thresh-1, last)) ∪ empty-mask`
+  and NOTHING else: `_process_hotstart_gpu`'s `to_suppress_mask` is dead (assigned at
+  `sam3_multiplex_base.py` ~1038, never consumed) and `suppressed_obj_ids` is only written by
+  the CPU `_process_hotstart`, which the multiplex path never calls. Both shipped configs also
+  make keep-alive suppression inert (`suppress_unmatched_only_within_hotstart=True` for the base
+  model; dead code path for multiplex). So our `keep_alive > 0` visibility rule has no upstream
+  counterpart — it agreed with upstream on frames 1-4 by coincidence, not by mechanism.
+  The real rule is now reproducible exactly and causally: `emit: Emit` on the predictor
+  (`CONFIRMED` default / `VISIBLE` / `ALIVE`, `sam/results.py`) plus `select_emitted`'s
+  unconditional empty-mask drop. `forward()` keeps its synchronous contract (feed frame `f`,
+  get frame `f`) — no output lag — and every `MaskletResult` carries its `tracklet_state`, so a
+  caller can layer its own display policy. The goldens captured a non-causal pipeline's
+  observable (objects visible from their birth frame), so golden-measuring tests set
+  `pred.emit = Emit.VISIBLE`; `tests/test_emit_modes.py` (CPU) covers the `CONFIRMED` default.
+  What stays out of reach is the separate LOOKAHEAD (the frames 5-7 gap): upstream buffers
+  `propagate_in_video` output by `hotstart_delay` (15) frames and snapshots the removed set on
+  the way out, so a hotstart kill retroactively reveals the frames preceding the death. Not
+  implemented deliberately — it would cost a 15-frame output lag, and a streaming consumer
+  cannot act on it anyway (a frame already shown cannot be un-shown). Details + upstream
+  references in `docs/superpowers/SAM3_STATUS.md`.
 - [x] **Multi-concept — dropped, won't implement (2026-08-17).** Upstream has NO concurrent
   multi-concept: its only multi-concept path (`sam3_multiplex_tracking.py` `forward`, ~1756-1815,
   benchmark eval only — "This method is only used for benchmark eval (not used in the demo)")

@@ -1,6 +1,6 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration` (138 commits ahead of `main`), pushed to
+**Branch:** `feat/sam3-integration` (139 commits ahead of `main`), pushed to
 `origin/feat/sam3-integration`. Tree clean. Latest: the multi-concept
 retirement, after the exemplar/VISUAL-slot one (`8dd1364`) and per-box labels
 on `GeometryPrompt` (`54ef29d`).
