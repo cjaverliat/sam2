@@ -1,12 +1,11 @@
 # SAM 3 integration — status & resume guide
 
 **Branch:** `feat/sam3-integration`, pushed to
-`origin/feat/sam3-integration`. Tree clean. Latest: the multi-concept
-retirement, after the exemplar/VISUAL-slot one (`8dd1364`) and per-box labels
-on `GeometryPrompt` (`54ef29d`).
+`origin/feat/sam3-integration`. Latest: geometry-prompt bit-exact parity, after the
+multi-concept retirement and the exemplar/VISUAL-slot one (`8dd1364`).
 **Last session:** 2026-08-18. **Read this first to resume.**
 
-**Next up:** open item 1, geometry-prompt bit-exact parity.
+**Next up:** open item 1, the pre-existing `test_encoder_parity` failure.
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -133,16 +132,46 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   rename behind `set_concept`): CPU-fast set green (28 passed) and the full 7-file GPU gate
   green (20 passed).
 
+- **Geometry-prompt bit-exact parity (2026-08-18)** — it already WAS bit-exact. The loose
+  gates (box-IoU ≥ 0.8 / score atol 0.06 / mask IoU ≥ 0.85) paid for two convention
+  mismatches in the test, and the old docstring's story ("geometry tokens lengthen the
+  decoder → bf16 drift") was wrong.
+  1. **Preprocessing.** The golden was captured through `model.init_state(resource_path=...)`
+     — upstream's image-FOLDER video loader (`io_utils._load_img_as_tensor`: PIL CPU resize
+     → float16), which `preprocess_to_1008_video` mirrors — while the test drives `predict()`,
+     whose `preprocess_to_1008` mirrors the IMAGE api (`Sam3Processor`: uint8 → GPU →
+     `v2.Resize(1008)` → float32). Running our weights on the golden's own regime made every
+     score **bit-identical** (dp = 0.0, all 5 dets, both stems), isolating the resize as the
+     entire cause. Attribution of that resize delta (960x540 → 1008², measured): CPU-vs-GPU
+     uint8 rounding dominates (mean 7.7e-4, 9.8% of pixels > 1e-3, max 7.8e-3 = 2/255);
+     antialias is nearly a no-op because this is an UPSCALE (mean 1e-5) — it would matter for
+     a source larger than 1008; PIL ≈ torchvision-CPU (mean 4e-5); fp16 storage adds 4.9e-4.
+  2. **Box convention.** The npz `boxes` are raw DETR `pred_boxes_xyxy`; `predict()` returns
+     `masks_to_boxes` of the output mask (multiplex demo semantics). Up to 15.7px apart on the
+     same detection — the whole reason a 0.80 box-IoU gate was needed.
+  Fix: recaptured both goldens in the image regime (`capture_sam3_box_golden.py` now overwrites
+  `input_batch.img_batch` with the `Sam3Processor` tensor; two reference-env runs, `--label 1`
+  and `--label 0`), and the test re-derives the golden box from the golden MASKS. Residual vs
+  upstream: scores 0.0 on all 3 `box_prompt` dets / 3.8e-3 on one `box_prompt_neg` det,
+  presence ≤ 9.3e-4, mask-derived boxes **0.00px**, mask IoU ≥ 0.9898. Gates are now the
+  text-only image bar — 2px / 1e-2 / 1e-2, mask IoU ≥ 0.98 — and the test adopts the capture's
+  regime via the `determinism_no_det_algos` fixture (it previously set none).
+  Ruled out with measurements, not argument: SDPA-kernel choice (|Δlogit| ≤ 0.04 against a
+  0.23 gap) and structural mask disagreement (100% of differing pixels had |logit| < 0.28,
+  median 0.03 — pure sign-flip at the decision boundary). Falsified by pointing the tightened
+  test at the OLD goldens: `box_prompt` fails `mask IoU 0.9299 < 0.98`.
+
 ## Open (recommended order)
 
-1. **Geometry-prompt bit-exact parity** — image box path matches upstream at
-   box-IoU ≥ 0.8 / score atol 0.06, looser than text-only's 2px/1e-2 (geometry
-   tokens lengthen the decoder → bf16 drift). Investigate if bit-exact is wanted.
-2. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
+1. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
    encoder pyramid) fails vs golden — fails on `HEAD~` too (NOT this work); stale
    golden / env drift. Recapture or retolerance. Re-confirmed by stash-and-rerun on
    **2026-08-17** (identical failure with a clean tree).
-3. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+2. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+3. **Check the base video predictor's preprocessing** — `sam3_predictor.py:559` (base
+   video `forward`) calls `preprocess_to_1008` (the IMAGE regime) while the mux video
+   `forward` (`:1057`) calls `preprocess_to_1008_video`. Possibly the same class of
+   mismatch item 1 turned out to be; noticed 2026-08-18, unverified either way.
 4. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
    `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
 5. **Stale doc:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 still claims

@@ -33,10 +33,22 @@ API path: MODEL API (Sam3MultiplexTrackingWithInteractivity.detector, a
     model = predictor.model
     detector = model.detector
 
-    # init_state does the exact image preprocessing (resize to 1008, mean/std 0.5)
-    # and builds a BatchedDatapoint (input_batch) with a per-frame FindStage.
+    # init_state builds the BatchedDatapoint (input_batch) with a per-frame FindStage.
     state = model.init_state(resource_path=<dir with the single frame>)
     input_batch = state["input_batch"]
+
+    # ...but its img_batch comes from the image-FOLDER video loader
+    # (io_utils._load_img_as_tensor: PIL CPU bilinear resize -> float16), which is NOT
+    # the IMAGE api's preprocessing. Sam3Processor (what our Sam3MultiplexPredictor
+    # .predict mirrors) sends the uint8 image to the GPU and resizes there with
+    # v2.Resize(1008) (bilinear + antialias), keeping float32. The two bilinear
+    # implementations differ systematically (enc_feat median delta ~0.037), so the
+    # golden is captured in the IMAGE regime -- otherwise the parity test measures the
+    # resize mismatch instead of the geometry path:
+    img_1008 = Sam3Processor(model=None, resolution=1008, device=dev).transform(
+        v2.functional.to_image(Image.open(frame).convert("RGB")).to(dev)
+    ).unsqueeze(0)
+    input_batch.img_batch = NestedTensor(tensors=img_1008, mask=None)
     input_batch.find_text_batch[0] = "person"          # text_ids=[0] selects this
     find_input = input_batch.find_inputs[0]             # img_ids=[0], text_ids=[0]
 
@@ -174,8 +186,12 @@ def main():
         _patch_connected_components_cpu()
         print("[capture] env concessions applied: edt + SDPA(all) + NMS(cpu) + CC(cpu)")
 
+    from torchvision.transforms import v2
+
     from sam3.model_builder import build_sam3_multiplex_video_predictor
+    from sam3.model.data_misc import NestedTensor
     from sam3.model.geometry_encoders import Prompt
+    from sam3.model.sam3_image_processor import Sam3Processor
 
     frame_path = Path(args.frame)
     w0, h0 = Image.open(frame_path).size
@@ -219,6 +235,22 @@ def main():
                 device = state["device"]
 
                 input_batch = state["input_batch"]
+
+                # Re-preprocess in the IMAGE regime: init_state filled img_batch via
+                # the image-folder video loader (PIL CPU resize -> float16), but the
+                # image api runs Sam3Processor (uint8 -> GPU -> v2.Resize(1008) ->
+                # float32 -> mean/std 0.5). See the module docstring.
+                img_1008 = Sam3Processor(
+                    model=None, resolution=1008, device=device
+                ).transform(
+                    v2.functional.to_image(
+                        Image.open(frame_path).convert("RGB")
+                    ).to(device)
+                ).unsqueeze(0)
+                print(f"[capture] img_batch (image regime): "
+                      f"shape={tuple(img_1008.shape)} dtype={img_1008.dtype}")
+                input_batch.img_batch = NestedTensor(tensors=img_1008, mask=None)
+
                 input_batch.find_text_batch[0] = PHRASE
                 find_input = input_batch.find_inputs[0]
 

@@ -317,7 +317,21 @@ class Sam3DetectionResult:
 - [x] **Exemplar (VISUAL slot) — dropped, won't implement (2026-08-17).** The slot's consumer
   is live but it has no producer in any released code path, training included. Full write-up in
   `docs/superpowers/SAM3_STATUS.md`.
-- [ ] **Geometry-prompt bit-exact parity** — the image box path matches upstream to a
-  looser tolerance than the text-only 2px/1e-2 (geometry tokens + bf16 drift); tighten if needed.
+- [x] **Geometry-prompt bit-exact parity (2026-08-18)** — it already was bit-exact; the loose
+  tolerances were paying for two convention mismatches in the TEST, not for anything the
+  geometry tokens do. (1) The golden was captured through `model.init_state(resource_path=...)`,
+  i.e. the image-FOLDER video loader (`io_utils._load_img_as_tensor`: PIL CPU resize ->
+  float16, what `preprocess_to_1008_video` mirrors), while the test drives `predict()`, whose
+  `preprocess_to_1008` mirrors the IMAGE api (`Sam3Processor`: uint8 -> GPU -> `v2.Resize(1008)`
+  -> float32). Feeding the golden's own regime through the same weights made every score
+  bit-identical, which isolated the resize as the whole cause. (2) The npz `boxes` are the raw
+  DETR `pred_boxes_xyxy`, but `predict()` returns `masks_to_boxes` of the output mask — up to
+  15.7px apart on one detection. Recaptured both goldens in the image regime (the capture script
+  now overwrites `input_batch.img_batch` with the `Sam3Processor` tensor) and re-derived the
+  golden box from the golden masks. Residual vs upstream: scores 0.0 on all 3 `box_prompt` dets
+  and 3.8e-3 on one `box_prompt_neg` det, presence <= 9.3e-4, mask-derived boxes 0.00px, mask IoU
+  >= 0.9898. Gates now match the text-only image bar (2px / 1e-2 / 1e-2) with mask IoU >= 0.98.
+  Ruled out along the way: SDPA-kernel choice (|dlogit| <= 0.04 vs the 0.23 gap) and structural
+  mask disagreement (100% of differing pixels had |logit| < 0.28, median 0.03).
 - [ ] **Pre-existing:** `test_sam3_parity.py::test_encoder_parity` (vision encoder) fails
   independent of this work (fails on pre-geometry `HEAD~`); stale golden / env drift — investigate separately.
