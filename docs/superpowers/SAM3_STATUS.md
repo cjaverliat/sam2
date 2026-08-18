@@ -176,13 +176,26 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   `test_sam3_parity.py` + `reference_efficientsam3/` = 10 passed, 1 xfailed, 16 skipped
   (checkpoints absent), no XPASS, with only the pre-existing `test_encoder_parity` failing.
 
+- **`test_encoder_parity` fixed — the golden WAS stale (2026-08-18)** — and it was stale,
+  not wrong: re-running TODAY's upstream encoder on the same input in the reference env
+  (`Sam3Processor.set_image`, bf16) reproduced OUR output **bit-exactly**
+  (`np.array_equal` True), while both differed from the committed golden by the identical
+  amount (max 0.7363, p99.9 0.1172, median 0.0039, 16.8% of elements > 1e-2). So the
+  fixture predated an env/kernel change on this host. Corroborating measurement: flipping
+  our own SDPA backend to `MATH` moves the encoder output by max 0.785 / median 1.1%
+  relative — the same magnitude as the gap — so no fixed golden survives `atol=1e-2` on a
+  deep bf16 ViT across kernel selection, and re-tolerancing would have hidden this instead
+  of fixing it. NOT fp16 storage: |golden| tops out at 6.0, whose fp16 ulp is 0.004.
+  Recaptured all four goldens from one env at the same upstream commit `5dd401d`
+  (`image.npz`, `video.npz`, `image_sam31.npz`, `video_sam31.npz` + `scenario.json`);
+  the encoder is now bit-exact (max delta 0.0000) and the whole suite is green:
+  `test_sam3_parity.py` + `reference_efficientsam3/` = **11 passed, 1 xfailed, 16 skipped,
+  0 failed**. Fixture deltas from the refresh were small (boxes 0.024px, scores 3.9e-3,
+  presence 2.1e-3; `text_emb` unchanged — the text tower is env-stable).
+
 ## Open (recommended order)
 
-1. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
-   encoder pyramid) fails vs golden — fails on `HEAD~` too (NOT this work); stale
-   golden / env drift. Recapture or retolerance. Re-confirmed by stash-and-rerun on
-   **2026-08-17** (identical failure with a clean tree).
-2. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
+1. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
 3. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
    `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
 4. **Stale docs:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 AND the README's
