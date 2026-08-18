@@ -18,9 +18,11 @@ Environment toggles:
   SAM2_BUILD_CUDA=0        build a pure-Python wheel (no _C extension)
                            (unset = auto: build _C when the installed torch is a
                            CUDA build with a usable runtime)
-  SAM2_ALLOW_BUILD_ERRORS=1  (default) on a _C build failure fall back to a
-                           pure-Python wheel; _C is JIT-compiled at runtime on
-                           first use. Set 0 (CI) to fail hard on a broken build.
+  SAM2_ALLOW_BUILD_ERRORS=1  on a _C build failure fall back to a pure-Python
+                           wheel; _C is JIT-compiled at runtime on first use.
+                           Defaults to 1 for an editable/dev install and 0 for a
+                           distributed wheel, whose local label would otherwise
+                           promise an extension the wheel does not contain.
   SAM2_FORCE_BUILD=1       skip the prebuilt-wheel download, always compile
   SAM2_WHEEL_BASE_URL=...  override the GitHub Releases base URL
 """
@@ -35,6 +37,7 @@ import warnings
 from pathlib import Path
 
 from setuptools import setup
+from setuptools.errors import CompileError, ExecError, LinkError
 
 # ---------------------------------------------------------------------------
 # Static metadata
@@ -55,10 +58,9 @@ FORCE_BUILD = os.getenv("SAM2_FORCE_BUILD", "0") == "1"
 # CI cross-compile), "0" skip it (pure-Python wheel), unset = auto (decided from
 # the installed torch below). None means "unset".
 BUILD_CUDA = os.getenv("SAM2_BUILD_CUDA")
-# On by default: if the from-source _C compile fails, drop the extension and ship
-# a pure-Python wheel (the runtime JIT-compiles _C on first use) instead of
-# aborting the install. CI sets this to 0 so a broken kernel build fails loudly.
-ALLOW_BUILD_ERRORS = os.getenv("SAM2_ALLOW_BUILD_ERRORS", "1") == "1"
+# Whether a failed _C compile degrades to a pure-Python wheel. Unset means
+# "decide from the build kind" -- resolved once _DIST_WHEEL_BUILD is known.
+_ALLOW_BUILD_ERRORS_ENV = os.getenv("SAM2_ALLOW_BUILD_ERRORS")
 
 
 def _point_cuda_home_at_conda():
@@ -221,6 +223,13 @@ def get_wheel_filename(version, local_label):
 # ---------------------------------------------------------------------------
 # Extension definition (only when building from source)
 # ---------------------------------------------------------------------------
+# Failures that mean "this machine cannot compile _C": no toolchain, or nvcc /
+# ninja returned an error. Deliberately not bare Exception -- a ValueError or
+# TypeError here is a bug in this file or a torch API change, and quietly
+# shipping a wheel without _C is exactly how a broken build reaches users.
+_RECOVERABLE_BUILD_ERRORS = (CompileError, LinkError, ExecError, RuntimeError)
+
+
 class _BuildError(Exception):
     """A recoverable _C build problem. Raised before/at compile so the tolerant
     build path (SAM2_ALLOW_BUILD_ERRORS) can degrade to a pure-Python wheel."""
@@ -327,6 +336,17 @@ _is_building = not _BUILD_COMMANDS.isdisjoint(sys.argv)
 # / egg_info / dist_info are workspace steps that keep torch loose + no label.
 _DIST_WHEEL_BUILD = "bdist_wheel" in sys.argv or "build" in sys.argv
 
+# Degrade quietly only where the result cannot mislead: an editable/dev install
+# carries no local label, so a pure-Python fallback is honest and the runtime JIT
+# can still supply _C later. A distributed wheel is labelled +cuXXXtorchYY and
+# gets cached and redistributed, so the same fallback there ships an artefact
+# whose name promises an extension it does not contain -- fail loudly instead.
+ALLOW_BUILD_ERRORS = (
+    not _DIST_WHEEL_BUILD
+    if _ALLOW_BUILD_ERRORS_ENV is None
+    else _ALLOW_BUILD_ERRORS_ENV == "1"
+)
+
 try:
     import torch  # noqa: F401
 except ImportError:
@@ -379,6 +399,21 @@ else:
     # is identical to the solve-time metadata and across every torch line.
     local_label = get_local_label(torch) if _DIST_WHEEL_BUILD else None
 
+    def _refuse_mislabelled_wheel(reason):
+        """Abort rather than emit a +cuXXXtorchYY wheel with no sam._C inside.
+
+        Only a distributed wheel carries the CUDA local label; an editable
+        install has ``local_label`` None and may degrade freely.
+        """
+        if _DIST_WHEEL_BUILD and local_label not in (None, "cpu"):
+            raise SystemExit(
+                f"\nsam build error: {reason}\n"
+                f"Refusing to build {version}+{local_label} without sam._C: the "
+                "label promises a CUDA extension this wheel would not contain. "
+                "Use SAM2_BUILD_CUDA=0 for a correctly labelled pure-Python "
+                "wheel, or fix the toolchain.\n"
+            )
+
     def _extensions_or_degrade():
         """Configure the _C extension, degrading to none on a recoverable build
         problem (e.g. missing MSVC) when SAM2_ALLOW_BUILD_ERRORS is set; the runtime
@@ -388,6 +423,7 @@ else:
         except _BuildError as e:
             if not ALLOW_BUILD_ERRORS:
                 raise SystemExit(f"\nsam build error: {e}\n")
+            _refuse_mislabelled_wheel(e)
             warnings.warn(
                 f"sam: {e} Building a pure-Python wheel instead; sam._C is "
                 "JIT-compiled at runtime on first use "
@@ -422,9 +458,10 @@ else:
                 )
             try:
                 super().build_extensions()
-            except Exception as e:
+            except _RECOVERABLE_BUILD_ERRORS as e:
                 if not ALLOW_BUILD_ERRORS:
                     raise
+                _refuse_mislabelled_wheel(f"compiling sam._C failed ({e}).")
                 warnings.warn(
                     f"sam: compiling sam._C failed ({e}). Installing a pure-Python "
                     "sam; _C is JIT-compiled at runtime on first use "
