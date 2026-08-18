@@ -555,8 +555,10 @@ class Sam3VideoPredictor(nn.Module):
         H, W = state.video_hw
         state.num_frames_processed += 1
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-            # encode the frame ONCE (shared by detector + tracker)
-            x = preprocess_to_1008(frame, device=device)
+            # encode the frame ONCE (shared by detector + tracker), in the VIDEO regime:
+            # upstream's video path always loads frames through the image-folder loader
+            # (PIL TF.resize + float16), never through the image processor
+            x = preprocess_to_1008_video(frame, device=device)
             det_feats, det_pos, sam2_feats, sam2_pos = self.encode_image(x)
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)

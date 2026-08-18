@@ -28,6 +28,7 @@ CKPT = Path(__file__).parents[2] / "checkpoints" / "sam3.pt"
 # NOTE: ``_determinism`` and ``_mask_iou`` now live in tests/parity/conftest.py as the
 # ``determinism`` / ``mask_iou`` fixtures (auto-discovered here).
 from sam.utils.sam3_transforms import preprocess_to_1008 as _preprocess_to_1008
+from sam.utils.sam3_transforms import preprocess_to_1008_video as _preprocess_to_1008_video
 
 
 @pytest.fixture(scope="module")
@@ -321,7 +322,8 @@ def test_tracker_step_parity(video_fixture, determinism, mask_iou):
     assert n > 0, "no shared objects between frame 0 and frame 1"
 
     def _sam2_pyramid(rgb):
-        x = _preprocess_to_1008(rgb, device="cuda")
+        # video golden -> the video loader's regime (see preprocess_to_1008_video)
+        x = _preprocess_to_1008_video(rgb, device="cuda")
         feats, pos = encoder(x, return_sam2=True)
         return feats, pos
 
@@ -539,7 +541,8 @@ def test_sam3p1_tracker_step_parity(video_sam31_fixture, determinism, mask_iou):
     def _pyramids(rgb):
         # ONE trunk pass -> interactive pyramid (sam3 slot = interactive_convs) for the
         # cond-frame object-pointer head + propagation pyramid (sam2 slot) for tracking.
-        x = _preprocess_to_1008(rgb, device="cuda")
+        # video golden -> the video loader's regime (see preprocess_to_1008_video)
+        x = _preprocess_to_1008_video(rgb, device="cuda")
         s3f, s3p, s2f, s2p = encoder.vision_backbone(x)  # each 3-level [288,144,72]
         return (s3f, s3p), (s2f, s2p)
 

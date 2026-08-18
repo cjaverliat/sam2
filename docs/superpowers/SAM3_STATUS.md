@@ -161,6 +161,21 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   median 0.03 — pure sign-flip at the decision boundary). Falsified by pointing the tightened
   test at the OLD goldens: `box_prompt` fails `mask IoU 0.9299 < 0.98`.
 
+- **Base video predictor now preprocesses in the VIDEO regime (2026-08-18)** — the same
+  class of mismatch as the box item, but in shipped code: `Sam3VideoPredictor.forward`
+  used `preprocess_to_1008` (the image/`Sam3Processor` regime) while upstream's video path
+  only ever loads frames through the image-folder loader, which is what the mux `forward`
+  already mirrored via `preprocess_to_1008_video`. `capture_sam3_golden.capture_video`
+  writes PNGs and drives `init_state`, so the base video golden is in the loader's regime
+  too. Switched `forward` (and the two explicit preprocessing sites in
+  `test_sam3_parity.py`, `_sam2_pyramid` / `_pyramids`, both of which measure video
+  goldens). Effect on the base video golden: per-object IoU mean 0.9938 -> 0.9944, n>=0.99
+  13/16 -> 15/16, min ~unchanged (0.9854 -> 0.9846) — small, and it does NOT explain the
+  one hard object at ~0.985, which sits at 0.9846 in the golden's own regime (confirming
+  the existing "detector-seed limit, not a streaming defect" note). Wider gate green:
+  `test_sam3_parity.py` + `reference_efficientsam3/` = 10 passed, 1 xfailed, 16 skipped
+  (checkpoints absent), no XPASS, with only the pre-existing `test_encoder_parity` failing.
+
 ## Open (recommended order)
 
 1. **Pre-existing:** `tests/parity/test_sam3_parity.py::test_encoder_parity` (vision
@@ -168,15 +183,11 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
    golden / env drift. Recapture or retolerance. Re-confirmed by stash-and-rerun on
    **2026-08-17** (identical failure with a clean tree).
 2. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
-3. **Check the base video predictor's preprocessing** — `sam3_predictor.py:559` (base
-   video `forward`) calls `preprocess_to_1008` (the IMAGE regime) while the mux video
-   `forward` (`:1057`) calls `preprocess_to_1008_video`. Possibly the same class of
-   mismatch item 1 turned out to be; noticed 2026-08-18, unverified either way.
-4. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
+3. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
    `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
-5. **Stale doc:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 still claims
-   text+click co-seed, mid-stream add and box prompts raise `NotImplementedError`.
-   All three ship now (1a/1b/2a/2b). Pre-existing; not touched.
+4. **Stale docs:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 AND the README's
+   SAM 3.1 "Scope" paragraph still claim text+click co-seed, mid-stream add and box
+   prompts raise `NotImplementedError`. All three ship now (1a/1b/2a/2b).
 
 ### Closed by the `Emit` policy — the retroactive-reveal residue
 
