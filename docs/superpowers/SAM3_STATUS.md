@@ -1,11 +1,13 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration`, pushed to
-`origin/feat/sam3-integration`. Latest: geometry-prompt bit-exact parity, after the
-multi-concept retirement and the exemplar/VISUAL-slot one (`8dd1364`).
+**Branch:** `feat/sam3-integration`, NOT yet pushed (5 commits ahead of
+`origin/feat/sam3-integration`). Latest: the notebook/README refresh, after the base video
+box prompt, the golden recapture and the two preprocessing-regime fixes.
 **Last session:** 2026-08-18. **Read this first to resume.**
 
-**Next up:** open item 1, the pre-existing `test_encoder_parity` failure.
+**Next up:** open item 1, the box-seeded object's propagation drift — the only known
+divergence left. Everything else in the parity suite is green (68 passed, 16 skipped,
+1 xfailed, 0 failed).
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -276,6 +278,7 @@ MPLBACKEND=Agg pixi run -e notebooks pytest \
   tests/parity/test_sam3p1_modelfind_parity.py \
   tests/parity/test_sam3_box_prompt_parity.py \
   tests/parity/test_sam3p1_video_box_parity.py \
+  tests/parity/test_sam3_video_box_parity.py \
   tests/test_sam3p1_interactive_smoke.py tests/test_sam3p1_mux_growth.py \
   tests/test_geometry_encoder.py -q
 # then revert the pixi.lock churn: git checkout pixi.lock
@@ -321,13 +324,19 @@ detection stops matching them; tracking itself is not lost.
 
 - `sam/models/sam3_predictor.py` — predictors. Mux video `forward` (orchestration),
   `_seed_mux_state` / `_grow_mux_state` / `_seed_multiplex` / `_seed_points_multiplex`,
-  `_detector_add` / `_clicks_add`, `_detect(concept, geo=)`, `_placeholder_concept`,
-  `_purge_removed`, module fns `select_emitted` (output policy + empty-mask drop +
-  `tracklet_state` stamp) / `_build_mux_point_inputs` / `_pack_geometry`.
+  `_detector_add` / `_clicks_add`, `_detect(concept, geo=)`, `_placeholder_concept`
+  (per-lineage `BOX_ONLY_CAPTION`), `_concept_for_detection` (box-only sessions adopt that
+  caption so detection keeps running), `_split_and_pack_geometry` + `LIFECYCLE` (both on the
+  BASE class, shared with the mux), `_purge_removed`, module fns `select_emitted` (output
+  policy + empty-mask drop + `tracklet_state` stamp) / `_build_mux_point_inputs` /
+  `_pack_geometry` / `_normalized_points`.
 - `sam/modeling/tracking/sam3_multiplex_tracker.py` — `track_step`,
   `add_new_masks_to_existing_state`, `masks_from_points`, `_interactive_high_res_features`.
 - `sam/modeling/association/tracklet.py` — `TrackletManager` (hotstart kill +
-  keep-alive suppress; `removed/alive/visible/managed_ids`). `step()` is driven by
+  keep-alive suppress; `removed/alive/visible/managed_ids`). Its constructor defaults are
+  the MULTIPLEX lineage's; each predictor applies its own constants via `configure()` from
+  its `LIFECYCLE` dict on the state's first frame (the base lineage disables confirmation
+  and starts keep-alive at 30). `step()` is driven by
   `_advance_lifecycle` in the predictor, which runs on EVERY frame — including
   frames with no detection pass (all managed tracklets count as unmatched then).
   Only *managed* ids step: click-seeded objects are intentionally never registered,
