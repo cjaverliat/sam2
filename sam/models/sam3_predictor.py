@@ -196,14 +196,10 @@ def _build_mux_point_inputs(prompts, video_hw, image_size, device):
         ``(point_inputs, obj_ids)`` where ``point_inputs`` has ``point_coords``
         ``(n, P, 2)`` float and ``point_labels`` ``(n, P)`` int32.
     """
-    height, width = video_hw
-    scale = torch.tensor([width, height], device=device, dtype=torch.float32)
     obj_ids, per_coords, per_labels = [], [], []
     for prompt in prompts:
         obj_ids.append(prompt.obj_id)
-        coords = prompt.points_coords.to(device).float()
-        coords = coords if prompt.is_normalized else coords / scale
-        per_coords.append(coords * image_size)
+        per_coords.append(_normalized_points(prompt, video_hw, device) * image_size)
         per_labels.append(prompt.points_labels.to(device).to(torch.int32))
     max_points = max(labels.shape[0] for labels in per_labels)
     n = len(prompts)
@@ -213,6 +209,15 @@ def _build_mux_point_inputs(prompts, video_hw, image_size, device):
         coords[i, : obj_coords.shape[0]] = obj_coords
         labels[i, : obj_labels.shape[0]] = obj_labels
     return {"point_coords": coords, "point_labels": labels}, obj_ids
+
+
+def _normalized_points(prompt, image_hw, device):
+    """``prompt.points_coords`` as ``(N, 2)`` in ``[0, 1]``, honouring ``is_normalized``."""
+    coords = prompt.points_coords.to(device).float()
+    if prompt.is_normalized:
+        return coords
+    height, width = image_hw
+    return coords / torch.tensor([width, height], device=device)
 
 
 def _pack_geometry(prompt, image_hw, device):
@@ -233,9 +238,7 @@ def _pack_geometry(prompt, image_hw, device):
     h, w = image_hw
     geo = {}
     if prompt.points_coords is not None:
-        c = prompt.points_coords.to(device).float()
-        c = c if prompt.is_normalized else c / torch.tensor([w, h], device=device)
-        geo["point_coords"] = c[:, None, :]
+        geo["point_coords"] = _normalized_points(prompt, image_hw, device)[:, None, :]
         geo["point_labels"] = prompt.points_labels.to(device)[:, None]
     if prompt.boxes is not None:
         b = prompt.boxes.to(device).float()
@@ -881,16 +884,11 @@ class Sam3VideoPredictor(nn.Module):
         prompt = prompt.to(device)
 
         point_inputs = None
-        coords_list, labels_list = [], []
         if prompt.points_coords is not None:
-            c = prompt.points_coords.float()
-            c = c if prompt.is_normalized else c / torch.tensor([W, H], device=device)
-            coords_list.append(c * self.tracker.image_size)
-            labels_list.append(prompt.points_labels.to(device))
-        if coords_list:
+            coords = _normalized_points(prompt, (H, W), device) * self.tracker.image_size
             point_inputs = {
-                "point_coords": torch.cat(coords_list, dim=0)[None],
-                "point_labels": torch.cat(labels_list, dim=0)[None],
+                "point_coords": coords[None],
+                "point_labels": prompt.points_labels.to(device)[None],
             }
 
         mask_inputs = None
