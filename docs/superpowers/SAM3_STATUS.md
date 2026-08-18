@@ -55,6 +55,23 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   frame), so every golden-measuring test now sets `pred.emit = Emit.VISIBLE`; the
   `CONFIRMED` default is covered by `tests/test_emit_modes.py` (CPU).
 
+- **Session API + named prompt constructors (2026-08-18)** — the user-facing surface,
+  designed in-chat (proposals A+B combined, `Box`/`ConceptBox` naming discussion).
+  `GeometryPrompt` gained classmethods `click` / `box` / `mask` / `concept_box` taking
+  plain tuples/lists/ndarrays (`concept_box` = the DETECTOR route, named for its
+  contract; `label=0` for negative). Both video predictors (and `Sam2VideoPredictor`)
+  gained `start_session(concept=..., video_hw=None)` returning a
+  `sam/models/video_session.py::VideoSession`: owns the state (`session.state`), counts
+  frames (`frame_idx=` overrides, counter resumes after), declares the concept at birth
+  (str, `ConceptPrompt`, or `PLACEHOLDER` sentinel for the box-only caption -- concept
+  is session-scoped and immutable, so a constructor argument encodes the real
+  constraint). Sessions add NO model logic: one `forward` call per session call, tested
+  pixel-identical to the explicit loop (`tests/test_video_session.py`); the
+  `forward`/state form stays public and the parity tests stay on it. Notebook and
+  README examples migrated (sessions named by role: `person_session`,
+  `interactive_session`, `hint_session`; results are `masklets`).
+  Tests: `tests/test_geometry_prompt_constructors.py` (CPU), `tests/test_video_session.py`.
+
 - **Explicit box routing + explicit detection opt-in (2026-08-18)** — a DELIBERATE API
   divergence from upstream, on the user's call; behaviour after the explicit call is
   unchanged, and every golden still passes.
