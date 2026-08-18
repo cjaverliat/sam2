@@ -27,6 +27,14 @@ This fork keeps the original SAM 2 models and weights bit-for-bit, and adds:
   - [Custom memory bank](#custom-memory-bank)
   - [ONNX / TensorRT inference](#onnx--tensorrt-inference)
 - [EfficientTAM](#efficienttam)
+- [SAM 3](#sam-3--concept-segmentation)
+  - [Image — detect all instances of a concept](#image--detect-all-instances-of-a-concept)
+  - [Streaming video — track a concept across frames](#streaming-video--track-a-concept-across-frames)
+  - [SAM 3.1 (multiplex)](#sam-31-multiplex--up-to-16-objects-in-one-joint-forward-pass)
+  - [Geometry prompts — boxes and clicks](#geometry-prompts--boxes-and-clicks)
+  - [Adding objects mid-stream](#adding-objects-mid-stream)
+  - [Output policy — when a tracked object becomes visible](#output-policy--when-a-tracked-object-becomes-visible)
+  - [Several concepts at once](#several-concepts-at-once)
 - [EfficientSAM3](#efficientsam3--lightweight-concept-segmentation)
 - [Benchmarks](#benchmarks)
 - [License](#license)
@@ -283,7 +291,7 @@ Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam
 
 ## SAM 3 — Concept Segmentation
 
-SAM 3 segments by **concept** (a text phrase) rather than by clicks or boxes. Build with `build_sam3` (image) or `build_sam3_video_predictor` (streaming video); the API mirrors SAM 2's predictor (encode once, run per frame). SAM 3 weights are access-gated — request via [Meta AI](https://ai.meta.com/sam) and download with:
+SAM 3 segments by **concept**: a text phrase, a box, or a click — every instance of it, tracked across a video. Build with `build_sam3` (image) or `build_sam3_video_predictor` (streaming video); the API mirrors SAM 2's predictor (encode once, run per frame). SAM 3 weights are access-gated — request via [Meta AI](https://ai.meta.com/sam) and download with:
 
 ```bash
 pixi run download-sam3       # sam3.pt
@@ -338,7 +346,7 @@ Per-object memory is managed by the internal `ForgetfulObjectMemoryBank` (non-co
 
 SAM 3.1 packs all tracked objects into one joint forward via `build_sam3_multiplex` (image) and `build_sam3_multiplex_video_predictor` (video). The calling API is **identical** to base SAM 3; mux/demux is internal to the tracker.
 
-**Scope:** the multiplex video predictor supports concept-seeded multi-object tracking with a fixed bucket set — all instances must be detected on the seed frame and co-tracked thereafter. Mid-stream instance spawn and geometry prompts (`GeometryPrompt`) are not yet supported; use the base SAM 3 (`build_sam3_video_predictor`) for those use-cases. VRAM stays bounded because the joint bucket-space spatial memory is threaded internally (not via the per-object `ObjectMemoryBank`) and non-conditional frames outside the 7-frame forgetful window are pruned.
+**Scope:** the multiplex video predictor tracks up to K=16 objects jointly and supports the same prompts as the base predictor — concept text, seed-frame and mid-stream clicks, box prompts, and mid-stream instance spawn (see the sections below). Mask prompts raise `NotImplementedError`: neither checkpoint ships `mask_encoder` weights. VRAM stays bounded because the joint bucket-space spatial memory is threaded internally (not via the per-object `ObjectMemoryBank`) and non-conditional frames outside the 7-frame forgetful window are pruned.
 
 ```python
 from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor
@@ -361,6 +369,109 @@ for frame_idx, frame in enumerate(frames):
     results = video_predictor.forward(state, frame_idx, frame)
     masks = {obj_id: (r.masks_logits > 0) for obj_id, r in results.items()}
 ```
+
+### Geometry prompts — boxes and clicks
+
+A `GeometryPrompt` carries boxes and/or point clicks for one object id. Coordinates are in
+video/image pixels by default; pass `is_normalized=True` for `[0, 1]` coordinates. Mask
+prompts are rejected — neither checkpoint ships `mask_encoder` weights.
+
+On an **image**, a box biases the detection of the text concept (upstream's
+`add_geometric_prompt`). `boxes_labels` gives each box a sign: `1` positive (the default when
+omitted), `0` negative — "not this one", which drops the enclosed detection.
+
+```python
+import torch
+from sam.prompts import ConceptPrompt, GeometryPrompt
+
+box = GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]))
+result = image_predictor.predict(image, ConceptPrompt("person"), geometry=box)
+
+# "everything matching the concept EXCEPT this one"
+neg = GeometryPrompt(
+    obj_id=1,
+    boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]),
+    boxes_labels=torch.tensor([0]),
+)
+```
+
+On **video**, geometry prompts are passed per frame, and the two kinds take different routes —
+the same split upstream makes. A **box** goes to the detector's geometric slot: it biases that
+frame's detection, and the boxed instance seeds a tracklet through the normal association
+path. A **click** goes to the tracker's prompt encoder and seeds an object directly, which is
+interactive VOS. Neither needs a text concept:
+
+```python
+state = Sam3VideoPredictorState(video_hw=(height, width))
+video_predictor.set_concept(state, ConceptPrompt("person"))  # optional for click-only
+
+for frame_idx, frame in enumerate(frames):
+    prompts = []
+    if frame_idx == 0:
+        prompts = [
+            GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]])),
+            GeometryPrompt(
+                obj_id=2,
+                points_coords=torch.tensor([[640.0, 300.0]]),
+                points_labels=torch.tensor([1]),   # 1 = foreground, 0 = background
+            ),
+        ]
+    results = video_predictor.forward(state, frame_idx, frame, geometry_prompts=prompts)
+```
+
+Click-seeded objects are deliberately exempt from the detector's tracklet lifecycle (upstream
+runs click-only sessions through partial propagation), so they are never killed by the
+hotstart rule and are always emitted. A box-only session has no concept text, so the predictor
+encodes the placeholder caption its lineage uses (`"visual"` for base SAM 3,
+`"<text placeholder>"` for the 3.1 multiplex) and keeps detecting with it on every later
+frame — matching upstream, which writes that text id into all frames.
+
+### Adding objects mid-stream
+
+Prompts are not restricted to frame 0 — passing a `GeometryPrompt` on any later frame adds
+that object to the running state, alongside whatever the detector spawns on its own. An object
+that leaves the frame and comes back keeps its original id (tracklet re-identification;
+upstream has no re-association and would issue a new id).
+
+### Output policy — when a tracked object becomes visible
+
+Every alive tracklet is propagated and keeps its memory regardless of policy; `emit` only
+selects what `forward` returns, and empty masks are always dropped.
+
+```python
+from sam.results import Emit
+
+video_predictor.emit = Emit.CONFIRMED  # default: matched by a detection 3 frames running
+video_predictor.emit = Emit.VISIBLE    # alive and not suppressed — what upstream's goldens show
+video_predictor.emit = Emit.ALIVE      # every tracklet, suppressed ones included
+
+for obj_id, r in results.items():
+    r.tracklet_state   # each result carries its lifecycle state, for your own policy
+```
+
+`CONFIRMED` is causal: a one-frame detector false positive never reaches the caller, at the
+cost of an object's first frames. Upstream decides visibility non-causally (it buffers 15
+frames of output), which a streaming predictor cannot reproduce.
+
+### Several concepts at once
+
+Use one state per concept and merge with an id offset. Upstream's own multi-concept path does
+exactly this — it loops the phrases, propagates the whole video per phrase, and offsets the
+ids — so concepts never share association or memory:
+
+```python
+states = {c: Sam3VideoPredictorState(video_hw=(height, width)) for c in ("person", "dog")}
+for concept, state in states.items():
+    video_predictor.set_concept(state, ConceptPrompt(concept))
+
+for frame_idx, frame in enumerate(frames):
+    per_concept = {
+        c: video_predictor.forward(s, frame_idx, frame) for c, s in states.items()
+    }
+```
+
+A worked end-to-end walkthrough of all of the above lives in
+[`notebooks/sam3_video_predictor_example.ipynb`](notebooks/sam3_video_predictor_example.ipynb).
 
 ---
 

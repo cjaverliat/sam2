@@ -193,14 +193,55 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   0 failed**. Fixture deltas from the refresh were small (boxes 0.024px, scores 3.9e-3,
   presence 2.1e-3; `text_emb` unchanged — the text tower is env-stable).
 
+- **Base video box prompt (2026-08-18)** — closes the "mirror 2b on base" item, and turned up
+  two lineage differences we had been applying the multiplex's answer to.
+  Boxes previously went to the SAM 2 tracker as corner points (labels 2/3); upstream never
+  does that — `sam3_video_inference._get_visual_prompt` (181-222) stores the first box on a
+  fresh frame as that frame's GEOMETRIC prompt, so it biases DETECTION and the boxed instance
+  seeds a tracklet through association, exactly like the mux path. (`visual_prompt_embed`
+  stays None there — the helper's "visual prompt" name is about UI provenance, not the VISUAL
+  slot, so it does not disturb the exemplar finding.)
+  1. **Caption.** A box-only `add_prompt` takes the `else` branch and selects
+     `TEXT_ID_FOR_VISUAL` (`sam3_video_inference.py:868-876`), i.e. the encoded caption is
+     `find_text_batch[1]` = the literal **`"visual"`** — NOT the multiplex's
+     `"<text placeholder>"` (`sam3_multiplex_tracking.py:1698-1705` has no else branch, so its
+     `text_ids` stay 0). With the wrong caption frame 0 finds 1 detection instead of 2 and the
+     seed mask sits at IoU 0.64; with the right one, 0.9854 and scores 0.906/0.523 against
+     upstream's 0.906/0.524. Now a per-lineage `BOX_ONLY_CAPTION`.
+  2. **Every-frame detection.** `add_prompt` writes that text id into EVERY frame's
+     `find_inputs`, so a box-only session keeps detecting after the prompt frame instead of
+     propagating blind. `_concept_for_detection` adopts the placeholder into the state.
+  3. **Lifecycle.** `TrackletManager`'s defaults are the MULTIPLEX class defaults
+     (`sam3_multiplex_base.py:228-230`, keep-alive 0/8/-4) plus the demo builder's
+     `masklet_confirmation_enable=True`; the base video builder uses **30/30/-1 with
+     confirmation disabled** (`model_builder.py:746-762`). We were applying the mux constants
+     to both lineages, which hid both objects from frame 1. `TrackletManager` gained
+     `confirmation_enable` + `configure()`, and each predictor declares its own `LIFECYCLE`,
+     applied on the state's first frame (the caller builds the state and cannot know the
+     lineage).
+  Golden: `capture_sam3_video_box_golden.py` (base `build_sam3_video_model`, bedroom, 8
+  frames) -> `fixtures/sam3/video_box.npz`; gate `tests/parity/test_sam3_video_box_parity.py`
+  asserts the object count every frame, the frame-0 seed mask (>= 0.95) and the static
+  object (>= 0.99). The moving object's propagation drift is open item 1.
+
 ## Open (recommended order)
 
-1. **Base (`sam3.pt`) video box prompt** — 2b targeted the mux path; mirror on base.
-3. **Minor cleanups** (low value): point-normalization dup across `_pack_geometry` /
-   `_build_mux_point_inputs`; small scale-tensor rebuilds on prompt frames.
-4. **Stale docs:** `notebooks/sam3_video_predictor_example.ipynb` cell 0 AND the README's
-   SAM 3.1 "Scope" paragraph still claim text+click co-seed, mid-stream add and box
-   prompts raise `NotImplementedError`. All three ship now (1a/1b/2a/2b).
+1. **Box-seeded object drifts while propagating (base lineage)** — the ONE ungated part of
+   the base video box work. Per-frame IoU of the moving box-seeded object vs the golden:
+   0.985, 0.943, 0.744, 0.670, 0.842, 0.741, 0.370, 0.844 (mean 0.88). Bounded diagnosis:
+   NOT base propagation in general (same predictor, same 8 bedroom frames, TEXT concept
+   "person" -> min IoU **0.9960** / mean 0.9980 vs an upstream control capture), NOT
+   detection (frame-0 scores 0.906/0.523 vs upstream 0.906/0.524, seed mask IoU 0.9854),
+   NOT the lifecycle (object counts match every frame). Enabling the tracker's
+   `use_memory_selection` — upstream's `apply_temporal_disambiguation=True`, which our
+   forgetful bank otherwise supersedes (`build_sam.py:1124`) — recovers only part of it
+   (mean 0.88 -> 0.91), so it is not the whole story either. Next suspects: upstream's
+   `clear_non_cond_mem_around_input=True` (we have no equivalent) and the base model's
+   `fill_hole_area=16`. The control capture script is
+   `scratchpad/probe_text_bedroom.py`-style: `capture_sam3_video_box_golden.py` with
+   `text_str="person"` instead of the box args.
+2. **Minor cleanups** (low value): small scale-tensor rebuilds on prompt frames. (The
+   point-normalization dup is done — `_normalized_points`.)
 
 ### Closed by the `Emit` policy — the retroactive-reveal residue
 
