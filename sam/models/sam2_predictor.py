@@ -723,6 +723,19 @@ class Sam2VideoPredictor(Sam2Predictor):
 
     Note: works in a forward-only manner.
     """
+    def start_session(self, video_hw: tuple[int, int] | None = None):
+        """A :class:`~sam.models.video_session.VideoSession` over this predictor.
+
+        The session owns its state and frame counter; call it once per frame with
+        optional ``prompts``. ``video_hw`` is inferred from the first frame when
+        omitted. SAM 2 has no concept -- sessions are always interactive.
+        """
+        from sam.models.video_session import VideoSession
+
+        return VideoSession(
+            self, lambda hw: Sam2VideoPredictorState(video_hw=hw), video_hw=video_hw,
+        )
+
     def forward(
         self,
         state: Sam2VideoPredictorState,

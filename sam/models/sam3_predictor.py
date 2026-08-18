@@ -675,6 +675,40 @@ class Sam3VideoPredictor(nn.Module):
         vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
         return vis, vpos, feat_sizes
 
+    # Sentinel for start_session(concept=...): "run detection under the box-only caption".
+    PLACEHOLDER = object()
+
+    def start_session(self, concept=None, video_hw: tuple[int, int] | None = None):
+        """A :class:`~sam.models.video_session.VideoSession` over this predictor.
+
+        The session owns its state and frame counter; call it once per frame. The
+        concept is declared here, at birth, because it is session-scoped and
+        immutable (it must be set before the first frame and never changes).
+
+        Args:
+            concept: what detection should find -- a phrase (str or
+                :class:`ConceptPrompt`), :attr:`PLACEHOLDER` for the box-only
+                caption, or None for a purely interactive session (detection off).
+            video_hw: the video's ``(height, width)``; inferred from the first
+                frame when omitted.
+
+        Returns:
+            An independent session; hold several over one model and interleave.
+        """
+        from sam.models.video_session import VideoSession
+
+        on_state = None
+        if concept is self.PLACEHOLDER:
+            on_state = self.set_placeholder_concept
+        elif concept is not None:
+            if isinstance(concept, str):
+                concept = ConceptPrompt(concept)
+            on_state = lambda st: self.set_concept(st, concept)
+        return VideoSession(
+            self, lambda hw: Sam3VideoPredictorState(video_hw=hw),
+            video_hw=video_hw, on_state=on_state,
+        )
+
     def set_placeholder_concept(self, state: Sam3VideoPredictorState) -> None:
         """Run detection under this lineage's box-only caption (:attr:`BOX_ONLY_CAPTION`).
 

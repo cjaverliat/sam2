@@ -84,6 +84,52 @@ class GeometryPrompt:
         self.is_normalized = is_normalized
         self.box_route = box_route
 
+    @classmethod
+    def click(cls, obj_id: int, xy, label: int = 1) -> GeometryPrompt:
+        """A single point click at pixel ``xy = (x, y)``; ``label`` 1 positive, 0 negative."""
+        coords = torch.as_tensor(xy, dtype=torch.float32).reshape(-1)
+        if coords.numel() != 2:
+            raise ValueError(f"click expects an (x, y) pair, got {tuple(coords.shape)}")
+        return cls(
+            obj_id=obj_id,
+            points_coords=coords.reshape(1, 2),
+            points_labels=torch.tensor([label], dtype=torch.int32),
+        )
+
+    @classmethod
+    def box(cls, obj_id: int, xyxy) -> GeometryPrompt:
+        """A tracker box (interactive VOS): seeds ONE object from pixel ``xyxy``."""
+        coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
+        if coords.numel() != 4:
+            raise ValueError(f"box expects (xmin, ymin, xmax, ymax), got {tuple(coords.shape)}")
+        return cls(obj_id=obj_id, boxes=coords.reshape(1, 4))
+
+    @classmethod
+    def concept_box(cls, obj_id: int, xyxy, label: int = 1) -> GeometryPrompt:
+        """A detector box (SAM 3): biases the concept search on this frame.
+
+        Needs a concept on the session (``set_concept`` / ``set_placeholder_concept`` /
+        ``start_session(concept=...)``). ``label`` 1 keeps the boxed instance positive;
+        0 means "everything matching the concept EXCEPT this one".
+        """
+        coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
+        if coords.numel() != 4:
+            raise ValueError(f"concept_box expects (xmin, ymin, xmax, ymax), got {tuple(coords.shape)}")
+        return cls(
+            obj_id=obj_id,
+            boxes=coords.reshape(1, 4),
+            boxes_labels=None if label == 1 else torch.tensor([label]),
+            box_route=BoxRoute.DETECTOR,
+        )
+
+    @classmethod
+    def mask(cls, obj_id: int, mask) -> GeometryPrompt:
+        """A mask prompt from an ``(H, W)`` boolean mask or float logits."""
+        m = torch.as_tensor(mask)
+        if m.dtype == torch.bool:
+            m = m.float() * 20.0 - 10.0  # binarising at 0 recovers the input
+        return cls(obj_id=obj_id, masks_logits=m.float())
+
     @property
     def to_detector(self) -> bool:
         """Whether this prompt carries a box bound for the detector's geometric slot."""
