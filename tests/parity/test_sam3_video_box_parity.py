@@ -78,7 +78,7 @@ def test_video_box_prompt_parity(determinism_no_det_algos):
 
     # golden object 0 is the boxed (moving) person, object 1 the near-static one
     for i, frame in enumerate(frames):
-        out = pred.forward(st, i, frame, geometry_prompts=[box] if i == 0 else [])
+        out = pred.forward(st, i, frame, prompts=[box] if i == 0 else [])
         g_ids = [int(v) for v in g[f"frame{i}_obj_ids"]]
         mine = [(r.masks_logits[0, 0] > 0).cpu().numpy() for r in out.values()]
         assert len(mine) == len(g_ids), (

@@ -73,7 +73,7 @@ def test_interactive_click_tracks_whole_clip(determinism_no_det_algos):
 
     ious = []
     for i, frame in enumerate(frames):
-        out = pred.forward(st, i, frame, geometry_prompts=[click] if i == 0 else [])
+        out = pred.forward(st, i, frame, prompts=[click] if i == 0 else [])
         assert list(g[f"frame{i}_obj_ids"]) == [obj_id], (
             f"golden frame {i} is not the single-object scenario this test assumes"
         )

@@ -71,7 +71,7 @@ def test_video_box_prompt_seed_parity():
     box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32))
 
     for i, fr in enumerate(frames):
-        out = pred.forward(st, i, fr, geometry_prompts=[box] if i == 0 else [])
+        out = pred.forward(st, i, fr, prompts=[box] if i == 0 else [])
         g_ids = g[f"frame{i}_obj_ids"]
         if len(g_ids) == 0:
             # Upstream hides the object here; so must we (see the module docstring).

@@ -47,7 +47,7 @@ def test_interactive_seed_click_parity():
         points_labels=torch.tensor([scenario["label"]]),
     )
     for i, fr in enumerate(frames):
-        out = pred.forward(st, i, fr, geometry_prompts=[click] if i == 0 else [])
+        out = pred.forward(st, i, fr, prompts=[click] if i == 0 else [])
         oid = scenario["obj_id"]
         assert oid in out, f"frame {i}: object {oid} lost"
         pred_mask = (out[oid].masks_logits[0, 0] > 0).cpu().numpy()

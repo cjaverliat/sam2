@@ -313,4 +313,4 @@ def test_sam3p1_video_rejects_mask_prompts():
     gp = GeometryPrompt(obj_id=0, masks_logits=torch.zeros(288, 512))
 
     with pytest.raises(NotImplementedError, match="mask"):
-        pred.forward(state, frame_idx=0, frame=None, geometry_prompts=[gp])
+        pred.forward(state, frame_idx=0, frame=None, prompts=[gp])

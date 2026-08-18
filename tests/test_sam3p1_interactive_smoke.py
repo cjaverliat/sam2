@@ -61,7 +61,7 @@ def test_video_box_prompt_spawns_then_suppresses_while_unmatched():
     h, w, _ = frames[0].shape
     st = _state((h, w))
     box = GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]))
-    out0 = pred.forward(st, 0, frames[0], geometry_prompts=[box])   # box, no text concept
+    out0 = pred.forward(st, 0, frames[0], prompts=[box])   # box, no text concept
     assert len(out0) >= 1                              # detector found the boxed person(s)
     seeded = set(out0)
     out1 = pred.forward(st, 1, frames[1])              # tracked, but suppressed
@@ -77,7 +77,7 @@ def test_video_mask_prompt_still_raises():
     m = GeometryPrompt(obj_id=1, masks_logits=torch.zeros(540, 960))
     frame = np.zeros((540, 960, 3), dtype=np.uint8)
     with pytest.raises(NotImplementedError, match="mask"):
-        pred.forward(st, 0, frame, geometry_prompts=[m])
+        pred.forward(st, 0, frame, prompts=[m])
 
 
 @needs_gpu
@@ -86,7 +86,7 @@ def test_seed_frame_click_spawns_and_tracks():
     frames = _bedroom(3)
     h, w, _ = frames[0].shape
     st = _state((h, w))
-    out0 = pred.forward(st, 0, frames[0], geometry_prompts=[_click(1, (385.0, 230.0))])
+    out0 = pred.forward(st, 0, frames[0], prompts=[_click(1, (385.0, 230.0))])
     assert set(out0) == {1}
     assert out0[1].masks_logits.shape[-2:] == (h, w)
     assert (out0[1].masks_logits > 0).sum() > 0
@@ -100,10 +100,10 @@ def test_midstream_click_add_second_object():
     frames = _bedroom(4)
     h, w, _ = frames[0].shape
     st = _state((h, w))
-    pred.forward(st, 0, frames[0], geometry_prompts=[_click(1, (385.0, 230.0))])
+    pred.forward(st, 0, frames[0], prompts=[_click(1, (385.0, 230.0))])
     pred.forward(st, 1, frames[1])
     # add a SECOND object mid-stream via a click
-    out2 = pred.forward(st, 2, frames[2], geometry_prompts=[_click(2, (600.0, 300.0))])
+    out2 = pred.forward(st, 2, frames[2], prompts=[_click(2, (600.0, 300.0))])
     assert set(out2) == {1, 2}                       # both now tracked
     out3 = pred.forward(st, 3, frames[3])
     assert set(out3) == {1, 2}                       # both propagate forward
@@ -117,5 +117,5 @@ def test_coseed_concept_plus_click():
     st = _state((h, w))
     pred.set_concept(st, ConceptPrompt("person"))
     # concept detects the people; the click adds one more object on the SAME frame
-    out0 = pred.forward(st, 0, frames[0], geometry_prompts=[_click(99, (600.0, 300.0))])
+    out0 = pred.forward(st, 0, frames[0], prompts=[_click(99, (600.0, 300.0))])
     assert 99 in out0 and len(out0) >= 2             # detector persons + the clicked obj

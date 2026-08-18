@@ -568,7 +568,7 @@ class Sam3VideoPredictor(nn.Module):
         state: Sam3VideoPredictorState,
         frame_idx: int,
         frame,
-        geometry_prompts: list[GeometryPrompt] = [],
+        prompts: list[GeometryPrompt] = [],
     ) -> dict[int, MaskletResult]:
         device = self.device
         H, W = state.video_hw
@@ -585,8 +585,8 @@ class Sam3VideoPredictor(nn.Module):
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)
 
-            box_geo, point_prompts = self._split_and_pack_geometry(
-                geometry_prompts or [], (H, W), device
+            box_geo, tracker_prompts = self._split_and_pack_geometry(
+                prompts or [], (H, W), device
             )
             concept = self._concept_for_detection(state, box_geo)
 
@@ -623,10 +623,10 @@ class Sam3VideoPredictor(nn.Module):
                     det.masks_logits[det_idx], num_frames,
                 )
 
-            # 5) route point clicks to the tracker (new obj_id -> spawn, existing -> refine);
-            # boxes already went through the detector's geometric slot in step 2
+            # 5) route clicks and masks to the tracker (new obj_id -> spawn, existing ->
+            # refine); boxes already went through the detector's geometric slot in step 2
             geom_results: dict[int, MaskletResult] = {}
-            for prompt in point_prompts:
+            for prompt in tracker_prompts:
                 oid, out = self._apply_geometry_prompt(
                     state, frame_idx, prompt, vis, vpos, feat_sizes, num_frames
                 )
@@ -702,11 +702,31 @@ class Sam3VideoPredictor(nn.Module):
             state.concept = self._placeholder_concept()
         return state.concept
 
-    def _split_and_pack_geometry(self, geometry_prompts, hw, device):
-        """Split prompts into a packed box-geo dict (biases detection via the
-        GEOMETRIC slot) and the list of point prompts (interactive click path)."""
-        box_prompts = [p for p in geometry_prompts if p.boxes is not None]
-        point_prompts = [p for p in geometry_prompts if p.points_coords is not None]
+    def _split_and_pack_geometry(self, prompts, hw, device):
+        """Split prompts by the route they take through the model.
+
+        Boxes bias detection through the DETR geometric slot; points and masks seed or
+        refine an object through the tracker's prompt encoder. A prompt carrying both a
+        box and a mask asks for the detector's mask slot, which has no weights in either
+        checkpoint.
+
+        Args:
+            prompts: this frame's :class:`GeometryPrompt` list.
+            hw: ``(height, width)`` of the video, for normalizing box/point coords.
+            device: device to build the packed tensors on.
+
+        Returns:
+            ``(box_geo, tracker_prompts)``: the packed geometric-slot dict (or None),
+            and the prompts to route to the tracker.
+
+        Raises:
+            NotImplementedError: if a prompt pairs a mask with a box.
+        """
+        box_prompts = [p for p in prompts if p.boxes is not None]
+        tracker_prompts = [
+            p for p in prompts
+            if p.points_coords is not None or p.masks_logits is not None
+        ]
         box_geo = None
         if box_prompts:
             packed = [_pack_geometry(p, hw, device) for p in box_prompts]
@@ -714,7 +734,7 @@ class Sam3VideoPredictor(nn.Module):
                 "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
                 "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
             }
-        return box_geo, point_prompts
+        return box_geo, tracker_prompts
 
     def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
         """Run the DETR detector at the tracker's low-res mask grid (squashed space).
@@ -1120,11 +1140,11 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         state: Sam3VideoPredictorState,
         frame_idx: int,
         frame,
-        geometry_prompts: list[GeometryPrompt] | None = None,
+        prompts: list[GeometryPrompt] | None = None,
     ) -> dict[int, MaskletResult]:
-        geometry_prompts = geometry_prompts or []
-        if geometry_prompts:
-            self._check_mux_geometry(geometry_prompts)
+        prompts = prompts or []
+        if prompts:
+            self._check_mux_geometry(prompts)
         device = self.device
         H, W = state.video_hw
         if not state.started:
@@ -1141,7 +1161,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             )
             num_frames = frame_idx + 1
             box_geo, point_prompts = self._split_and_pack_geometry(
-                geometry_prompts, (H, W), device
+                prompts, (H, W), device
             )
             concept = self._concept_for_detection(state, box_geo)
 
@@ -1296,14 +1316,18 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         return self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
 
     @staticmethod
-    def _check_mux_geometry(geometry_prompts) -> None:
-        """Validate geometry prompts: points and boxes are supported; masks are not
-        (no ``mask_encoder`` weights in either checkpoint)."""
-        for prompt in geometry_prompts:
+    def _check_mux_geometry(prompts) -> None:
+        """Validate this lineage's prompts: points and boxes are supported, masks are not.
+
+        The multiplex seeds objects through ``_seed_mux_state`` / ``_grow_mux_state``,
+        which take point inputs from a user prompt and masks only from the detector, so
+        there is no route for a caller's mask here (the base lineage does support one).
+        """
+        for prompt in prompts:
             if prompt.masks_logits is not None:
                 raise NotImplementedError(
-                    "mask geometry prompts are unsupported (no mask_encoder weights); "
-                    "use box or point prompts"
+                    "mask prompts are unsupported on the multiplex lineage; use the base "
+                    "video predictor for a mask prompt, or prompt with points/boxes"
                 )
             if prompt.boxes is None and prompt.points_coords is None:
                 raise ValueError("geometry prompt has neither points nor boxes")
