@@ -1,0 +1,14 @@
+{
+  "frame0_click_xy": [
+    385.0,
+    230.0
+  ],
+  "label": 1,
+  "obj_id": 2,
+  "num_frames": 30,
+  "hw": [
+    540,
+    960
+  ],
+  "frames_dir": "notebooks/videos/bedroom"
+}

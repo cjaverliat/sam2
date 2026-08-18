@@ -902,8 +902,9 @@ class Sam3VideoPredictor(nn.Module):
 
         if is_new:
             output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
-            state.tracklet_mgr.spawn(obj_id, frame_idx)
+            state.tracklet_mgr.spawn(obj_id, frame_idx, interactive=True)
         else:
+            state.tracklet_mgr.force_confirm(obj_id)
             sel = state.bank.select_memories(
                 obj_ids=[obj_id], current_frame_idx=frame_idx,
                 max_conditional_memories=-1,

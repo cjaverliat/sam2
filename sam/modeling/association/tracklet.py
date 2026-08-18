@@ -40,6 +40,7 @@ class _TrackletInfo:
     unmatched_count: int = 0         # consecutive frames without a det match
     keep_alive: int = 0              # suppress hysteresis (visible when > 0)
     removed: bool = False            # purged (within-hotstart failure / user removal)
+    interactive: bool = False        # user-clicked: exempt from the hotstart kill
 
 
 class TrackletManager:
@@ -126,9 +127,20 @@ class TrackletManager:
         self.max_keep_alive = max_keep_alive
         self.min_keep_alive = min_keep_alive
 
-    def spawn(self, obj_id: int, frame_idx: int) -> None:
+    def spawn(self, obj_id: int, frame_idx: int, interactive: bool = False) -> None:
         """Register a new tracklet born on ``frame_idx`` (PENDING, or CONFIRMED when
-        the confirmation gate is disabled)."""
+        the confirmation gate is disabled).
+
+        Args:
+            obj_id: id of the new tracklet.
+            frame_idx: birth frame (starts the hotstart window).
+            interactive: the tracklet was seeded by a user click, which upstream
+                force-confirms and never treats as a purge candidate -- see
+                :meth:`force_confirm`.
+
+        Raises:
+            ValueError: if ``obj_id`` is already registered.
+        """
         if obj_id in self._tracks:
             raise ValueError(
                 f"tracklet {obj_id!r} already registered; "
@@ -142,6 +154,28 @@ class TrackletManager:
             ),
             keep_alive=self.init_keep_alive,
         )
+        if interactive:
+            self.force_confirm(obj_id)
+
+    def force_confirm(self, obj_id: int) -> None:
+        """Confirm a tracklet on a user click and exempt it from the hotstart kill.
+
+        Upstream's ``add_tracker_new_points`` sets the object's
+        ``masklet_confirmation`` status to 1 and its ``consecutive_det_num`` to the
+        threshold (``sam3_video_inference.py:1522-1531``), and its hotstart purge only
+        ever considers ids the DETECTOR registered (``_process_hotstart`` walks
+        ``unmatched_frame_inds``, keyed from ``new_det_obj_ids``). A clicked object is
+        therefore confirmed at once and never removed for going unmatched -- which
+        matters most in a click-only session, where detection never runs and so
+        nothing can ever match it.
+        """
+        info = self._tracks[obj_id]
+        info.interactive = True
+        info.state = TrackletState.CONFIRMED
+        info.consecutive_det_count = max(
+            info.consecutive_det_count, self.confirmation_thresh
+        )
+        info.unmatched_count = 0
 
     def step(
         self,
@@ -178,7 +212,11 @@ class TrackletManager:
                 min(self.max_keep_alive, info.keep_alive + (1 if matched else -1)),
             )
             within_hotstart = info.first_frame > frame_idx - self.hotstart_delay
-            if within_hotstart and info.unmatched_count >= self.hotstart_unmatch_thresh:
+            if (
+                not info.interactive
+                and within_hotstart
+                and info.unmatched_count >= self.hotstart_unmatch_thresh
+            ):
                 info.removed = True
 
     def remove(self, obj_id: int) -> None:
