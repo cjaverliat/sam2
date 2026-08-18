@@ -4,7 +4,7 @@
 `origin/feat/sam3-integration`. Tree clean. Latest: the multi-concept
 retirement, after the exemplar/VISUAL-slot one (`8dd1364`) and per-box labels
 on `GeometryPrompt` (`54ef29d`).
-**Last session:** 2026-08-17. **Read this first to resume.**
+**Last session:** 2026-08-18. **Read this first to resume.**
 
 **Next up:** open item 1, geometry-prompt bit-exact parity.
 
@@ -111,7 +111,7 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   encodes (bit-identical — the old batch was already `[text]` with `n_pos=1`).
   Re-verified against `origin/main` `8f0b7f4` (2026-08-13) on **2026-08-17**: unchanged.
 
-- **Multi-concept — removed, not implemented (2026-08-17).** Upstream has NO concurrent
+- **Multi-concept — removed, not implemented (2026-08-18).** Upstream has NO concurrent
   multi-concept. Its only multi-concept path (`sam3_multiplex_tracking.py` `forward`,
   ~1756-1815, labelled "only used for benchmark eval (not used in the demo)") loops the
   phrases and for each one calls `add_prompt(frame_idx=0, text_str=prompt)`, propagates the

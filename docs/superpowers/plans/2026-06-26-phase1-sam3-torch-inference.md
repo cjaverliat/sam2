@@ -295,7 +295,7 @@ class Sam3DetectionResult:
   implemented deliberately — it would cost a 15-frame output lag, and a streaming consumer
   cannot act on it anyway (a frame already shown cannot be un-shown). Details + upstream
   references in `docs/superpowers/SAM3_STATUS.md`.
-- [x] **Multi-concept — dropped, won't implement (2026-08-17).** Upstream has NO concurrent
+- [x] **Multi-concept — dropped, won't implement (2026-08-18).** Upstream has NO concurrent
   multi-concept: its only multi-concept path (`sam3_multiplex_tracking.py` `forward`, ~1756-1815,
   benchmark eval only — "This method is only used for benchmark eval (not used in the demo)")
   loops over the phrases, and for each one calls `add_prompt(frame_idx=0, text_str=prompt)`,
