@@ -211,9 +211,17 @@ def _build_mux_point_inputs(prompts, video_hw, image_size, device):
     return {"point_coords": coords, "point_labels": labels}, obj_ids
 
 
-def _normalized_points(prompt, image_hw, device):
-    """``prompt.points_coords`` as ``(N, 2)`` in ``[0, 1]``, honouring ``is_normalized``."""
-    coords = prompt.points_coords.to(device).float()
+def _normalized_points(prompt, image_hw, device, coords=None):
+    """Tracker-bound point coords as ``(N, 2)`` in ``[0, 1]``, honouring ``is_normalized``.
+
+    Args:
+        prompt: the :class:`GeometryPrompt` the coords came from (for ``is_normalized``).
+        image_hw: ``(height, width)`` of the video.
+        device: device to normalize on.
+        coords: coords to normalize; defaults to ``prompt.points_coords``. Pass the
+            output of :meth:`GeometryPrompt.tracker_points` to include box corners.
+    """
+    coords = (prompt.points_coords if coords is None else coords).to(device).float()
     if prompt.is_normalized:
         return coords
     height, width = image_hw
@@ -667,6 +675,19 @@ class Sam3VideoPredictor(nn.Module):
         vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
         return vis, vpos, feat_sizes
 
+    def set_placeholder_concept(self, state: Sam3VideoPredictorState) -> None:
+        """Run detection under this lineage's box-only caption (:attr:`BOX_ONLY_CAPTION`).
+
+        The explicit form of what upstream does implicitly for a box-with-no-text session:
+        ``"visual"`` on the base lineage, ``"<text placeholder>"`` on the multiplex. Every
+        instance that caption matches gets tracked, on every frame -- if you want only the
+        object you boxed, use a TRACKER-route box instead and set no concept at all.
+
+        Args:
+            state: the session to configure, before its first frame.
+        """
+        state.concept = self._placeholder_concept()
+
     def _placeholder_concept(self):
         """A cached placeholder ConceptState for box-only prompts (no text set).
 
@@ -685,21 +706,29 @@ class Sam3VideoPredictor(nn.Module):
         return self._geo_concept
 
     def _concept_for_detection(self, state, box_geo):
-        """The concept driving this frame's detection, adopting the box-only placeholder.
+        """The concept driving this frame's detection.
 
-        A box-only session (no ``set_concept``) still detects on EVERY frame upstream:
-        ``add_prompt`` writes the caption's ``text_id`` into all frames' ``find_inputs``
-        (``sam3_video_inference.py:876-877``; the multiplex leaves them at their init
-        value 0, which is that lineage's placeholder), so detection keeps re-matching the
-        tracklets after the prompt frame instead of leaving them to propagate blind.
-        Adopting the placeholder into the state reproduces that.
+        Detection runs only for a session that asked for it, via :meth:`set_concept` or
+        :meth:`set_placeholder_concept`. Upstream instead adopts the placeholder caption
+        the moment a box arrives with no text (``sam3_video_inference.py:868-877``), which
+        silently turns "track what I boxed" into "detect everything this caption matches,
+        on every frame". We keep that behaviour but make the caller ask for it.
 
         Returns:
-            The session's :class:`ConceptState`, or None when nothing has ever been
-            prompted (detection stays gated off).
+            The session's :class:`ConceptState`, or None when no concept was set (so
+            detection stays gated off and only tracker prompts produce objects).
+
+        Raises:
+            ValueError: if a DETECTOR-route box arrives with no concept set.
         """
-        if state.concept is None and box_geo is not None:
-            state.concept = self._placeholder_concept()
+        if box_geo is not None and state.concept is None:
+            raise ValueError(
+                "a BoxRoute.DETECTOR box drives detection, which needs a concept: call "
+                "set_concept(state, ConceptPrompt(...)) for your own phrase, or "
+                "set_placeholder_concept(state) for upstream's box-only caption "
+                f"({self.BOX_ONLY_CAPTION!r}). To track only the boxed object instead, "
+                "drop box_route (BoxRoute.TRACKER encodes the box as corner points)."
+            )
         return state.concept
 
     def _split_and_pack_geometry(self, prompts, hw, device):
@@ -720,12 +749,21 @@ class Sam3VideoPredictor(nn.Module):
             and the prompts to route to the tracker.
 
         Raises:
-            NotImplementedError: if a prompt pairs a mask with a box.
+            NotImplementedError: if a DETECTOR-route prompt also carries a mask.
+            ValueError: if a TRACKER-route box carries ``boxes_labels`` (a detector
+                notion: the tracker's prompt encoder has no sign for a box).
         """
-        box_prompts = [p for p in prompts if p.boxes is not None]
+        mislabelled = [p for p in prompts if p.boxes_labels is not None and not p.to_detector]
+        if mislabelled:
+            raise ValueError(
+                "boxes_labels signs a box for the detector; pass "
+                "box_route=BoxRoute.DETECTOR, or drop the labels to seed the boxed "
+                "object through the tracker"
+            )
+        box_prompts = [p for p in prompts if p.to_detector]
         tracker_prompts = [
             p for p in prompts
-            if p.points_coords is not None or p.masks_logits is not None
+            if p.tracker_points() is not None or p.masks_logits is not None
         ]
         box_geo = None
         if box_prompts:
@@ -904,11 +942,15 @@ class Sam3VideoPredictor(nn.Module):
         prompt = prompt.to(device)
 
         point_inputs = None
-        if prompt.points_coords is not None:
-            coords = _normalized_points(prompt, (H, W), device) * self.tracker.image_size
+        points = prompt.tracker_points()
+        if points is not None:
+            raw_coords, labels = points
+            coords = _normalized_points(
+                prompt, (H, W), device, coords=raw_coords
+            ) * self.tracker.image_size
             point_inputs = {
                 "point_coords": coords[None],
-                "point_labels": prompt.points_labels.to(device)[None],
+                "point_labels": labels.to(device)[None],
             }
 
         mask_inputs = None

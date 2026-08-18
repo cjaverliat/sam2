@@ -30,7 +30,7 @@ import pytest
 import torch
 from PIL import Image
 
-from sam.prompts import GeometryPrompt
+from sam.prompts import BoxRoute, GeometryPrompt
 from sam.results import Emit
 
 FIX = Path("tests/parity/fixtures/sam3p1")
@@ -68,7 +68,9 @@ def test_video_box_prompt_seed_parity():
     # (confirmation needs 3 consecutive detections), so measure in VISIBLE mode.
     pred.emit = Emit.VISIBLE
     st = Sam3VideoPredictorState(video_hw=(h, w))
-    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32))
+    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32),
+                         box_route=BoxRoute.DETECTOR)
+    pred.set_placeholder_concept(st)  # upstream's box-only caption, now opt-in
 
     for i, fr in enumerate(frames):
         out = pred.forward(st, i, fr, prompts=[box] if i == 0 else [])

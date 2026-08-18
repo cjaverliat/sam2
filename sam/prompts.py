@@ -1,7 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import enum
+
 import torch
+
+
+class BoxRoute(enum.Enum):
+    """Which part of the model a VIDEO box prompt is meant for.
+
+    The image predictor has no tracker, so its ``geometry=`` box is always a detector
+    prompt and this route is ignored there. ``boxes_labels`` (positive/negative) is a
+    detector notion likewise: on video it requires ``DETECTOR``.
+
+    TRACKER:
+        SAM 2 semantics, and the default: the box is encoded as its two corner points
+        (labels 2 and 3) and seeds ONE object through the tracker's prompt encoder. No
+        detection runs, so nothing else can appear.
+    DETECTOR:
+        SAM 3 only: the box goes to the detector's geometric slot and biases that
+        frame's detection. Detection then runs on every frame, so every instance the
+        concept matches is tracked, not only the boxed one -- which is why this route
+        must be asked for, and why the session needs a concept (``set_concept`` or
+        ``set_placeholder_concept``).
+    """
+
+    TRACKER = "tracker"
+    DETECTOR = "detector"
 
 
 class GeometryPrompt:
@@ -14,6 +39,7 @@ class GeometryPrompt:
         boxes_labels: torch.Tensor | None = None,
         masks_logits: torch.Tensor | None = None,
         is_normalized: bool = False,
+        box_route: BoxRoute = BoxRoute.TRACKER,
     ):
         if (
             points_coords is None
@@ -56,6 +82,39 @@ class GeometryPrompt:
         self.boxes_labels = boxes_labels
         self.masks_logits = masks_logits
         self.is_normalized = is_normalized
+        self.box_route = box_route
+
+    @property
+    def to_detector(self) -> bool:
+        """Whether this prompt carries a box bound for the detector's geometric slot."""
+        return self.boxes is not None and self.box_route is BoxRoute.DETECTOR
+
+    def tracker_points(self) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """The points this prompt feeds to the tracker's prompt encoder.
+
+        Clicks keep their own labels (1 foreground / 0 background); a TRACKER-route box
+        contributes its corners as labels 2 (top-left) and 3 (bottom-right), the same
+        encoding :class:`~sam.models.sam2_predictor.Sam2VideoPredictor` uses. Coordinates
+        stay in whatever space the prompt was built in (pixel unless ``is_normalized``).
+
+        Returns:
+            ``(coords, labels)`` of shapes ``(N, 2)`` / ``(N,)``, or None when the prompt
+            has nothing for the tracker (a DETECTOR-route box, or a mask alone).
+        """
+        parts = []
+        if self.points_coords is not None:
+            parts.append((self.points_coords, self.points_labels))
+        if self.boxes is not None and self.box_route is BoxRoute.TRACKER:
+            corners = self.boxes.reshape(-1, 2)
+            labels = torch.tensor(
+                [2, 3], dtype=torch.int32, device=corners.device
+            ).repeat(self.boxes.shape[0])
+            parts.append((corners, labels))
+        if not parts:
+            return None
+        coords = torch.cat([c for c, _ in parts], dim=0)
+        labels = torch.cat([lb.to(coords.device) for _, lb in parts], dim=0)
+        return coords, labels
 
     def to(self, device: torch.device) -> GeometryPrompt:
         points_coords = (
@@ -79,6 +138,7 @@ class GeometryPrompt:
             boxes_labels=boxes_labels,
             masks_logits=masks_logits,
             is_normalized=self.is_normalized,
+            box_route=self.box_route,
         )
 
     def clone(self) -> GeometryPrompt:
@@ -90,6 +150,7 @@ class GeometryPrompt:
             boxes_labels=self.boxes_labels.clone() if self.boxes_labels is not None else None,
             masks_logits=self.masks_logits.clone() if self.masks_logits is not None else None,
             is_normalized=self.is_normalized,
+            box_route=self.box_route,
         )
 
 

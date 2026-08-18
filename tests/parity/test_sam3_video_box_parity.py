@@ -35,7 +35,7 @@ import pytest
 import torch
 from PIL import Image
 
-from sam.prompts import GeometryPrompt
+from sam.prompts import BoxRoute, GeometryPrompt
 from sam.results import Emit
 
 FIX = Path("tests/parity/fixtures/sam3")
@@ -74,7 +74,9 @@ def test_video_box_prompt_parity(determinism_no_det_algos):
     # the golden is upstream's observable, which shows an object from its birth frame
     pred.emit = Emit.VISIBLE
     st = Sam3VideoPredictorState(video_hw=(h, w))
-    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32))
+    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32),
+                         box_route=BoxRoute.DETECTOR)
+    pred.set_placeholder_concept(st)  # upstream's box-only caption, now opt-in
 
     # golden object 0 is the boxed (moving) person, object 1 the near-static one
     for i, frame in enumerate(frames):

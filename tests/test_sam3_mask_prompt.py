@@ -20,7 +20,7 @@ import pytest
 import torch
 from PIL import Image
 
-from sam.prompts import GeometryPrompt
+from sam.prompts import BoxRoute, GeometryPrompt
 
 FIX = Path("tests/parity/fixtures/sam3")
 CKPT = "checkpoints/sam3.pt"
@@ -88,7 +88,7 @@ def test_mask_only_prompt_seeds_and_tracks(predictor, clip):
     )
 
 
-def test_mask_with_box_is_rejected(predictor, clip):
+def test_mask_with_detector_box_is_rejected(predictor, clip):
     """The detector's geometry mask slot has no weights -- that pairing must raise."""
     from sam.models.sam3_predictor import Sam3VideoPredictorState
 
@@ -99,6 +99,7 @@ def test_mask_with_box_is_rejected(predictor, clip):
         obj_id=1,
         masks_logits=_mask_logits(golden[0]).cuda(),
         boxes=torch.tensor([[285.0, 0.0, 535.0, 430.0]], device="cuda"),
+        box_route=BoxRoute.DETECTOR,
     )
     with pytest.raises(NotImplementedError, match="mask"):
         predictor.forward(state, 0, frames[0], prompts=[prompt])
