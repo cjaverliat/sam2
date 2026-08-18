@@ -1,13 +1,12 @@
 # SAM 3 integration — status & resume guide
 
-**Branch:** `feat/sam3-integration`, NOT yet pushed (5 commits ahead of
-`origin/feat/sam3-integration`). Latest: the notebook/README refresh, after the base video
-box prompt, the golden recapture and the two preprocessing-regime fixes.
+**Branch:** `feat/sam3-integration`, pushed. Latest: the base interactive-click
+lifecycle fix and its 30-frame golden, after the notebook box-prompt/dark-figure pass.
 **Last session:** 2026-08-18. **Read this first to resume.**
 
 **Next up:** open item 1, the box-seeded object's propagation drift — the only known
-divergence left. Everything else in the parity suite is green (68 passed, 16 skipped,
-1 xfailed, 0 failed).
+divergence left. Everything else is green: `tests/parity` 26 passed, 16 skipped,
+1 xfailed; the rest of `tests/` 70 passed, 8 skipped.
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -36,8 +35,8 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 - **Hotstart visibility for box-only tracking (2026-08-17)** — the tracklet lifecycle
   now steps on every frame (`_advance_lifecycle`), not only when a detection ran, so a
   concept-less box session decays and can be killed like upstream. Click-seeded objects
-  stay unmanaged and exempt (upstream runs click-only sessions through SAM 2 partial
-  propagation, bypassing hotstart). Ledger has the measured trace.
+  are exempt from that kill — on the mux path because they are never registered, on the
+  base path via the force-confirm below. Ledger has the measured trace.
 - **Output policy `Emit` (2026-08-17)** — closes the "buffered confirmation gate" item
   WITHOUT buffering. `forward()` keeps its synchronous contract (feed frame `f`, get
   frame `f`); the predictor gained `emit: Emit` (`CONFIRMED` default / `VISIBLE` /
@@ -55,6 +54,27 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   captured the observable of a non-causal pipeline (objects visible from their birth
   frame), so every golden-measuring test now sets `pred.emit = Emit.VISIBLE`; the
   `CONFIRMED` default is covered by `tests/test_emit_modes.py` (CPU).
+
+- **Base interactive-click lifecycle (2026-08-18)** — a click-seeded tracklet on the
+  BASE lineage was registered like a detected one, so in a click-only session (detection
+  gated off, nothing can ever re-match it) the hotstart kill purged it at frame 8: the
+  notebook's click demo showed a mask on frame 0 and nothing on frames 15/29. Upstream
+  keeps it for the whole clip — `add_tracker_new_points` force-confirms the object
+  (`masklet_confirmation` status 1, `consecutive_det_num` at threshold,
+  `sam3_video_inference.py:1522-1531`) and `_process_hotstart` only ever considers ids
+  the DETECTOR registered. `TrackletManager` gained an `interactive` flag
+  (`spawn(..., interactive=True)`, `force_confirm()`) that confirms the tracklet and
+  exempts it from the kill; refining an existing object with a click force-confirms it
+  too. New 30-frame golden `fixtures/sam3/interactive_noconcept.npz` +
+  `reference_sam3/capture_sam3_interactive_golden.py`, gated by
+  `tests/parity/test_sam3_interactive_parity.py` (30/30 frames, min IoU ≥ 0.90,
+  mean ≥ 0.95).
+
+  Capture gotcha worth keeping: the base `add_prompt` has no `clear_old_points`, so
+  driving the second (cache-seeding) pass with a repeated click hits
+  `use_stateless_refinement`, which removes and re-adds the object — the re-seeded click
+  then resolves to the girl's skirt (8736 px vs 31889 px for the identical click) and
+  that fragment propagates. The capture re-propagates with NO second click instead.
 
 - **Negative box labels (2026-08-17)** — `GeometryPrompt` gained `boxes_labels`
   (per-box sign, mirroring the existing `points_labels`); `_pack_geometry` forwards it
@@ -339,8 +359,11 @@ detection stops matching them; tracking itself is not lost.
   and starts keep-alive at 30). `step()` is driven by
   `_advance_lifecycle` in the predictor, which runs on EVERY frame — including
   frames with no detection pass (all managed tracklets count as unmatched then).
-  Only *managed* ids step: click-seeded objects are intentionally never registered,
-  which is what keeps them out of hotstart (upstream parity — see the ledger).
+  Only *managed* ids step. Click-seeded objects are kept out of the hotstart kill two
+  different ways: the mux path never registers them at all, while the base path
+  registers them `interactive=True` (`spawn(..., interactive=True)` / `force_confirm`),
+  which confirms them at once and skips the kill — mirroring upstream's
+  `add_tracker_new_points`.
 - `sam/modeling/decoders/detr_decoder.py` — `Sam3GeometryEncoder` (box/point),
   `_concat_padded_sequences`, `Sam3DetrDetector.forward_grounding(..., geo=)`.
 
