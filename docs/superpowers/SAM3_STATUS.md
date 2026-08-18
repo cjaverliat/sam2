@@ -6,7 +6,7 @@ lifecycle fix and its 30-frame golden, after the notebook box-prompt/dark-figure
 
 **Next up:** open item 1, the box-seeded object's propagation drift — the only known
 divergence left. Everything else is green: `tests/parity` 26 passed, 16 skipped,
-1 xfailed; the rest of `tests/` 70 passed, 8 skipped.
+1 xfailed; the rest of `tests/` 72 passed, 8 skipped.
 
 Upstream reference for parity is `../sam3_reference` (facebook `sam3` @ `5dd401d`).
 See the memories `sam3-reference-envs` and `sam3-parity-architecture-preference`
@@ -54,6 +54,24 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   captured the observable of a non-causal pipeline (objects visible from their birth
   frame), so every golden-measuring test now sets `pred.emit = Emit.VISIBLE`; the
   `CONFIRMED` default is covered by `tests/test_emit_modes.py` (CPU).
+
+- **Prompt API aligned with SAM 2 + mask prompts (2026-08-18)** — `forward`'s prompt
+  argument is now `prompts` on both SAM 3 lineages, the name `Sam2VideoPredictor.forward`
+  already uses, so the interactive surface is one interface across SAM 2 and SAM 3
+  (`GeometryPrompt` was already shared). Call sites updated in tests, README and the
+  notebook; the dated specs/plans keep the old name as historical record.
+
+  Mask prompts work on the base lineage now. They always could have:
+  `_apply_geometry_prompt` builds `mask_inputs` and the tracker's
+  `sam_prompt_encoder.mask_downscaling` weights ship in `sam3.pt` (10 tensors) — the same
+  path a detector-seeded tracklet uses. But `_split_and_pack_geometry` filtered prompts
+  into "has boxes" / "has points", so a mask-only prompt matched neither list and was
+  dropped silently, returning `{}` with no error. It now splits into `box_geo` +
+  `tracker_prompts` (points OR mask). Unchanged: a mask paired with a box raises, since
+  that is the DETECTOR's mask slot (`mask_encoder`, 0 keys in both checkpoints), and the
+  multiplex still rejects masks — its `_seed_mux_state` / `_grow_mux_state` take masks
+  only from the detector, which is what its error message now says.
+  Tests: `tests/test_sam3_mask_prompt.py`.
 
 - **Base interactive-click lifecycle (2026-08-18)** — a click-seeded tracklet on the
   BASE lineage was registered like a detected one, so in a click-only session (detection
