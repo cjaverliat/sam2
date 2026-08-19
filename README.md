@@ -31,7 +31,7 @@ This fork keeps the original SAM 2 models and weights bit-for-bit, and adds:
   - [Image — detect all instances of a concept](#image--detect-all-instances-of-a-concept)
   - [Streaming video — track a concept across frames](#streaming-video--track-a-concept-across-frames)
   - [SAM 3.1 (multiplex)](#sam-31-multiplex--up-to-16-objects-in-one-joint-forward-pass)
-  - [Geometry prompts — boxes and clicks](#geometry-prompts--boxes-and-clicks)
+  - [Geometry prompts — clicks, boxes, masks](#geometry-prompts--clicks-boxes-masks)
   - [Adding objects mid-stream](#adding-objects-mid-stream)
   - [Output policy — when a tracked object becomes visible](#output-policy--when-a-tracked-object-becomes-visible)
   - [Several concepts at once](#several-concepts-at-once)
@@ -167,38 +167,47 @@ masks = result.masks_logits[0] > model.mask_threshold
 
 ### Streaming video prediction (PyTorch)
 
-Build the predictor once, create a lightweight state, then call `forward()` per frame. Memory is carried in `state.memory_bank` — no full-video buffer (see [`notebooks/video_predictor_example.ipynb`](notebooks/video_predictor_example.ipynb)):
+Build the predictor once, open a **session**, then feed it one frame at a time. The session owns the state and counts frames; memory is carried in `state.memory_bank` — no full-video buffer (see [`notebooks/video_predictor_example.ipynb`](notebooks/video_predictor_example.ipynb)):
 
 ```python
 import torch
 from sam.build_sam import build_sam2_video_predictor
 from sam.prompts import GeometryPrompt
-from sam.models.sam2_predictor import Sam2VideoPredictorState
 
 checkpoint = "./checkpoints/sam2.1_hiera_base_plus.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 device = torch.device("cuda")
 
 predictor = build_sam2_video_predictor(model_cfg, checkpoint, device=device)
-
-# State holds only (H, W) and the memory bank — not the frames.
-state = Sam2VideoPredictorState.create(video_hw=(height, width))
+session = predictor.start_session()  # the video size comes from the first frame
 
 # Frame 0: add a prompt for object id 1
-prompt = GeometryPrompt(
-    obj_id=1,
-    points_coords=torch.tensor([[210, 350]], dtype=torch.float32, device=device),
-    points_labels=torch.tensor([1], device=device),
-)
-results = predictor.forward(state=state, frame_idx=0, frame=frame_0, prompts=[prompt])
+masklets = session.process(frame_0, prompts=[GeometryPrompt.click(1, (210, 350))])
 
 # Subsequent frames: just feed pixels — tracking continues from the memory bank.
-for frame_idx, frame in stream:  # any iterable of (C, H, W) tensors
-    results = predictor.forward(state=state, frame_idx=frame_idx, frame=frame)
-    masks = {obj_id: (r.best_mask_logits > 0) for obj_id, r in results.items()}
+for frame in stream:  # any iterable of (C, H, W) tensors
+    masklets = session.process(frame)
+    masks = {obj_id: (m.best_mask_logits > 0) for obj_id, m in masklets.items()}
 ```
 
 `frame` is a `(C, H, W)` float tensor in `[0, 1]` with `H, W` matching `video_hw`, so frames can be read lazily from any decoder (OpenCV, PyAV, a live camera) without materializing the whole clip.
+
+SAM 2 has no concept, so `start_session()` is its only session kind — SAM 3's
+`start_concept_session` simply does not exist here, and asking for it raises `AttributeError`.
+Neither takes a `video_hw`: the size always comes from the first frame, so `session.state` is
+`None` until then. The explicit form stays public for callers that manage frame indices
+themselves, and is how you pin the size up front or install a custom memory bank:
+
+```python
+from sam.models.sam2_predictor import Sam2VideoPredictorState
+
+# State holds only (H, W) and the memory bank — not the frames.
+state = Sam2VideoPredictorState.create(video_hw=(height, width))
+results = predictor.forward(
+    state=state, frame_idx=0, frame=frame_0,
+    prompts=[GeometryPrompt.click(1, (210, 350))],
+)
+```
 
 ### Custom memory bank
 
@@ -291,7 +300,7 @@ Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam
 
 ## SAM 3 — Concept Segmentation
 
-SAM 3 segments by **concept**: a text phrase, a box, or a click — every instance of it, tracked across a video. Build with `build_sam3` (image) or `build_sam3_video_predictor` (streaming video); the API mirrors SAM 2's predictor (encode once, run per frame). SAM 3 weights are access-gated — request via [Meta AI](https://ai.meta.com/sam) and download with:
+SAM 3 segments by **concept**: a text phrase, a box, or a click — every instance of it, tracked across a video. Build with `build_sam3` (image) or `build_sam3_video_predictor` (streaming video), then `predict(image, ...)` for one image or a session + `process(frame)` per frame for a stream. SAM 3 weights are access-gated — request via [Meta AI](https://ai.meta.com/sam) and download with:
 
 ```bash
 pixi run download-sam3       # sam3.pt
@@ -321,23 +330,51 @@ binary_masks = result.masks_logits > 0.0
 
 ### Streaming video — track a concept across frames
 
+A **session** owns one video: it holds the state and counts frames. There are two kinds, and
+they are separate methods because they are separate contracts:
+
+| | `start_session()` | `start_concept_session(concept)` |
+|---|---|---|
+| Available on | SAM 2 **and** SAM 3 | SAM 3 lineage only |
+| Detection | off | runs every frame |
+| Objects | only what you prompt | every instance the concept matches |
+| `obj_id` | yours, on the prompt | minted by the detector |
+| Geometry prompts | seed new objects | **refine** ids already returned |
+
+A concept is declared at birth, because it is session-scoped and immutable.
+
 ```python
 from sam.build_sam import build_sam3_video_predictor
-from sam.prompts import ConceptPrompt
-from sam.models.sam3_predictor import Sam3VideoPredictorState
 
 predictor = build_sam3_video_predictor(
     "configs/sam3/sam3.yaml", "./checkpoints/sam3.pt", device="cuda"
 )
 
+session = predictor.start_concept_session("wheel")  # size comes from the first frame
+
+for frame in frames:                                # frames: (H, W, 3) uint8 arrays
+    masklets = session.process(frame)               # {obj_id: MaskletResult, ...}
+    masks = {obj_id: (m.masks_logits > 0) for obj_id, m in masklets.items()}
+```
+
+`concept` takes a phrase or a `ConceptPrompt`. Sessions are independent: hold several over one
+loaded model and interleave them freely, each counting its own frames.
+
+The explicit form (`Sam3VideoPredictorState` + `forward(state, frame_idx, frame)`) stays public
+for callers that manage frame indices themselves — a session is exactly one `forward` call per
+frame, so the two are interchangeable frame for frame, and `session.state` is the same state
+object:
+
+```python
+from sam.prompts import ConceptPrompt
+from sam.models.sam3_predictor import Sam3VideoPredictorState
+
 # State holds memory bank + tracklet bookkeeping — not the frames.
 state = Sam3VideoPredictorState(video_hw=(height, width))
 predictor.set_concept(state, ConceptPrompt(text="wheel"))
 
-for frame_idx, frame in enumerate(frames):  # frames: (H, W, 3) uint8 arrays
-    results = predictor.forward(state, frame_idx, frame)
-    # results: {obj_id: MaskletResult, ...}
-    masks = {obj_id: (r.masks_logits > 0) for obj_id, r in results.items()}
+for frame_idx, frame in enumerate(frames):
+    masklets = predictor.forward(state, frame_idx, frame)
 ```
 
 Per-object memory is managed by the internal `ForgetfulObjectMemoryBank` (non-conditional frames outside a 7-frame window are pruned), so VRAM stays constant regardless of clip length.
@@ -351,7 +388,6 @@ SAM 3.1 packs all tracked objects into one joint forward via `build_sam3_multipl
 ```python
 from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor
 from sam.prompts import ConceptPrompt
-from sam.models.sam3_predictor import Sam3VideoPredictorState
 
 # Image
 image_predictor = build_sam3_multiplex(
@@ -359,28 +395,25 @@ image_predictor = build_sam3_multiplex(
 )
 result = image_predictor.predict(image, ConceptPrompt(text="wheel"))
 
-# Video: a session owns the state, counts frames, and declares the concept at birth
+# Video: same session API as base SAM 3
 video_predictor = build_sam3_multiplex_video_predictor(
     "configs/sam3/sam3.1.yaml", "./checkpoints/sam3.1_multiplex.pt", device="cuda"
 )
-wheel_session = video_predictor.start_session(concept="wheel")
+wheel_session = video_predictor.start_concept_session("wheel")
 for frame in frames:
     masklets = wheel_session.process(frame)
     masks = {obj_id: (m.masks_logits > 0) for obj_id, m in masklets.items()}
 ```
 
-Sessions are independent: hold several over one loaded model and interleave them freely.
-The explicit form (`Sam3VideoPredictorState` + `forward(state, frame_idx, frame)`) stays
-public for callers that manage frame indices themselves; a session is exactly one `forward`
-call per frame, so the two forms are interchangeable frame for frame.
-
 ### Geometry prompts — clicks, boxes, masks
 
 A `GeometryPrompt` carries the prompt for one object id, built with a named constructor:
 `GeometryPrompt.click(obj_id, (x, y))`, `.box(obj_id, (x0, y0, x1, y1))`,
-`.mask(obj_id, mask)`, `.concept_box(obj_id, xyxy)`. Constructors take plain tuples, lists,
-or arrays in pixel coordinates; the generic `GeometryPrompt(...)` form stays available (with
-`is_normalized=True` for `[0, 1]` coordinates).
+`.mask(obj_id, mask)`. The one exception is `.concept_box(xyxy)`, which takes **no** `obj_id`:
+it biases detection instead of naming an object, and the ids it produces are the detector's to
+hand out. Constructors take plain tuples, lists, or arrays in pixel coordinates; the generic
+`GeometryPrompt(...)` form stays available (with `box_route=BoxRoute.DETECTOR` for the
+detector slot, `is_normalized=True` for `[0, 1]` coordinates).
 
 On an **image**, a box biases the detection of the text concept (upstream's
 `add_geometric_prompt`). `boxes_labels` gives each box a sign: `1` positive (the default when
@@ -423,14 +456,19 @@ for frame in frames[1:]:
     masklets = interactive_session.process(frame)
 
 # detection hint — upstream's box-only mode, both choices explicit
-hint_session = video_predictor.start_session(concept=video_predictor.PLACEHOLDER)
+hint_session = video_predictor.start_concept_session(video_predictor.PLACEHOLDER)
 masklets = hint_session.process(frames[0], prompts=[
     GeometryPrompt.concept_box((300, 150, 470, 420)),      # label=0: "everything except this"
 ])
 ```
 
-Sending a `concept_box` into a session with no concept raises rather than picking a caption
-for you.
+Sending a `concept_box` into a `start_session()` session raises `ValueError` rather than picking
+a caption for you. Making the interactive session adopt `PLACEHOLDER` on its own would silently
+switch detection on for every frame under the box-only caption — so instead of the one object you
+boxed you would get every instance that caption matches, for the rest of the clip. Ask for it by
+name (`start_concept_session(predictor.PLACEHOLDER)`) or use `GeometryPrompt.box(obj_id, xyxy)`,
+which tracks only what you boxed.
+
 Objects seeded through the tracker are force-confirmed and exempt from the hotstart kill,
 matching upstream's `add_tracker_new_points`: with no concept set nothing can ever re-match
 them, so without the exemption the lifecycle would purge them after 8 unmatched frames.
@@ -449,7 +487,7 @@ upstream has no re-association and would issue a new id).
 ### Output policy — when a tracked object becomes visible
 
 Every alive tracklet is propagated and keeps its memory regardless of policy; `emit` only
-selects what `forward` returns, and empty masks are always dropped.
+selects what a `process` / `forward` call returns, and empty masks are always dropped.
 
 ```python
 from sam.results import Emit
@@ -458,8 +496,8 @@ video_predictor.emit = Emit.CONFIRMED  # default: matched by a detection 3 frame
 video_predictor.emit = Emit.VISIBLE    # alive and not suppressed — what upstream's goldens show
 video_predictor.emit = Emit.ALIVE      # every tracklet, suppressed ones included
 
-for obj_id, r in results.items():
-    r.tracklet_state   # each result carries its lifecycle state, for your own policy
+for obj_id, m in session.process(frame).items():
+    m.tracklet_state   # each result carries its lifecycle state, for your own policy
 ```
 
 `CONFIRMED` is causal: a one-frame detector false positive never reaches the caller, at the
@@ -468,20 +506,19 @@ frames of output), which a streaming predictor cannot reproduce.
 
 ### Several concepts at once
 
-Use one state per concept and merge with an id offset. Upstream's own multi-concept path does
+Use one session per concept and merge with an id offset. Upstream's own multi-concept path does
 exactly this — it loops the phrases, propagates the whole video per phrase, and offsets the
 ids — so concepts never share association or memory:
 
 ```python
-states = {c: Sam3VideoPredictorState(video_hw=(height, width)) for c in ("person", "dog")}
-for concept, state in states.items():
-    video_predictor.set_concept(state, ConceptPrompt(concept))
+sessions = {c: video_predictor.start_concept_session(c) for c in ("person", "dog")}
 
-for frame_idx, frame in enumerate(frames):
-    per_concept = {
-        c: video_predictor.forward(s, frame_idx, frame) for c, s in states.items()
-    }
+for frame in frames:
+    per_concept = {c: sess.process(frame) for c, sess in sessions.items()}
 ```
+
+Each session numbers its objects from its own counter, so offset the ids yourself before
+merging the dicts (upstream offsets by phrase index).
 
 A worked end-to-end walkthrough of all of the above lives in
 [`notebooks/sam3_video_predictor_example.ipynb`](notebooks/sam3_video_predictor_example.ipynb).

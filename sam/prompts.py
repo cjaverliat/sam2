@@ -108,8 +108,9 @@ class GeometryPrompt:
     def concept_box(cls, xyxy, label: int = 1) -> GeometryPrompt:
         """A detector box (SAM 3): biases the concept search on this frame.
 
-        Needs a concept on the session (``set_concept`` / ``set_placeholder_concept`` /
-        ``start_session(concept=...)``). ``label`` 1 keeps the boxed instance positive;
+        Needs a concept on the session (``start_concept_session`` -- or ``set_concept``
+        / ``set_placeholder_concept`` on an explicit state). ``label`` 1 keeps the boxed
+        instance positive;
         0 means "everything matching the concept EXCEPT this one".
 
         Takes no ``obj_id``: a detector box only biases detection, and the spawned

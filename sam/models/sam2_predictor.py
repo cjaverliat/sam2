@@ -11,6 +11,7 @@ from sam.modeling.memory.bank import ObjectMemory
 import numpy as np
 from dataclasses import dataclass, field
 from sam.modeling.memory.banks import ObjectMemoryBank, Sam2ObjectMemoryBank
+from sam.models.video_session import VideoSession, validate_video_hw
 from sam.prompts import GeometryPrompt
 
 def _half_inference(method):
@@ -703,8 +704,7 @@ class Sam2VideoPredictorState:
     def __post_init__(self):
         if self.memory_bank is None:
             raise ValueError("Memory bank cannot be None")
-        if self.video_hw is None:
-            raise ValueError("Video height and width cannot be None")
+        self.video_hw = validate_video_hw(self.video_hw)
 
     @staticmethod
     def create(
@@ -723,18 +723,22 @@ class Sam2VideoPredictor(Sam2Predictor):
 
     Note: works in a forward-only manner.
     """
-    def start_session(self, video_hw: tuple[int, int] | None = None):
-        """A :class:`~sam.models.video_session.VideoSession` over this predictor.
+    def start_session(self):
+        """An INTERACTIVE :class:`~sam.models.video_session.VideoSession`.
 
         The session owns its state and frame counter; call it once per frame with
-        optional ``prompts``. ``video_hw`` is inferred from the first frame when
-        omitted. SAM 2 has no concept -- sessions are always interactive.
-        """
-        from sam.models.video_session import VideoSession
+        optional ``prompts``. The video size comes from the first frame, so
+        ``session.state`` is None until then -- to pin the size (or to install a
+        custom memory bank) build a :class:`Sam2VideoPredictorState` and drive
+        :meth:`forward` yourself.
 
-        return VideoSession(
-            self, lambda hw: Sam2VideoPredictorState(video_hw=hw), video_hw=video_hw,
-        )
+        SAM 2 has no concept, so this is its only session kind. The signature matches
+        :meth:`~sam.models.sam3_predictor.Sam3VideoPredictor.start_session` exactly --
+        the same call means the same thing on both. Concept-driven tracking is a SAM 3
+        capability, reached through its ``start_concept_session``, which does not exist
+        here.
+        """
+        return VideoSession(self, lambda hw: Sam2VideoPredictorState(video_hw=hw))
 
     def forward(
         self,

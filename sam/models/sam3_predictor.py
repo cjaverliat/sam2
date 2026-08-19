@@ -29,6 +29,7 @@ from sam.modeling.association import associate_det_trk
 from sam.modeling.association.tracklet import TrackletManager
 from sam.modeling.memory.bank import ObjectMemoryBank
 from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
+from sam.models.video_session import VideoSession, validate_video_hw
 from sam.modeling.tracking.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam.prompts import ConceptPrompt, GeometryPrompt
 from sam.results import Emit, MaskletResult
@@ -361,6 +362,9 @@ class Sam3VideoPredictorState:
     mux_state: object = None        # the MultiplexState for the (stable) tracked set
     mux_obj_ids: list = field(default_factory=list)  # obj index i (mux_state) -> obj_id
 
+    def __post_init__(self):
+        self.video_hw = validate_video_hw(self.video_hw)
+
     @property
     def started(self) -> bool:
         return self.num_frames_processed > 0
@@ -579,6 +583,7 @@ class Sam3VideoPredictor(nn.Module):
         prompts: list[GeometryPrompt] = [],
     ) -> dict[int, MaskletResult]:
         device = self.device
+        self._check_frame_hw(state, frame)
         H, W = state.video_hw
         if not state.started:
             # the caller builds the state, so it cannot know which lineage drives it
@@ -661,6 +666,30 @@ class Sam3VideoPredictor(nn.Module):
     # Streaming helpers
     # ------------------------------------------------------------------
 
+    def _check_frame_hw(self, state: Sam3VideoPredictorState, frame) -> None:
+        """Reject a frame whose size disagrees with the session's ``video_hw``.
+
+        ``forward`` reads ``(H, W)`` from the state -- to normalize prompt coordinates
+        and to resize every output mask -- and never re-reads it from the frame, which
+        the preprocessor squashes to 1008x1008 regardless. So a mismatch has no other
+        symptom: prompts land on the wrong pixels and masks come back at the wrong
+        resolution. :class:`~sam.models.sam2_predictor.Sam2VideoPredictor` asserts the
+        same invariant on its own ``(C, H, W)`` frames.
+
+        Raises:
+            ValueError: if the frame's ``(H, W)`` differs from ``state.video_hw``.
+        """
+        shape = getattr(frame, "shape", None)
+        if shape is None or len(shape) != 3:
+            return  # not an (H, W, C) array: preprocess_to_1008_video will reject it
+        if tuple(shape[:2]) != tuple(state.video_hw):
+            raise ValueError(
+                f"frame is {tuple(shape[:2])} but this session runs at "
+                f"{tuple(state.video_hw)}; SAM 3 takes (H, W) from the state to "
+                "normalize prompts and resize masks, and never re-reads it from the "
+                "frame. Open one session per resolution, or resize the frame."
+            )
+
     def _prepare_tracker_feats(self, sam2_feats, sam2_pos):
         """Project the two hi-res SAM 2 levels (conv_s0/conv_s1) and flatten to ``(HW, B, C)``.
 
@@ -675,38 +704,70 @@ class Sam3VideoPredictor(nn.Module):
         vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
         return vis, vpos, feat_sizes
 
-    # Sentinel for start_session(concept=...): "run detection under the box-only caption".
+    # Sentinel for start_concept_session: "detect under the box-only caption".
     PLACEHOLDER = object()
 
-    def start_session(self, concept=None, video_hw: tuple[int, int] | None = None):
-        """A :class:`~sam.models.video_session.VideoSession` over this predictor.
+    def start_session(self):
+        """An INTERACTIVE :class:`~sam.models.video_session.VideoSession` (no concept).
 
-        The session owns its state and frame counter; call it once per frame. The
-        concept is declared here, at birth, because it is session-scoped and
-        immutable (it must be set before the first frame and never changes).
+        Detection stays off: nothing appears that you did not prompt for, and the
+        obj_ids are the ones you pass on your :class:`~sam.prompts.GeometryPrompt` list.
+        This is the SAM 2 interface unchanged, and the same call means the same thing
+        on a :class:`~sam.models.sam2_predictor.Sam2VideoPredictor`.
+
+        For concept-driven tracking (detection on every frame, ids minted by the
+        detector) use :meth:`start_concept_session` instead.
+
+        Returns:
+            An independent session; hold several over one model and interleave. The
+            video size comes from the first frame, so ``state`` is None until then.
+        """
+        return self._make_session(None)
+
+    def start_concept_session(self, concept):
+        """A CONCEPT :class:`~sam.models.video_session.VideoSession` (detection on).
+
+        The concept is declared here, at birth, because it is session-scoped and
+        immutable (it must be set before the first frame and never changes). Detection
+        then runs on EVERY frame: every instance the concept matches is spawned and
+        tracked, under an obj_id the detector mints.
+
+        Because of that, tracker prompts (click / box / mask) in a concept session are
+        for REFINING ids the session already returned -- seeding a new object with them
+        is an id minefield, since detection spawns its own ids in the same call, before
+        tracker prompts apply. Seed new objects in a :meth:`start_session` session.
 
         Args:
             concept: what detection should find -- a phrase (str or
-                :class:`ConceptPrompt`), :attr:`PLACEHOLDER` for the box-only
-                caption, or None for a purely interactive session (detection off).
-            video_hw: the video's ``(height, width)``; inferred from the first
-                frame when omitted.
+                :class:`ConceptPrompt`), or :attr:`PLACEHOLDER` for this lineage's
+                box-only caption (see :meth:`set_placeholder_concept`).
 
         Returns:
-            An independent session; hold several over one model and interleave.
-        """
-        from sam.models.video_session import VideoSession
+            An independent session; hold several over one model and interleave. The
+            video size comes from the first frame, so ``state`` is None until then.
 
-        on_state = None
+        Raises:
+            ValueError: if ``concept`` is None -- that is a request for an interactive
+                session, which is :meth:`start_session`.
+        """
+        if concept is None:
+            raise ValueError(
+                "start_concept_session needs a concept: pass a phrase, a ConceptPrompt, "
+                f"or {type(self).__name__}.PLACEHOLDER for the box-only caption. For an "
+                "interactive session with detection off, call start_session()."
+            )
         if concept is self.PLACEHOLDER:
             on_state = self.set_placeholder_concept
-        elif concept is not None:
+        else:
             if isinstance(concept, str):
                 concept = ConceptPrompt(concept)
             on_state = lambda st: self.set_concept(st, concept)
+        return self._make_session(on_state)
+
+    def _make_session(self, on_state):
+        """Build a :class:`VideoSession` over this predictor's state class."""
         return VideoSession(
-            self, lambda hw: Sam3VideoPredictorState(video_hw=hw),
-            video_hw=video_hw, on_state=on_state,
+            self, lambda hw: Sam3VideoPredictorState(video_hw=hw), on_state=on_state,
         )
 
     def set_placeholder_concept(self, state: Sam3VideoPredictorState) -> None:
@@ -757,11 +818,13 @@ class Sam3VideoPredictor(nn.Module):
         """
         if box_geo is not None and state.concept is None:
             raise ValueError(
-                "a BoxRoute.DETECTOR box drives detection, which needs a concept: call "
-                "set_concept(state, ConceptPrompt(...)) for your own phrase, or "
-                "set_placeholder_concept(state) for upstream's box-only caption "
-                f"({self.BOX_ONLY_CAPTION!r}). To track only the boxed object instead, "
-                "drop box_route (BoxRoute.TRACKER encodes the box as corner points)."
+                "a BoxRoute.DETECTOR box drives detection, which needs a concept: open "
+                "the session with start_concept_session(<phrase>) for your own phrase, "
+                "or start_concept_session(PLACEHOLDER) for upstream's box-only caption "
+                f"({self.BOX_ONLY_CAPTION!r}) -- on an explicit state, set_concept(state, "
+                "ConceptPrompt(...)) / set_placeholder_concept(state). To track only the "
+                "boxed object instead, drop box_route (BoxRoute.TRACKER encodes the box "
+                "as corner points)."
             )
         return state.concept
 
@@ -1222,6 +1285,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         if prompts:
             self._check_mux_geometry(prompts)
         device = self.device
+        self._check_frame_hw(state, frame)
         H, W = state.video_hw
         if not state.started:
             # the caller builds the state, so it cannot know which lineage drives it

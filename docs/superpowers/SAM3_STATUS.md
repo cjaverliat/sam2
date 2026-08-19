@@ -60,7 +60,8 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   `GeometryPrompt` gained classmethods `click` / `box` / `mask` / `concept_box` taking
   plain tuples/lists/ndarrays (`concept_box` = the DETECTOR route, named for its
   contract; `label=0` for negative). Both video predictors (and `Sam2VideoPredictor`)
-  gained `start_session(concept=..., video_hw=None)` returning a
+  gained `start_session()` (interactive, shared with SAM 2) and
+  `start_concept_session(concept)` (SAM 3 only), returning a
   `sam/models/video_session.py::VideoSession`: owns the state (`session.state`), counts
   frames (`frame_idx=` overrides, counter resumes after), declares the concept at birth
   (str, `ConceptPrompt`, or `PLACEHOLDER` sentinel for the box-only caption -- concept
