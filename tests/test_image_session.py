@@ -73,7 +73,7 @@ def test_process_matches_predict_per_threshold(predictor, image, threshold):
 @pytest.mark.parametrize("geometry", [
     GeometryPrompt.concept_box(REAR_WHEEL),
     GeometryPrompt.concept_box(REAR_WHEEL, label=0),
-    GeometryPrompt.click(1, (560.0, 730.0)),
+    GeometryPrompt.concept_point((560.0, 730.0)),
 ])
 def test_process_matches_predict_with_geometry(predictor, image, geometry):
     expected = predictor.predict(
@@ -178,3 +178,42 @@ def test_multiplex_process_matches_predict():
     expected = mux.predict(img, ConceptPrompt(text="wheel"))
     got = mux.start_image_session(img).process(ConceptPrompt(text="wheel"))
     assert_same(got, expected)
+
+
+@needs_model
+def test_placeholder_uses_this_lineage_box_only_caption(predictor, image):
+    """PLACEHOLDER == upstream's no-text caption for the base lineage: "visual"."""
+    from sam.prompts import ConceptPrompt
+
+    expected = predictor.predict(
+        image, ConceptPrompt(text=predictor.BOX_ONLY_CAPTION),
+        geometry=GeometryPrompt.concept_box(REAR_WHEEL))
+    got = predictor.predict(
+        image, predictor.PLACEHOLDER, geometry=GeometryPrompt.concept_box(REAR_WHEEL))
+    assert_same(got, expected)
+    assert predictor.BOX_ONLY_CAPTION == "visual"
+
+
+@needs_model
+def test_predict_takes_a_bare_phrase(predictor, image):
+    """`predict(img, "wheel")` matches ConceptPrompt("wheel"), as sessions already allow."""
+    assert_same(predictor.predict(image, "wheel"),
+                predictor.predict(image, ConceptPrompt(text="wheel")))
+
+
+@needs_model
+def test_image_path_refuses_tracker_prompts(predictor, image):
+    """The SAM 2 gesture names the alternative instead of quietly meaning something else."""
+    with pytest.raises(ValueError, match="concept_box"):
+        predictor.predict(image, "wheel", geometry=GeometryPrompt.box(1, REAR_WHEEL))
+    with pytest.raises(ValueError, match="concept_point"):
+        predictor.predict(image, "wheel", geometry=GeometryPrompt.click(1, (560.0, 730.0)))
+
+
+def test_placeholder_caption_differs_by_lineage():
+    """Base and multiplex encode different captions -- passing the wrong one finds nothing."""
+    from sam.models.sam3_predictor import Sam3MultiplexPredictor, Sam3Predictor
+
+    assert Sam3Predictor.BOX_ONLY_CAPTION == "visual"
+    assert Sam3MultiplexPredictor.BOX_ONLY_CAPTION == "<text placeholder>"
+    assert Sam3Predictor.PLACEHOLDER is Sam3MultiplexPredictor.PLACEHOLDER

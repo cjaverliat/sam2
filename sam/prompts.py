@@ -6,27 +6,34 @@ import enum
 import torch
 
 
-class BoxRoute(enum.Enum):
-    """Which part of the model a VIDEO box prompt is meant for.
+class PromptRoute(enum.Enum):
+    """Which half of SAM 3 a geometry prompt is talking to.
 
-    The image predictor has no tracker, so its ``geometry=`` box is always a detector
-    prompt and this route is ignored there. ``boxes_labels`` (positive/negative) is a
-    detector notion likewise: on video it requires ``DETECTOR``.
+    A prompt is one thing or the other, never both: you are either pointing at ONE
+    object you want back (TRACKER, SAM 2 semantics) or describing what the concept
+    search should look for (DETECTOR, SAM 3 only). The named constructors set this
+    for you -- ``click`` / ``box`` / ``mask`` are TRACKER, ``concept_point`` /
+    ``concept_box`` are DETECTOR -- so callers rarely name the route itself.
 
     TRACKER:
-        SAM 2 semantics, and the default: the box is encoded as its two corner points
-        (labels 2 and 3) and seeds ONE object through the tracker's prompt encoder. No
-        detection runs, so nothing else can appear.
+        The default. Points, box corners (labels 2 and 3) and masks go to the
+        tracker's prompt encoder and seed or refine ONE object under the ``obj_id``
+        you chose. Detection does not run, so nothing else can appear. Video only:
+        the image predictor owns no tracker.
     DETECTOR:
-        SAM 3 only: the box goes to the detector's geometric slot and biases that
-        frame's detection. Detection then runs on every frame, so every instance the
-        concept matches is tracked, not only the boxed one -- which is why this route
-        must be asked for, and why the session needs a concept (``set_concept`` or
-        ``set_placeholder_concept``).
+        Points and boxes go to the detector's geometric slot and bias that frame's
+        concept search; every instance the concept matches is returned, not only the
+        one you marked, and the ids are the detector's. Needs a concept -- a phrase,
+        or the box-only ``PLACEHOLDER`` caption. Masks have no detector slot: neither
+        checkpoint ships ``mask_encoder`` weights.
     """
 
     TRACKER = "tracker"
     DETECTOR = "detector"
+
+
+# The name this enum shipped under when only boxes could be routed.
+BoxRoute = PromptRoute
 
 
 class GeometryPrompt:
@@ -39,7 +46,7 @@ class GeometryPrompt:
         boxes_labels: torch.Tensor | None = None,
         masks_logits: torch.Tensor | None = None,
         is_normalized: bool = False,
-        box_route: BoxRoute = BoxRoute.TRACKER,
+        route: PromptRoute = PromptRoute.TRACKER,
     ):
         if (
             points_coords is None
@@ -71,6 +78,13 @@ class GeometryPrompt:
         if boxes_labels is not None and (boxes_labels.ndim != 1 or boxes_labels.shape[0] != boxes.shape[0]):
             raise ValueError(f"Expected boxes_labels to be of shape (N,), got {boxes_labels.shape}")
 
+        if masks_logits is not None and route is PromptRoute.DETECTOR:
+            raise NotImplementedError(
+                "the detector has no mask slot: neither SAM 3 checkpoint ships "
+                "mask_encoder weights. Use concept_box / concept_point to bias the "
+                "search, or GeometryPrompt.mask(obj_id, mask) to prompt the tracker"
+            )
+
         if masks_logits is not None:
             mask_res = masks_logits.shape[-2:]
             masks_logits = masks_logits.reshape(1, *mask_res) # Reshape to (1, H, W)
@@ -82,11 +96,16 @@ class GeometryPrompt:
         self.boxes_labels = boxes_labels
         self.masks_logits = masks_logits
         self.is_normalized = is_normalized
-        self.box_route = box_route
+        self.route = route
 
     @classmethod
     def click(cls, obj_id: int, xy, label: int = 1) -> GeometryPrompt:
-        """A single point click at pixel ``xy = (x, y)``; ``label`` 1 positive, 0 negative."""
+        """A click on ONE object at pixel ``xy``; ``label`` 1 positive, 0 negative.
+
+        The SAM 2 gesture: this seeds or refines the object you name with ``obj_id``
+        through the tracker, and nothing else comes back. To bias a concept search
+        instead, use :meth:`concept_point`.
+        """
         coords = torch.as_tensor(xy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 2:
             raise ValueError(f"click expects an (x, y) pair, got {tuple(coords.shape)}")
@@ -98,7 +117,12 @@ class GeometryPrompt:
 
     @classmethod
     def box(cls, obj_id: int, xyxy) -> GeometryPrompt:
-        """A tracker box (interactive VOS): seeds ONE object from pixel ``xyxy``."""
+        """A box around ONE object (interactive VOS): seeds it from pixel ``xyxy``.
+
+        The SAM 2 gesture, encoded as the box's two corners. Detection does not run,
+        so only this object is tracked. To bias a concept search instead, use
+        :meth:`concept_box`.
+        """
         coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 4:
             raise ValueError(f"box expects (xmin, ymin, xmax, ymax), got {tuple(coords.shape)}")
@@ -123,12 +147,45 @@ class GeometryPrompt:
             obj_id=-1,  # unused: detection mints the ids
             boxes=coords.reshape(1, 4),
             boxes_labels=None if label == 1 else torch.tensor([label]),
-            box_route=BoxRoute.DETECTOR,
+            route=PromptRoute.DETECTOR,
+        )
+
+    @classmethod
+    def concept_point(cls, xy, label: int = 1) -> GeometryPrompt:
+        """A detector point (SAM 3): biases the concept search toward pixel ``xy``.
+
+        The point form of :meth:`concept_box`, and the same contract: the concept
+        still decides WHAT comes back, this only says where to look harder. ``label``
+        1 marks the point as an example, 0 as a counter-example ("everything matching
+        the concept EXCEPT this one").
+
+        Needs a concept -- a phrase, or the predictor's ``PLACEHOLDER`` for the
+        box-only caption. Takes no ``obj_id``: a detector point selects nothing, so
+        the ids come from detection.
+
+        Contrast :meth:`click`, which is the SAM 2 gesture: that one picks out ONE
+        object and returns it alone.
+        """
+        coords = torch.as_tensor(xy, dtype=torch.float32).reshape(-1)
+        if coords.numel() != 2:
+            raise ValueError(
+                f"concept_point expects an (x, y) pair, got {tuple(coords.shape)}")
+        if label not in (0, 1):
+            raise ValueError(f"concept_point label must be 1 or 0, got {label!r}")
+        return cls(
+            obj_id=-1,  # unused: detection mints the ids
+            points_coords=coords.reshape(1, 2),
+            points_labels=torch.tensor([label], dtype=torch.int32),
+            route=PromptRoute.DETECTOR,
         )
 
     @classmethod
     def mask(cls, obj_id: int, mask) -> GeometryPrompt:
-        """A mask prompt from an ``(H, W)`` boolean mask or float logits."""
+        """A mask over ONE object, from an ``(H, W)`` boolean mask or float logits.
+
+        Tracker-only: the detector has no mask slot in either SAM 3 checkpoint, so
+        there is no ``concept_mask`` counterpart.
+        """
         m = torch.as_tensor(mask)
         if m.dtype == torch.bool:
             m = m.float() * 20.0 - 10.0  # binarising at 0 recovers the input
@@ -137,7 +194,7 @@ class GeometryPrompt:
     @property
     def to_detector(self) -> bool:
         """Whether this prompt carries a box bound for the detector's geometric slot."""
-        return self.boxes is not None and self.box_route is BoxRoute.DETECTOR
+        return self.route is PromptRoute.DETECTOR
 
     def tracker_points(self) -> tuple[torch.Tensor, torch.Tensor] | None:
         """The points this prompt feeds to the tracker's prompt encoder.
@@ -151,10 +208,12 @@ class GeometryPrompt:
             ``(coords, labels)`` of shapes ``(N, 2)`` / ``(N,)``, or None when the prompt
             has nothing for the tracker (a DETECTOR-route box, or a mask alone).
         """
+        if self.route is PromptRoute.DETECTOR:
+            return None  # every DETECTOR geometry belongs to the geometric slot
         parts = []
         if self.points_coords is not None:
             parts.append((self.points_coords, self.points_labels))
-        if self.boxes is not None and self.box_route is BoxRoute.TRACKER:
+        if self.boxes is not None and self.route is PromptRoute.TRACKER:
             corners = self.boxes.reshape(-1, 2)
             labels = torch.tensor(
                 [2, 3], dtype=torch.int32, device=corners.device
@@ -188,7 +247,7 @@ class GeometryPrompt:
             boxes_labels=boxes_labels,
             masks_logits=masks_logits,
             is_normalized=self.is_normalized,
-            box_route=self.box_route,
+            route=self.route,
         )
 
     def clone(self) -> GeometryPrompt:
@@ -200,7 +259,7 @@ class GeometryPrompt:
             boxes_labels=self.boxes_labels.clone() if self.boxes_labels is not None else None,
             masks_logits=self.masks_logits.clone() if self.masks_logits is not None else None,
             is_normalized=self.is_normalized,
-            box_route=self.box_route,
+            route=self.route,
         )
 
 

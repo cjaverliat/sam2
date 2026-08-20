@@ -96,14 +96,9 @@ def test_image_box_prompt_parity(stem, determinism_no_det_algos):
 
     pred = build_sam3_multiplex(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=CKPT, device="cuda")
-    # label 1 IS the all-positive default, so drive that stem with boxes_labels=None
-    # to exercise the default path; the negative stem passes its label explicitly
-    labels = (
-        None if scn["box_label"] == 1
-        else torch.tensor([scn["box_label"]], dtype=torch.long)
-    )
-    box = GeometryPrompt(obj_id=1, boxes=torch.tensor([scn["box_xyxy"]], dtype=torch.float32),
-                         boxes_labels=labels)
+    # concept_box is the detector route: label 1 leaves boxes_labels None (the
+    # all-positive default path), the negative stem carries its label explicitly
+    box = GeometryPrompt.concept_box(scn["box_xyxy"], label=scn["box_label"])
     det = pred.predict(frame, ConceptPrompt(scn["phrase"]),
                        confidence_threshold=scn["confidence_threshold"], geometry=box)
 

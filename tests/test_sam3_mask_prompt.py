@@ -20,7 +20,7 @@ import pytest
 import torch
 from PIL import Image
 
-from sam.prompts import BoxRoute, GeometryPrompt
+from sam.prompts import PromptRoute, GeometryPrompt
 
 FIX = Path("tests/parity/fixtures/sam3")
 CKPT = "checkpoints/sam3.pt"
@@ -88,18 +88,18 @@ def test_mask_only_prompt_seeds_and_tracks(predictor, clip):
     )
 
 
-def test_mask_with_detector_box_is_rejected(predictor, clip):
-    """The detector's geometry mask slot has no weights -- that pairing must raise."""
-    from sam.models.sam3_predictor import Sam3VideoPredictorState
+def test_mask_with_detector_route_is_rejected(clip):
+    """The detector's mask slot has no weights, so that pairing cannot be built.
 
-    frames, golden = clip
-    h, w, _ = frames[0].shape
-    state = Sam3VideoPredictorState(video_hw=(h, w))
-    prompt = GeometryPrompt(
-        obj_id=1,
-        masks_logits=_mask_logits(golden[0]).cuda(),
-        boxes=torch.tensor([[285.0, 0.0, 535.0, 430.0]], device="cuda"),
-        box_route=BoxRoute.DETECTOR,
-    )
-    with pytest.raises(NotImplementedError, match="mask"):
-        predictor.forward(state, 0, frames[0], prompts=[prompt])
+    The check sits in the constructor rather than in ``forward``: a mask is a tracker
+    prompt in every lineage, so the mistake is knowable without a model, a frame, or
+    a state.
+    """
+    _, golden = clip
+    with pytest.raises(NotImplementedError, match="mask_encoder"):
+        GeometryPrompt(
+            obj_id=1,
+            masks_logits=_mask_logits(golden[0]),
+            boxes=torch.tensor([[285.0, 0.0, 535.0, 430.0]]),
+            route=PromptRoute.DETECTOR,
+        )

@@ -31,12 +31,20 @@ from sam.modeling.memory.bank import ObjectMemoryBank
 from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
 from sam.models.video_session import VideoSession, validate_video_hw
 from sam.modeling.tracking.sam3_tracker_utils import fill_holes_in_mask_scores
-from sam.prompts import ConceptPrompt, GeometryPrompt
+from sam.prompts import ConceptPrompt, GeometryPrompt, PromptRoute
 from sam.results import Emit, MaskletResult
 from sam.utils.sam3_transforms import preprocess_to_1008, preprocess_to_1008_video
 
 if TYPE_CHECKING:
     from sam.results import Sam3DetectionResult
+
+
+# The caption upstream encodes when a prompt carries geometry but no text. Lineage
+# specific: the base path selects TEXT_ID_FOR_VISUAL, i.e. the literal "visual"
+# (sam3_video_inference.py:868-876), while the multiplex path has no such else-branch
+# (sam3_multiplex_tracking.py:1698-1705) and leaves text_ids at 0, i.e. slot 0.
+BOX_ONLY_CAPTION_BASE = "visual"
+BOX_ONLY_CAPTION_MUX = "<text placeholder>"
 
 
 class Sam3Predictor(nn.Module):
@@ -57,9 +65,33 @@ class Sam3Predictor(nn.Module):
         self.text_encoder = text_encoder
         self.detector = detector
 
+    # Sentinel for predict/process: "detect under the box-only caption".
+    PLACEHOLDER = object()
+    BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_BASE
+
     @property
     def device(self) -> torch.device:
         return next(self.parameters()).device
+
+    def _resolve_concept(self, concept) -> ConceptPrompt:
+        """A phrase, a :class:`ConceptPrompt`, or :attr:`PLACEHOLDER` -> what to encode.
+
+        :attr:`PLACEHOLDER` is this lineage's box-only caption (:attr:`BOX_ONLY_CAPTION`),
+        which is what upstream encodes when geometry arrives with no text. It has to be
+        asked for by name: adopting it silently would turn "find what I marked" into
+        "search for this caption", and the caption differs per lineage -- passing the
+        wrong one returns nothing at all.
+        """
+        if concept is self.PLACEHOLDER:
+            return ConceptPrompt(self.BOX_ONLY_CAPTION)
+        if isinstance(concept, str):
+            return ConceptPrompt(concept)
+        if concept is None:
+            raise ValueError(
+                "predict needs a concept: pass a phrase, a ConceptPrompt, or "
+                f"{type(self).__name__}.PLACEHOLDER for the box-only caption"
+            )
+        return concept
 
     # ------------------------------------------------------------------
     # Block methods (spec §7) — encode_image once, encode_text per concept, detect.
@@ -91,7 +123,7 @@ class Sam3Predictor(nn.Module):
         # forward returns (text_attention_mask (batch, seq) True-where-PAD,
         #                  text_memory_resized (seq, batch, d_model), inputs_embeds_T)
         text_attention_mask, text_memory_resized, _ = self.text_encoder(
-            [concept.text], device=self.device
+            [self._resolve_concept(concept).text], device=self.device
         )
         return text_memory_resized, text_attention_mask
 
@@ -280,7 +312,11 @@ def _normalized_points(prompt, image_hw, device, coords=None):
 
 
 def _pack_geometry(prompt, image_hw, device):
-    """Pack a point/box ``GeometryPrompt`` into the detector's geometry inputs.
+    """Pack a DETECTOR-route ``GeometryPrompt`` into the detector's geometry inputs.
+
+    TRACKER-route prompts are rejected rather than reinterpreted: an image predictor
+    owns no tracker, so silently treating ``GeometryPrompt.box`` as a detector
+    exemplar answers a question the caller did not ask.
 
     Points -> normalized xy ``(N,1,2)`` + labels ``(N,1)``; boxes xyxy (pixel, or
     normalized via ``is_normalized``) -> normalized cxcywh ``(N,1,4)`` + labels
@@ -292,7 +328,16 @@ def _pack_geometry(prompt, image_hw, device):
     if prompt.masks_logits is not None:
         raise NotImplementedError(
             "mask geometry prompts are unsupported (no mask_encoder weights); "
-            "use box or point prompts"
+            "use GeometryPrompt.concept_box / concept_point instead"
+        )
+    if prompt.route is not PromptRoute.DETECTOR:
+        what = "box" if prompt.boxes is not None else "click"
+        instead = "concept_box(xyxy)" if prompt.boxes is not None else "concept_point((x, y))"
+        raise ValueError(
+            f"GeometryPrompt.{what} marks ONE object for the tracker, which this "
+            f"predictor does not have. To bias the concept search use "
+            f"GeometryPrompt.{instead}; to select one object, open an interactive "
+            f"session on the video predictor (start_session)"
         )
     h, w = image_hw
     geo = {}
@@ -334,6 +379,8 @@ class Sam3MultiplexPredictor(Sam3Predictor):
     -> instantiate -> strict-load the relevant ``detector.*`` subtree of
     ``sam3.1_multiplex.pt``).
     """
+
+    BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_MUX
 
     @torch.inference_mode()
     def predict(
@@ -503,7 +550,7 @@ class Sam3VideoPredictor(nn.Module):
         "min_keep_alive": -1,
     }
     # caption encoded for a box-only (no text) prompt -- see _placeholder_concept
-    BOX_ONLY_CAPTION = "visual"
+    BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_BASE
 
     def __init__(
         self,
@@ -666,10 +713,10 @@ class Sam3VideoPredictor(nn.Module):
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)
 
-            box_geo, tracker_prompts = self._split_and_pack_geometry(
+            geo, tracker_prompts = self._split_and_pack_geometry(
                 prompts or [], (H, W), device
             )
-            concept = self._concept_for_detection(state, box_geo)
+            concept = self._concept_for_detection(state, geo)
 
             # 1) propagate existing tracklets (memory-conditioned, per object)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -684,7 +731,7 @@ class Sam3VideoPredictor(nn.Module):
 
             # 2) detection (GATED: needs a concept — text, or the box-only placeholder)
             det = (
-                self._detect(det_feats, det_pos, concept, geo=box_geo)
+                self._detect(det_feats, det_pos, concept, geo=geo)
                 if concept is not None else None
             )
 
@@ -868,7 +915,7 @@ class Sam3VideoPredictor(nn.Module):
             self._geo_concept = ConceptState(ConceptPrompt(text), emb, mask)
         return self._geo_concept
 
-    def _concept_for_detection(self, state, box_geo):
+    def _concept_for_detection(self, state, geo):
         """The concept driving this frame's detection.
 
         Detection runs only for a session that asked for it, via :meth:`set_concept` or
@@ -882,27 +929,33 @@ class Sam3VideoPredictor(nn.Module):
             detection stays gated off and only tracker prompts produce objects).
 
         Raises:
-            ValueError: if a DETECTOR-route box arrives with no concept set.
+            ValueError: if DETECTOR-route geometry arrives with no concept set.
         """
-        if box_geo is not None and state.concept is None:
+        if geo is not None and state.concept is None:
             raise ValueError(
-                "a BoxRoute.DETECTOR box drives detection, which needs a concept: open "
-                "the session with start_concept_session(<phrase>) for your own phrase, "
-                "or start_concept_session(PLACEHOLDER) for upstream's box-only caption "
-                f"({self.BOX_ONLY_CAPTION!r}) -- on an explicit state, set_concept(state, "
-                "ConceptPrompt(...)) / set_placeholder_concept(state). To track only the "
-                "boxed object instead, drop box_route (BoxRoute.TRACKER encodes the box "
-                "as corner points)."
+                "concept_box / concept_point drive detection, which needs a concept: "
+                "open the session with start_concept_session(<phrase>) for your own "
+                "phrase, or start_concept_session(PLACEHOLDER) for upstream's box-only "
+                f"caption ({self.BOX_ONLY_CAPTION!r}) -- on an explicit state, "
+                "set_concept(state, ConceptPrompt(...)) / set_placeholder_concept(state)."
+                " To track only the object you marked instead, use GeometryPrompt.box / "
+                ".click, which go to the tracker."
             )
         return state.concept
 
     def _split_and_pack_geometry(self, prompts, hw, device):
         """Split prompts by the route they take through the model.
 
-        Boxes bias detection through the DETR geometric slot; points and masks seed or
-        refine an object through the tracker's prompt encoder. A prompt carrying both a
-        box and a mask asks for the detector's mask slot, which has no weights in either
-        checkpoint.
+        DETECTOR-route geometry -- ``concept_box`` and ``concept_point`` -- biases
+        detection through the DETR geometric slot; TRACKER-route points, box corners and
+        masks seed or refine one object through the tracker's prompt encoder. The route
+        is the prompt's, so the same frame can carry both.
+
+        Detector POINTS are ours, not upstream's: the weights are there and trained
+        (``geometry_encoder.points_*`` ships in both checkpoints, and upstream samples
+        point prompts during training), but upstream's video inference hardcodes
+        ``point_embeddings=None`` (``sam3_video_inference.py:208-210``), so this path
+        has no golden to pin it. Boxes remain the parity-tested route.
 
         Args:
             prompts: this frame's :class:`GeometryPrompt` list.
@@ -910,8 +963,8 @@ class Sam3VideoPredictor(nn.Module):
             device: device to build the packed tensors on.
 
         Returns:
-            ``(box_geo, tracker_prompts)``: the packed geometric-slot dict (or None),
-            and the prompts to route to the tracker.
+            ``(geo, tracker_prompts)``: the packed geometric-slot dict (or None), which
+            may carry boxes, points or both, and the prompts to route to the tracker.
 
         Raises:
             NotImplementedError: if a DETECTOR-route prompt also carries a mask.
@@ -921,23 +974,24 @@ class Sam3VideoPredictor(nn.Module):
         mislabelled = [p for p in prompts if p.boxes_labels is not None and not p.to_detector]
         if mislabelled:
             raise ValueError(
-                "boxes_labels signs a box for the detector; pass "
-                "box_route=BoxRoute.DETECTOR, or drop the labels to seed the boxed "
-                "object through the tracker"
+                "boxes_labels signs a box for the detector; build it with "
+                "GeometryPrompt.concept_box(xyxy, label=...), or drop the labels to "
+                "seed the boxed object through the tracker with GeometryPrompt.box"
             )
-        box_prompts = [p for p in prompts if p.to_detector]
+        detector_prompts = [p for p in prompts if p.to_detector]
         tracker_prompts = [
             p for p in prompts
             if p.tracker_points() is not None or p.masks_logits is not None
         ]
-        box_geo = None
-        if box_prompts:
-            packed = [_pack_geometry(p, hw, device) for p in box_prompts]
-            box_geo = {
-                "box_coords": torch.cat([g["box_coords"] for g in packed], 0),
-                "box_labels": torch.cat([g["box_labels"] for g in packed], 0),
+        geo = None
+        if detector_prompts:
+            packed = [_pack_geometry(p, hw, device) for p in detector_prompts]
+            geo = {
+                key: torch.cat([g[key] for g in packed if key in g], 0)
+                for key in ("box_coords", "box_labels", "point_coords", "point_labels")
+                if any(key in g for g in packed)
             }
-        return box_geo, tracker_prompts
+        return geo, tracker_prompts
 
     def _detect(self, det_feats, det_pos, concept: ConceptState, geo=None) -> "Sam3DetectionResult":
         """Run the DETR detector at the tracker's low-res mask grid (squashed space).
@@ -1282,7 +1336,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         "max_keep_alive": 8,
         "min_keep_alive": -4,
     }
-    BOX_ONLY_CAPTION = "<text placeholder>"
+    BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_MUX
 
     def encode_image(self, x: torch.Tensor):
         """One trunk pass -> the THREE sam3.1 pyramids (tri-neck), scalp applied to each.
@@ -1368,10 +1422,10 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 int_f, int_p, self.tracker.interactive_sam_mask_decoder
             )
             num_frames = frame_idx + 1
-            box_geo, point_prompts = self._split_and_pack_geometry(
+            geo, point_prompts = self._split_and_pack_geometry(
                 prompts, (H, W), device
             )
-            concept = self._concept_for_detection(state, box_geo)
+            concept = self._concept_for_detection(state, geo)
 
             # 1) joint-propagate existing tracklets (multiplex track_step at batch=num_buckets)
             active_ids = sorted(state.bank.known_obj_ids)
@@ -1386,7 +1440,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             # 2) detection (GATED) — concept text and/or a box in the geometric slot; a
             # box-only prompt uses the '<geometric>' placeholder concept.
             det = (
-                self._detect(det_f, det_p, concept, geo=box_geo)
+                self._detect(det_f, det_p, concept, geo=geo)
                 if concept is not None else None
             )
 

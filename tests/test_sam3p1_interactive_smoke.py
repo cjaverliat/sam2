@@ -6,7 +6,7 @@ import pytest
 import torch
 from PIL import Image
 
-from sam.prompts import BoxRoute, ConceptPrompt, GeometryPrompt
+from sam.prompts import PromptRoute, ConceptPrompt, GeometryPrompt
 from sam.results import Emit
 
 CKPT = "checkpoints/sam3.1_multiplex.pt"
@@ -61,7 +61,7 @@ def test_video_box_prompt_spawns_then_suppresses_while_unmatched():
     h, w, _ = frames[0].shape
     st = _state((h, w))
     box = GeometryPrompt(obj_id=1, boxes=torch.tensor([[300.0, 150.0, 470.0, 420.0]]),
-                         box_route=BoxRoute.DETECTOR)
+                         route=PromptRoute.DETECTOR)
     pred.set_placeholder_concept(st)                   # box-only caption, explicit
     out0 = pred.forward(st, 0, frames[0], prompts=[box])
     assert len(out0) >= 1                              # detector found the boxed person(s)

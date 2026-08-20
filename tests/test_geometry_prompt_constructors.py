@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from sam.prompts import BoxRoute, GeometryPrompt
+from sam.prompts import PromptRoute, GeometryPrompt
 
 
 def test_click_positive_by_default():
@@ -33,7 +33,7 @@ def test_click_accepts_list_and_ndarray():
 def test_box_is_tracker_route():
     prompt = GeometryPrompt.box(2, (285, 0, 535, 430))
     assert prompt.boxes.tolist() == [[285.0, 0.0, 535.0, 430.0]]
-    assert prompt.box_route is BoxRoute.TRACKER
+    assert prompt.route is PromptRoute.TRACKER
     coords, labels = prompt.tracker_points()
     assert coords.tolist() == [[285.0, 0.0], [535.0, 430.0]]
     assert labels.tolist() == [2, 3]
@@ -41,7 +41,7 @@ def test_box_is_tracker_route():
 
 def test_concept_box_is_detector_route():
     prompt = GeometryPrompt.concept_box((285, 0, 535, 430))
-    assert prompt.box_route is BoxRoute.DETECTOR
+    assert prompt.route is PromptRoute.DETECTOR
     assert prompt.to_detector
     assert prompt.boxes_labels is None  # positive by default (packer defaults to 1)
 
