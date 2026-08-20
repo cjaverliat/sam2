@@ -851,17 +851,18 @@ class Sam3MultiplexTracker(Sam3Tracker):
             for x, s in zip(feats[:-1], sizes[:-1])
         ]
 
-    def masks_from_points(self, point_inputs, backbone_features_interactive):
-        """Decode point clicks into binarised ``(n, 1, ims, ims)`` conditioning masks.
+    def sam_heads_from_points(self, point_inputs, backbone_features_interactive):
+        """Run the interactive prompt encoder + mask decoder on ``point_inputs``.
 
-        Runs the interactive prompt encoder + mask decoder on ``point_inputs`` and
-        resizes to ``input_mask_size`` (the seed/grow mask grid). Symmetric with
-        :meth:`add_new_masks_to_existing_state`, which consumes these masks.
+        The raw head output, at the tracker's own grid: ``high_res_masks`` are logits
+        and ``object_score_logits`` scores them. :meth:`masks_from_points` binarises
+        this for the seed/grow path; a still image wants the logits instead, so it can
+        resize them to the source resolution itself.
         """
         int_feats = backbone_features_interactive["vision_feats"]
         int_sizes = backbone_features_interactive["feat_sizes"]
         n = point_inputs["point_coords"].shape[0]
-        sam_out = self._forward_sam_heads(
+        return self._forward_sam_heads(
             backbone_features=self._get_interactive_pix_mem(int_feats, int_sizes),
             point_inputs=point_inputs,
             interactive_high_res_features=self._interactive_high_res_features(
@@ -870,6 +871,15 @@ class Sam3MultiplexTracker(Sam3Tracker):
             multimask_output=self._use_multimask(True, point_inputs),
             objects_to_interact=list(range(n)),
         )
+
+    def masks_from_points(self, point_inputs, backbone_features_interactive):
+        """Decode point clicks into binarised ``(n, 1, ims, ims)`` conditioning masks.
+
+        Binarises :meth:`sam_heads_from_points` and resizes to ``input_mask_size`` (the
+        seed/grow mask grid). Symmetric with :meth:`add_new_masks_to_existing_state`,
+        which consumes these masks.
+        """
+        sam_out = self.sam_heads_from_points(point_inputs, backbone_features_interactive)
         return F.interpolate(
             (sam_out["high_res_masks"] > 0).float(),
             size=(self.input_mask_size, self.input_mask_size),

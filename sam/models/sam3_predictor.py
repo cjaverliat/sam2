@@ -103,8 +103,8 @@ class Sam3Predictor(nn.Module):
     ``process(image, concept=...)`` returns a :class:`~sam.results.Sam3DetectionResult`
     with the per-instance masks / boxes / scores for that concept, and
     ``process(image, geometry=...)`` runs the owned tracker to return exactly the objects
-    you marked (SAM 2's contract). Predictors built without a tracker -- EfficientSAM3,
-    the multiplex -- answer the first only.
+    you marked (SAM 2's contract). Both SAM 3 lineages carry a tracker; EfficientSAM3
+    does not, so it answers the concept path only.
     """
 
     def __init__(self, vision_encoder: nn.Module, text_encoder: nn.Module,
@@ -329,7 +329,8 @@ class Sam3Predictor(nn.Module):
         if self.tracker is None:
             raise NotImplementedError(
                 "this predictor was built without a tracker, so it can only detect "
-                "concepts; build_sam3 loads one, build_sam3_multiplex does not"
+                "concepts; build_sam3 and build_sam3_multiplex both load one, "
+                "EfficientSAM3 has none"
             )
         H, W = enc.image_hw
         masks, scores, ids = [], [], []
@@ -426,6 +427,45 @@ def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
         boxes[i, 2] = xs.max()
         boxes[i, 3] = ys.max()
     return boxes
+
+
+def _mux_backbone_features(feats, pos, decoder) -> dict:
+    """Project the two hi-res pyramid levels (``conv_s0``/``conv_s1`` of ``decoder``) and
+    flatten to ``(HW, 1, C)`` -- the ``backbone_features_*`` dict the multiplex heads
+    consume (batch=1; the multiplex tracker expands to ``num_buckets`` internally)."""
+    fpn = list(feats)
+    fpn[0] = decoder.conv_s0(fpn[0])
+    fpn[1] = decoder.conv_s1(fpn[1])
+    feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
+    vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
+    vpos = [p.flatten(2).permute(2, 0, 1) for p in pos]
+    return {
+        "vision_feats": vis,
+        "vision_masks": [None] * len(vis),
+        "vision_pos_embeds": vpos,
+        "feat_sizes": feat_sizes,
+    }
+
+
+def _as_point_prompt(prompt: GeometryPrompt) -> GeometryPrompt:
+    """The prompt's tracker geometry as a point-only prompt (a box -> its corners).
+
+    The multiplex interactive head takes points, so a TRACKER-route box reaches it the
+    way SAM 2 has always encoded one: corner labels 2 and 3.
+    """
+    points = prompt.tracker_points()
+    if points is None:
+        raise NotImplementedError(
+            "the multiplex interactive head takes clicks and boxes; a mask prompt has "
+            "no multiplex path -- use the base SAM 3 predictor for that"
+        )
+    coords, labels = points
+    return GeometryPrompt(
+        obj_id=prompt.obj_id,
+        points_coords=coords,
+        points_labels=labels.to(torch.int32),
+        is_normalized=prompt.is_normalized,
+    )
 
 
 def _build_mux_point_inputs(prompts, video_hw, image_size, device):
@@ -550,6 +590,55 @@ class Sam3MultiplexPredictor(Sam3Predictor):
     """
 
     BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_MUX
+
+    def _encode_views(self, x: torch.Tensor):
+        """One trunk pass -> the DETECTION pyramid and the INTERACTIVE one (tri-neck).
+
+        SAM 3.1's encoder carries three necks; a still image needs two -- ``det`` for the
+        detector, ``interactive`` for the tracker's cond-frame head. The propagation neck
+        exists to carry objects across frames, which one image has none of.
+        """
+        det_f, det_p, _, _, int_f, int_p = self.vision_encoder.vision_backbone.forward_all(x)
+        s = self.vision_encoder.scalp
+        if s > 0:
+            det_f, det_p = det_f[:-s], det_p[:-s]
+            int_f, int_p = int_f[:-s], int_p[:-s]
+        return det_f, det_p, int_f, int_p
+
+    def _select_objects(self, enc: "EncodedImage", prompts) -> "Sam3DetectionResult":
+        """Decode the marked objects through SAM 3.1's interactive head.
+
+        The multiplex tracker packs objects into buckets to track them jointly, which a
+        still image does not need: the cond-frame head decodes every prompt in one
+        batched call and there is no state to keep afterwards.
+        """
+        from sam.results import Sam3DetectionResult
+
+        if self.tracker is None:
+            raise NotImplementedError(
+                "this predictor was built without a tracker, so it can only detect concepts"
+            )
+        H, W = enc.image_hw
+        points = [_as_point_prompt(p.to(self.device)) for p in prompts]
+        with self._autocast(enc.dtype):
+            bf_int = _mux_backbone_features(
+                enc.sam2_feats, enc.sam2_pos, self.tracker.interactive_sam_mask_decoder
+            )
+            point_inputs, obj_ids = _build_mux_point_inputs(
+                points, (H, W), self.tracker.image_size, self.device
+            )
+            out = self.tracker.sam_heads_from_points(point_inputs, bf_int)
+
+        masks_logits = F.interpolate(
+            out["high_res_masks"].float(), size=(H, W), mode="bilinear", align_corners=False,
+        )[:, 0]
+        return Sam3DetectionResult(
+            masks_logits=masks_logits,
+            boxes=_masks_to_boxes(masks_logits > 0.0),
+            scores=out["object_score_logits"].float().reshape(-1).sigmoid(),
+            presence=None,  # no concept was asked for, so nothing to be present
+            instance_ids=torch.as_tensor(obj_ids, device=masks_logits.device),
+        )
 
     def _detect_encoded(
         self, feats, pos, image_hw, concept: ConceptPrompt,
@@ -1686,21 +1775,8 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
     # ------------------------------------------------------------------
 
     def _mux_backbone_features(self, feats, pos, decoder) -> dict:
-        """Project the two hi-res pyramid levels (``conv_s0``/``conv_s1`` of ``decoder``) and
-        flatten to ``(HW, 1, C)`` -- the ``backbone_features_*`` dict the multiplex ``track_step``
-        consumes (batch=1; the multiplex tracker expands to ``num_buckets`` internally)."""
-        fpn = list(feats)
-        fpn[0] = decoder.conv_s0(fpn[0])
-        fpn[1] = decoder.conv_s1(fpn[1])
-        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
-        vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
-        vpos = [p.flatten(2).permute(2, 0, 1) for p in pos]
-        return {
-            "vision_feats": vis,
-            "vision_masks": [None] * len(vis),
-            "vision_pos_embeds": vpos,
-            "feat_sizes": feat_sizes,
-        }
+        """See :func:`_mux_backbone_features` -- shared with the image predictor."""
+        return _mux_backbone_features(feats, pos, decoder)
 
     def _propagate_multiplex(self, state, frame_idx, bf_prop, num_frames) -> dict:
         """Joint-propagate ALL tracked objects one frame; return per-object output views.

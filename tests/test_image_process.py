@@ -168,18 +168,52 @@ def test_process_refuses_the_ambiguous_calls(predictor, image):
         ])
 
 
-@needs_mux
-def test_multiplex_detects_but_cannot_select():
-    """SAM 3.1's image predictor carries no tracker, and says so rather than guessing."""
+@pytest.fixture(scope="module")
+def mux():
     from sam.build_sam import build_sam3_multiplex
 
-    mux = build_sam3_multiplex(
+    return build_sam3_multiplex(
         config_file="configs/sam3/sam3.1.yaml", ckpt_path=MUX_CKPT, device="cuda")
-    img = np.asarray(Image.open(IMAGE).convert("RGB"))
 
-    assert int(mux.process(img, concept="wheel").boxes.shape[0]) == 4
-    with pytest.raises(NotImplementedError, match="without a tracker"):
-        mux.process(img, geometry=GeometryPrompt.box(1, REAR_WHEEL))
+
+@needs_mux
+def test_multiplex_answers_both_paths(mux, image):
+    """SAM 3.1 carries its own tracker, so the same two paths work on that lineage."""
+    detected = mux.process(image, concept="wheel")
+    assert int(detected.boxes.shape[0]) == 4
+    assert detected.presence > 0.9
+
+    picked = mux.process(image, geometry=GeometryPrompt.box(1, REAR_WHEEL))
+    assert picked.instance_ids.tolist() == [1]
+    assert picked.presence is None
+    assert int((picked.masks_logits > 0).sum()) > 10_000
+
+
+@needs_mux
+def test_multiplex_decodes_several_prompts_at_once(mux, image):
+    """One batched call through the interactive head, ids preserved in order."""
+    r = mux.process(image, geometry=[
+        GeometryPrompt.click(1, CLICK),
+        GeometryPrompt.box(2, (1396.0, 560.0, 1627.0, 776.0)),
+    ])
+    assert r.instance_ids.tolist() == [1, 2]
+    assert (r.masks_logits > 0).sum(dim=(1, 2)).min() > 0
+
+
+@needs_mux
+def test_multiplex_rejects_mask_prompts(mux, image):
+    """No multiplex path for a mask -- said plainly rather than guessed around."""
+    with pytest.raises(NotImplementedError, match="mask prompt"):
+        mux.process(image, geometry=GeometryPrompt.mask(1, np.zeros(image.shape[:2], bool)))
+
+
+@needs_mux
+def test_multiplex_placeholder_is_its_own_caption(mux, image):
+    """The 3.1 caption differs from base, and PLACEHOLDER is how you avoid typing it."""
+    assert mux.BOX_ONLY_CAPTION == "<text placeholder>"
+    r = mux.process(image, concept=mux.PLACEHOLDER,
+                    geometry=GeometryPrompt.exemplar_box(REAR_WHEEL))
+    assert r.presence is not None
 
 
 def test_geometry_split_is_by_route():

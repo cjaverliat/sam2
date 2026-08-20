@@ -416,7 +416,7 @@ Per-object memory is managed by the internal `ForgetfulObjectMemoryBank` (non-co
 
 SAM 3.1 packs all tracked objects into one joint forward via `build_sam3_multiplex` (image) and `build_sam3_multiplex_video_predictor` (video). The calling API is **identical** to base SAM 3; mux/demux is internal to the tracker.
 
-**Scope:** the multiplex video predictor tracks up to K=16 objects jointly and supports the same prompts as the base predictor — concept text, seed-frame and mid-stream clicks, box prompts, and mid-stream instance spawn (see the sections below). Mask prompts raise `NotImplementedError`: neither checkpoint ships `mask_encoder` weights. VRAM stays bounded because the joint bucket-space spatial memory is threaded internally (not via the per-object `ObjectMemoryBank`) and non-conditional frames outside the 7-frame forgetful window are pruned.
+**Scope:** the multiplex image predictor answers both paths — `process(image, concept=...)` detects, `process(image, geometry=click/box)` decodes the objects you marked through SAM 3.1's interactive head (mask prompts have no multiplex path and raise). The multiplex video predictor tracks up to K=16 objects jointly and supports the same prompts as the base predictor — concept text, seed-frame and mid-stream clicks, box prompts, and mid-stream instance spawn (see the sections below). Mask prompts raise `NotImplementedError`: neither checkpoint ships `mask_encoder` weights. VRAM stays bounded because the joint bucket-space spatial memory is threaded internally (not via the per-object `ObjectMemoryBank`) and non-conditional frames outside the 7-frame forgetful window are pruned.
 
 ```python
 from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor

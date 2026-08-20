@@ -1376,22 +1376,27 @@ def build_sam3_multiplex(
     hydra_overrides_extra=[],
     **kwargs,
 ):
-    """Build a SAM 3.1 multiplex image concept predictor (``Sam3MultiplexPredictor``).
+    """Build a SAM 3.1 multiplex image predictor (``Sam3MultiplexPredictor``).
 
-    Mirrors :func:`build_sam3`: hydra-compose ``config_file`` (e.g.
-    ``"configs/sam3/sam3.1.yaml"``) -> instantiate the owned SAM 3.1 vision encoder /
-    text tower / detector via their ``_target_``s -> strict-load the relevant ``detector.*``
-    subtree of ``ckpt_path`` (a local ``sam3.1_multiplex.pt``). Returns the predictor on
-    ``device``, in eval mode when ``mode == "eval"``.
+    Mirrors :func:`build_sam3`: compose ``config_file`` (e.g. ``"configs/sam3/sam3.1.yaml"``)
+    for the text tower + detector, build the TRI-neck SAM 3.1 vision encoder and the M1
+    ``Sam3MultiplexTracker``, and strict-load the full ``sam3.1_multiplex.pt`` (1623 keys).
+
+    The tracker is 19.6M params of an 875M checkpoint and buys the object path:
+    ``process(image, geometry=click/box)`` decodes through SAM 3.1's interactive head.
+    Mask prompts have no multiplex path and raise.
     """
-    return _compose_instantiate_load(
-        config_file,
-        ckpt_path,
-        _load_sam3_multiplex_image_checkpoint,
-        device,
-        mode,
-        hydra_overrides_extra,
+    from sam.models.sam3_predictor import Sam3MultiplexPredictor
+
+    cfg = _compose(config_file, hydra_overrides_extra)
+    model = Sam3MultiplexPredictor(
+        vision_encoder=_build_sam3_multiplex_video_vision_encoder_module(),
+        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
+        detector=instantiate(cfg.model.detector, _recursive_=True),
+        tracker=_build_sam3_multiplex_tracker_module(),
     )
+    _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
+    return _finalize(model, device, mode)
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
