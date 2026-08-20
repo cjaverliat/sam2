@@ -12,8 +12,8 @@ class PromptRoute(enum.Enum):
     A prompt is one thing or the other, never both: you are either pointing at ONE
     object you want back (TRACKER, SAM 2 semantics) or describing what the concept
     search should look for (DETECTOR, SAM 3 only). The named constructors set this
-    for you -- ``click`` / ``box`` / ``mask`` are TRACKER, ``concept_point`` /
-    ``concept_box`` are DETECTOR -- so callers rarely name the route itself.
+    for you -- ``click`` / ``box`` / ``mask`` are TRACKER, ``exemplar_point`` /
+    ``exemplar_box`` are DETECTOR -- so callers rarely name the route itself.
 
     TRACKER:
         The default. Points, box corners (labels 2 and 3) and masks go to the
@@ -81,7 +81,7 @@ class GeometryPrompt:
         if masks_logits is not None and route is PromptRoute.DETECTOR:
             raise NotImplementedError(
                 "the detector has no mask slot: neither SAM 3 checkpoint ships "
-                "mask_encoder weights. Use concept_box / concept_point to bias the "
+                "mask_encoder weights. Use exemplar_box / exemplar_point to bias the "
                 "search, or GeometryPrompt.mask(obj_id, mask) to prompt the tracker"
             )
 
@@ -104,7 +104,7 @@ class GeometryPrompt:
 
         The SAM 2 gesture: this seeds or refines the object you name with ``obj_id``
         through the tracker, and nothing else comes back. To bias a concept search
-        instead, use :meth:`concept_point`.
+        instead, use :meth:`exemplar_point`.
         """
         coords = torch.as_tensor(xy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 2:
@@ -121,7 +121,7 @@ class GeometryPrompt:
 
         The SAM 2 gesture, encoded as the box's two corners. Detection does not run,
         so only this object is tracked. To bias a concept search instead, use
-        :meth:`concept_box`.
+        :meth:`exemplar_box`.
         """
         coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 4:
@@ -129,20 +129,22 @@ class GeometryPrompt:
         return cls(obj_id=obj_id, boxes=coords.reshape(1, 4))
 
     @classmethod
-    def concept_box(cls, xyxy, label: int = 1) -> GeometryPrompt:
-        """A detector box (SAM 3): biases the concept search on this frame.
+    def exemplar_box(cls, xyxy, label: int = 1) -> GeometryPrompt:
+        """An EXAMPLE of what to find (SAM 3): biases the concept search on this frame.
 
-        Needs a concept on the session (``start_concept_session`` -- or ``set_concept``
-        / ``set_placeholder_concept`` on an explicit state). ``label`` 1 keeps the boxed
-        instance positive;
-        0 means "everything matching the concept EXCEPT this one".
+        The concept still decides what comes back; the box says "more like this one".
+        ``label`` 1 makes it an example, 0 a counter-example -- "everything matching the
+        concept EXCEPT this". Needs a concept: a phrase, or the box-only ``PLACEHOLDER``
+        caption (``start_concept_session`` -- or ``set_concept`` /
+        ``set_placeholder_concept`` on an explicit state).
 
-        Takes no ``obj_id``: a detector box only biases detection, and the spawned
-        instances get their ids from the session's own counter.
+        Takes no ``obj_id``: an example names nothing, so the instances it helps surface
+        get their ids from detection. Contrast :meth:`box`, which picks out ONE object
+        and returns it alone.
         """
         coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 4:
-            raise ValueError(f"concept_box expects (xmin, ymin, xmax, ymax), got {tuple(coords.shape)}")
+            raise ValueError(f"exemplar_box expects (xmin, ymin, xmax, ymax), got {tuple(coords.shape)}")
         return cls(
             obj_id=-1,  # unused: detection mints the ids
             boxes=coords.reshape(1, 4),
@@ -151,13 +153,14 @@ class GeometryPrompt:
         )
 
     @classmethod
-    def concept_point(cls, xy, label: int = 1) -> GeometryPrompt:
-        """A detector point (SAM 3): biases the concept search toward pixel ``xy``.
+    def exemplar_point(cls, xy, label: int = 1) -> GeometryPrompt:
+        """An EXAMPLE at pixel ``xy`` (SAM 3): biases the concept search toward it.
 
-        The point form of :meth:`concept_box`, and the same contract: the concept
+        The point form of :meth:`exemplar_box`, and the same contract: the concept
         still decides WHAT comes back, this only says where to look harder. ``label``
         1 marks the point as an example, 0 as a counter-example ("everything matching
-        the concept EXCEPT this one").
+        the concept EXCEPT this one"). A point carries no extent, so it steers more
+        weakly than a box -- measurably so on a negative label.
 
         Needs a concept -- a phrase, or the predictor's ``PLACEHOLDER`` for the
         box-only caption. Takes no ``obj_id``: a detector point selects nothing, so
@@ -169,9 +172,9 @@ class GeometryPrompt:
         coords = torch.as_tensor(xy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 2:
             raise ValueError(
-                f"concept_point expects an (x, y) pair, got {tuple(coords.shape)}")
+                f"exemplar_point expects an (x, y) pair, got {tuple(coords.shape)}")
         if label not in (0, 1):
-            raise ValueError(f"concept_point label must be 1 or 0, got {label!r}")
+            raise ValueError(f"exemplar_point label must be 1 or 0, got {label!r}")
         return cls(
             obj_id=-1,  # unused: detection mints the ids
             points_coords=coords.reshape(1, 2),

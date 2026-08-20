@@ -328,11 +328,11 @@ def _pack_geometry(prompt, image_hw, device):
     if prompt.masks_logits is not None:
         raise NotImplementedError(
             "mask geometry prompts are unsupported (no mask_encoder weights); "
-            "use GeometryPrompt.concept_box / concept_point instead"
+            "use GeometryPrompt.exemplar_box / exemplar_point instead"
         )
     if prompt.route is not PromptRoute.DETECTOR:
         what = "box" if prompt.boxes is not None else "click"
-        instead = "concept_box(xyxy)" if prompt.boxes is not None else "concept_point((x, y))"
+        instead = "exemplar_box(xyxy)" if prompt.boxes is not None else "exemplar_point((x, y))"
         raise ValueError(
             f"GeometryPrompt.{what} marks ONE object for the tracker, which this "
             f"predictor does not have. To bias the concept search use "
@@ -933,7 +933,7 @@ class Sam3VideoPredictor(nn.Module):
         """
         if geo is not None and state.concept is None:
             raise ValueError(
-                "concept_box / concept_point drive detection, which needs a concept: "
+                "exemplar_box / exemplar_point drive detection, which needs a concept: "
                 "open the session with start_concept_session(<phrase>) for your own "
                 "phrase, or start_concept_session(PLACEHOLDER) for upstream's box-only "
                 f"caption ({self.BOX_ONLY_CAPTION!r}) -- on an explicit state, "
@@ -946,7 +946,7 @@ class Sam3VideoPredictor(nn.Module):
     def _split_and_pack_geometry(self, prompts, hw, device):
         """Split prompts by the route they take through the model.
 
-        DETECTOR-route geometry -- ``concept_box`` and ``concept_point`` -- biases
+        DETECTOR-route geometry -- ``exemplar_box`` and ``exemplar_point`` -- biases
         detection through the DETR geometric slot; TRACKER-route points, box corners and
         masks seed or refine one object through the tracker's prompt encoder. The route
         is the prompt's, so the same frame can carry both.
@@ -975,7 +975,7 @@ class Sam3VideoPredictor(nn.Module):
         if mislabelled:
             raise ValueError(
                 "boxes_labels signs a box for the detector; build it with "
-                "GeometryPrompt.concept_box(xyxy, label=...), or drop the labels to "
+                "GeometryPrompt.exemplar_box(xyxy, label=...), or drop the labels to "
                 "seed the boxed object through the tracker with GeometryPrompt.box"
             )
         detector_prompts = [p for p in prompts if p.to_detector]

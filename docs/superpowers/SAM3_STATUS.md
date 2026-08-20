@@ -57,8 +57,8 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
 
 - **Session API + named prompt constructors (2026-08-18)** — the user-facing surface,
   designed in-chat (proposals A+B combined, `Box`/`ConceptBox` naming discussion).
-  `GeometryPrompt` gained classmethods `click` / `box` / `mask` / `concept_box` taking
-  plain tuples/lists/ndarrays (`concept_box` = the DETECTOR route, named for its
+  `GeometryPrompt` gained classmethods `click` / `box` / `mask` / `exemplar_box` taking
+  plain tuples/lists/ndarrays (`exemplar_box` = the DETECTOR route, named for its
   contract; `label=0` for negative). Both video predictors (and `Sam2VideoPredictor`)
   gained `start_session()` (interactive, shared with SAM 2) and
   `start_concept_session(concept)` (SAM 3 only), returning a
@@ -72,7 +72,7 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   README examples migrated (sessions named by role: `person_session`,
   `interactive_session`, `hint_session`; results are `masklets`). Follow-up polish on
   user review: sessions are driven by a named `session.process(frame, ...)` (the
-  `__call__` form was judged ambiguous), and `concept_box` takes NO `obj_id` -- a
+  `__call__` form was judged ambiguous), and `exemplar_box` takes NO `obj_id` -- a
   detector box only biases detection, the spawned ids come from the session's counter,
   so the parameter did nothing. Measured footgun documented in `process`'s docstring:
   in a concept session a fresh-id tracker prompt can collide with same-call detector
@@ -101,8 +101,8 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   unchanged with the explicit calls added).
 
   The route is now the whole prompt's, not just its boxes, and the named constructors set
-  it: `click` / `box` / `mask` are TRACKER, `concept_point` / `concept_box` are DETECTOR.
-  `concept_point` is new on both paths — trained weights (`geometry_encoder.points_*`
+  it: `click` / `box` / `mask` are TRACKER, `exemplar_point` / `exemplar_box` are DETECTOR.
+  `exemplar_point` is new on both paths — trained weights (`geometry_encoder.points_*`
   ship in both checkpoints) but no upstream video caller, so the video side of it carries
   no golden. The image predictor rejects TRACKER-route geometry outright rather than
   silently treating it as an exemplar, and `PLACEHOLDER` / `BOX_ONLY_CAPTION` now exist on

@@ -80,20 +80,20 @@ def test_concept_session_declares_concept_at_birth(predictor, frames):
 
 
 @needs_model
-def test_placeholder_session_runs_concept_box(predictor, frames):
+def test_placeholder_session_runs_exemplar_box(predictor, frames):
     hint_session = predictor.start_concept_session(predictor.PLACEHOLDER)
     masklets = hint_session.process(
-        frames[0], prompts=[GeometryPrompt.concept_box((285, 0, 535, 430))])
+        frames[0], prompts=[GeometryPrompt.exemplar_box((285, 0, 535, 430))])
     assert len(masklets) == 2
     assert hint_session.state.concept.prompt.text == predictor.BOX_ONLY_CAPTION
 
 
 @needs_model
-def test_concept_box_in_conceptless_session_raises(predictor, frames):
+def test_exemplar_box_in_conceptless_session_raises(predictor, frames):
     interactive_session = predictor.start_session()
     with pytest.raises(ValueError, match="concept"):
         interactive_session.process(
-            frames[0], prompts=[GeometryPrompt.concept_box((285, 0, 535, 430))])
+            frames[0], prompts=[GeometryPrompt.exemplar_box((285, 0, 535, 430))])
 
 
 @needs_model

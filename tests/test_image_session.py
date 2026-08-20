@@ -71,9 +71,9 @@ def test_process_matches_predict_per_threshold(predictor, image, threshold):
 
 @needs_model
 @pytest.mark.parametrize("geometry", [
-    GeometryPrompt.concept_box(REAR_WHEEL),
-    GeometryPrompt.concept_box(REAR_WHEEL, label=0),
-    GeometryPrompt.concept_point((560.0, 730.0)),
+    GeometryPrompt.exemplar_box(REAR_WHEEL),
+    GeometryPrompt.exemplar_box(REAR_WHEEL, label=0),
+    GeometryPrompt.exemplar_point((560.0, 730.0)),
 ])
 def test_process_matches_predict_with_geometry(predictor, image, geometry):
     expected = predictor.predict(
@@ -142,7 +142,7 @@ def test_session_forwards_its_state_and_arguments():
     session = ImageSession(predictor, feats, pos, (120, 80), torch.float32)
 
     concept = ConceptPrompt(text="wheel")
-    geometry = GeometryPrompt.concept_box(REAR_WHEEL)
+    geometry = GeometryPrompt.exemplar_box(REAR_WHEEL)
     assert session.process(concept, confidence_threshold=0.7, geometry=geometry) == "detection"
 
     (call,) = predictor.calls
@@ -187,9 +187,9 @@ def test_placeholder_uses_this_lineage_box_only_caption(predictor, image):
 
     expected = predictor.predict(
         image, ConceptPrompt(text=predictor.BOX_ONLY_CAPTION),
-        geometry=GeometryPrompt.concept_box(REAR_WHEEL))
+        geometry=GeometryPrompt.exemplar_box(REAR_WHEEL))
     got = predictor.predict(
-        image, predictor.PLACEHOLDER, geometry=GeometryPrompt.concept_box(REAR_WHEEL))
+        image, predictor.PLACEHOLDER, geometry=GeometryPrompt.exemplar_box(REAR_WHEEL))
     assert_same(got, expected)
     assert predictor.BOX_ONLY_CAPTION == "visual"
 
@@ -204,9 +204,9 @@ def test_predict_takes_a_bare_phrase(predictor, image):
 @needs_model
 def test_image_path_refuses_tracker_prompts(predictor, image):
     """The SAM 2 gesture names the alternative instead of quietly meaning something else."""
-    with pytest.raises(ValueError, match="concept_box"):
+    with pytest.raises(ValueError, match="exemplar_box"):
         predictor.predict(image, "wheel", geometry=GeometryPrompt.box(1, REAR_WHEEL))
-    with pytest.raises(ValueError, match="concept_point"):
+    with pytest.raises(ValueError, match="exemplar_point"):
         predictor.predict(image, "wheel", geometry=GeometryPrompt.click(1, (560.0, 730.0)))
 
 

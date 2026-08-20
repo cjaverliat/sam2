@@ -111,7 +111,7 @@ def test_interactive_prompts_need_no_concept(predictor, frame0):
 # ---------------------------------------------------------------------------
 # Detector POINTS on video: ours, not upstream's (see _split_and_pack_geometry).
 # ---------------------------------------------------------------------------
-def test_concept_point_biases_detection_without_seeding(predictor, frame0):
+def test_exemplar_point_biases_detection_without_seeding(predictor, frame0):
     """A detector point steers the search; it does not become a tracked object."""
     from sam.models.sam3_predictor import Sam3VideoPredictorState
 
@@ -119,7 +119,7 @@ def test_concept_point_biases_detection_without_seeding(predictor, frame0):
     state = Sam3VideoPredictorState(video_hw=(h, w))
     predictor.set_concept(state, ConceptPrompt("person"))
     out = predictor.forward(state, 0, frame0,
-                            prompts=[GeometryPrompt.concept_point((410.0, 180.0))])
+                            prompts=[GeometryPrompt.exemplar_point((410.0, 180.0))])
 
     assert out, "detection should still return the concept's instances"
     assert all(isinstance(oid, int) for oid in out)
@@ -127,18 +127,18 @@ def test_concept_point_biases_detection_without_seeding(predictor, frame0):
     assert -1 not in out
 
 
-def test_concept_point_without_concept_raises(predictor, frame0):
-    """Same gate as concept_box: geometry that drives detection needs a concept."""
+def test_exemplar_point_without_concept_raises(predictor, frame0):
+    """Same gate as exemplar_box: geometry that drives detection needs a concept."""
     from sam.models.sam3_predictor import Sam3VideoPredictorState
 
     h, w, _ = frame0.shape
     state = Sam3VideoPredictorState(video_hw=(h, w))
     with pytest.raises(ValueError, match="needs a concept"):
         predictor.forward(state, 0, frame0,
-                          prompts=[GeometryPrompt.concept_point((410.0, 180.0))])
+                          prompts=[GeometryPrompt.exemplar_point((410.0, 180.0))])
 
 
-def test_placeholder_session_takes_a_concept_point(predictor, frame0):
+def test_placeholder_session_takes_a_exemplar_point(predictor, frame0):
     """No phrase at all: the box-only caption plus a point still detects."""
     from sam.models.sam3_predictor import Sam3VideoPredictorState
 
@@ -146,5 +146,5 @@ def test_placeholder_session_takes_a_concept_point(predictor, frame0):
     state = Sam3VideoPredictorState(video_hw=(h, w))
     predictor.set_placeholder_concept(state)
     out = predictor.forward(state, 0, frame0,
-                            prompts=[GeometryPrompt.concept_point((410.0, 180.0))])
+                            prompts=[GeometryPrompt.exemplar_point((410.0, 180.0))])
     assert out, "a placeholder concept plus a point should still spawn instances"

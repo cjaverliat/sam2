@@ -47,14 +47,14 @@ def test_pack_geometry_box_and_point():
     from sam.prompts import GeometryPrompt
     dev = torch.device("cpu")
     # box xyxy pixel -> cxcywh normalized
-    p = GeometryPrompt.concept_box((100.0, 200.0, 300.0, 400.0))
+    p = GeometryPrompt.exemplar_box((100.0, 200.0, 300.0, 400.0))
     geo = _pack_geometry(p, (540, 960), dev)
     assert geo["box_coords"].shape == (1, 1, 4)
     cx, cy, bw, bh = geo["box_coords"][0, 0].tolist()
     assert abs(cx - 200 / 960) < 1e-6 and abs(cy - 300 / 540) < 1e-6
     assert abs(bw - 200 / 960) < 1e-6 and abs(bh - 200 / 540) < 1e-6
     # point
-    pp = GeometryPrompt.concept_point((480.0, 270.0))
+    pp = GeometryPrompt.exemplar_point((480.0, 270.0))
     g2 = _pack_geometry(pp, (540, 960), dev)
     assert g2["point_coords"].shape == (1, 1, 2)
     assert abs(g2["point_coords"][0, 0, 0].item() - 0.5) < 1e-6
@@ -63,7 +63,7 @@ def test_pack_geometry_box_and_point():
 def test_pack_geometry_defaults_box_labels_to_positive():
     from sam.models.sam3_predictor import _pack_geometry
     from sam.prompts import GeometryPrompt
-    p = GeometryPrompt.concept_box((100.0, 200.0, 300.0, 400.0))
+    p = GeometryPrompt.exemplar_box((100.0, 200.0, 300.0, 400.0))
     geo = _pack_geometry(p, (540, 960), torch.device("cpu"))
     assert geo["box_labels"].shape == (1, 1)
     assert geo["box_labels"].flatten().tolist() == [1]
@@ -110,29 +110,29 @@ def test_pack_geometry_rejects_tracker_route_prompts():
     from sam.prompts import GeometryPrompt
 
     dev = torch.device("cpu")
-    with pytest.raises(ValueError, match="concept_box"):
+    with pytest.raises(ValueError, match="exemplar_box"):
         _pack_geometry(GeometryPrompt.box(1, (10.0, 20.0, 30.0, 40.0)), (540, 960), dev)
-    with pytest.raises(ValueError, match="concept_point"):
+    with pytest.raises(ValueError, match="exemplar_point"):
         _pack_geometry(GeometryPrompt.click(1, (10.0, 20.0)), (540, 960), dev)
 
 
-def test_concept_point_and_click_pack_the_same_geometry():
+def test_exemplar_point_and_click_pack_the_same_geometry():
     """Only the intent differs: the numbers the detector sees are identical."""
     from sam.models.sam3_predictor import _pack_geometry
     from sam.prompts import GeometryPrompt, PromptRoute
 
     dev = torch.device("cpu")
-    concept = _pack_geometry(GeometryPrompt.concept_point((480.0, 270.0)), (540, 960), dev)
+    concept = _pack_geometry(GeometryPrompt.exemplar_point((480.0, 270.0)), (540, 960), dev)
 
     as_click = GeometryPrompt.click(1, (480.0, 270.0))
     as_click.route = PromptRoute.DETECTOR  # what the old code did silently
     assert torch.equal(concept["point_coords"], _pack_geometry(as_click, (540, 960), dev)["point_coords"])
 
 
-def test_concept_point_rejects_bad_input():
+def test_exemplar_point_rejects_bad_input():
     from sam.prompts import GeometryPrompt
 
     with pytest.raises(ValueError, match="x, y"):
-        GeometryPrompt.concept_point((1.0, 2.0, 3.0))
+        GeometryPrompt.exemplar_point((1.0, 2.0, 3.0))
     with pytest.raises(ValueError, match="1 or 0"):
-        GeometryPrompt.concept_point((1.0, 2.0), label=2)
+        GeometryPrompt.exemplar_point((1.0, 2.0), label=2)

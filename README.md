@@ -347,10 +347,10 @@ The concept can be a `ConceptPrompt`, a bare phrase, or `predictor.PLACEHOLDER` 
 
 ```python
 result = predictor.predict(image, predictor.PLACEHOLDER,
-                           geometry=GeometryPrompt.concept_box((x0, y0, x1, y1)))
+                           geometry=GeometryPrompt.exemplar_box((x0, y0, x1, y1)))
 ```
 
-The image predictor owns no tracker, so a `GeometryPrompt.box` / `.click` raises rather than being reinterpreted as an exemplar; it names `concept_box` / `concept_point` and the video predictor's `start_session()` as the two things you might have meant.
+The image predictor owns no tracker, so a `GeometryPrompt.box` / `.click` raises rather than being reinterpreted as an exemplar; it names `exemplar_box` / `exemplar_point` and the video predictor's `start_session()` as the two things you might have meant.
 
 
 ### Streaming video — track a concept across frames
@@ -436,8 +436,8 @@ A `GeometryPrompt` is one of two things, and the constructor you pick says which
 
 | | selects ONE object | steers the concept search |
 |---|---|---|
-| point | `GeometryPrompt.click(obj_id, (x, y))` | `GeometryPrompt.concept_point((x, y))` |
-| box | `GeometryPrompt.box(obj_id, (x0, y0, x1, y1))` | `GeometryPrompt.concept_box((x0, y0, x1, y1))` |
+| point | `GeometryPrompt.click(obj_id, (x, y))` | `GeometryPrompt.exemplar_point((x, y))` |
+| box | `GeometryPrompt.box(obj_id, (x0, y0, x1, y1))` | `GeometryPrompt.exemplar_box((x0, y0, x1, y1))` |
 | mask | `GeometryPrompt.mask(obj_id, mask)` | — no detector mask slot in either checkpoint |
 | goes to | the tracker's prompt encoder (SAM 2 semantics) | the detector's geometric slot (SAM 3 only) |
 | needs | nothing else | a concept: a phrase or `PLACEHOLDER` |
@@ -458,11 +458,11 @@ barely moves it, having no extent to say which instance you meant.
 ```python
 from sam.prompts import ConceptPrompt, GeometryPrompt
 
-box = GeometryPrompt.concept_box((300, 150, 470, 420))
+box = GeometryPrompt.exemplar_box((300, 150, 470, 420))
 result = image_predictor.predict(image, ConceptPrompt("person"), geometry=box)
 
 # "everything matching the concept EXCEPT this one"
-neg = GeometryPrompt.concept_box((300, 150, 470, 420), label=0)
+neg = GeometryPrompt.exemplar_box((300, 150, 470, 420), label=0)
 ```
 
 On **video**, prompts are passed per frame, and they take one of two routes — the same split
@@ -474,18 +474,18 @@ upstream makes.
 `Sam2VideoPredictor` does. No detection runs, nothing else can appear, and the object tracks
 until the clip ends.
 
-**Detection-driven** is SAM 3 only and must be asked for: `GeometryPrompt.concept_box` and
-`GeometryPrompt.concept_point` send their geometry to the detector's geometric slot, where it
+**Detection-driven** is SAM 3 only and must be asked for: `GeometryPrompt.exemplar_box` and
+`GeometryPrompt.exemplar_point` send their geometry to the detector's geometric slot, where it
 biases that frame's detection. Detection then runs on every frame, so every instance the
 concept matches is tracked, not only the one you marked — which is why this route needs the
 session's concept. Upstream adopts a placeholder caption implicitly the moment a box arrives
 without text; here it is an argument you can read.
 
 The route belongs to the prompt, and the constructor sets it: `click` / `box` / `mask` mark one
-object for the tracker, `concept_point` / `concept_box` describe what the search should look
+object for the tracker, `exemplar_point` / `exemplar_box` describe what the search should look
 for. You never name `PromptRoute` yourself.
 
-> **`concept_point` on video is this fork's, not upstream's.** The detector's point slot is
+> **`exemplar_point` on video is this fork's, not upstream's.** The detector's point slot is
 > trained and ships in both checkpoints, and the image path has always used it, but upstream's
 > video inference hardcodes `point_embeddings=None`, so there is no golden pinning it. Boxes
 > are the parity-tested detector route.
@@ -504,12 +504,12 @@ for frame in frames[1:]:
 # detection hint — upstream's box-only mode, both choices explicit
 hint_session = video_predictor.start_concept_session(video_predictor.PLACEHOLDER)
 masklets = hint_session.process(frames[0], prompts=[
-    GeometryPrompt.concept_box((300, 150, 470, 420)),      # label=0: "everything except this"
-    GeometryPrompt.concept_point((640, 300)),              # the point form, same contract
+    GeometryPrompt.exemplar_box((300, 150, 470, 420)),      # label=0: "everything except this"
+    GeometryPrompt.exemplar_point((640, 300)),              # the point form, same contract
 ])
 ```
 
-Sending a `concept_box` into a `start_session()` session raises `ValueError` rather than picking
+Sending a `exemplar_box` into a `start_session()` session raises `ValueError` rather than picking
 a caption for you. Making the interactive session adopt `PLACEHOLDER` on its own would silently
 switch detection on for every frame under the box-only caption — so instead of the one object you
 boxed you would get every instance that caption matches, for the rest of the clip. Ask for it by

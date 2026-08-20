@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Named constructors on GeometryPrompt: click / box / mask / concept_box.
+"""Named constructors on GeometryPrompt: click / box / mask / exemplar_box.
 
 Each builds the same prompt the verbose ``__init__`` form would, from plain Python
 values (tuples, lists, ndarrays) -- no torch ceremony at the call site. CPU-only.
@@ -39,15 +39,15 @@ def test_box_is_tracker_route():
     assert labels.tolist() == [2, 3]
 
 
-def test_concept_box_is_detector_route():
-    prompt = GeometryPrompt.concept_box((285, 0, 535, 430))
+def test_exemplar_box_is_detector_route():
+    prompt = GeometryPrompt.exemplar_box((285, 0, 535, 430))
     assert prompt.route is PromptRoute.DETECTOR
     assert prompt.to_detector
     assert prompt.boxes_labels is None  # positive by default (packer defaults to 1)
 
 
-def test_concept_box_negative_label():
-    prompt = GeometryPrompt.concept_box((10, 20, 30, 40), label=0)
+def test_exemplar_box_negative_label():
+    prompt = GeometryPrompt.exemplar_box((10, 20, 30, 40), label=0)
     assert prompt.boxes_labels.tolist() == [0]
 
 
