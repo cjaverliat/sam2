@@ -332,6 +332,18 @@ binary_masks = result.masks_logits > 0.0
 
 Concept text, `confidence_threshold`, presence, and box / click exemplars are walked through in [`notebooks/sam3_image_predictor_example.ipynb`](notebooks/sam3_image_predictor_example.ipynb).
 
+Prompting one image more than once — sweeping the threshold, trying several phrases, comparing exemplars — is cheaper through a session. The vision encoder is ~70% of a `predict` call and does not depend on the prompt, so the session pays it once (measured: a five-threshold sweep drops from 1862 ms to 490 ms, bit-identical results):
+
+```python
+session = predictor.start_image_session(image)   # encodes once
+
+for threshold in (0.3, 0.5, 0.7):
+    result = session.process(ConceptPrompt(text="wheel"), confidence_threshold=threshold)
+```
+
+`process` is the same verb the video sessions use, and takes the same `geometry=` exemplars as `predict`. There is no concept/interactive split here: an image predictor only detects, and the concept is a per-call argument rather than session-scoped.
+
+
 ### Streaming video — track a concept across frames
 
 A **session** owns one video: it holds the state and counts frames. There are two kinds, and

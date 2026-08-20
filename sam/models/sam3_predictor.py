@@ -135,24 +135,74 @@ class Sam3Predictor(nn.Module):
 
         Runs under autocast(*dtype*) + inference_mode.  When *dtype* is ``torch.float32``
         the autocast context is a no-op (float32 is the native dtype of all ops).
+
+        Encoding the image is most of this call and does not depend on the prompt, so
+        prompting one image more than once is cheaper through
+        :meth:`start_image_session`.
         """
-        device = self.device
         image_hw = (int(image.shape[0]), int(image.shape[1]))
-        # float32 → nullcontext (no mixed-precision); any other dtype → autocast.
-        ac = (
-            contextlib.nullcontext()
-            if dtype == torch.float32
-            else torch.autocast(device_type=device.type, dtype=dtype)
+        feats, pos = self._encode(image, dtype)
+        return self._detect_encoded(
+            feats, pos, image_hw, concept,
+            confidence_threshold=confidence_threshold, geometry=geometry, dtype=dtype,
         )
-        with ac:
-            x = preprocess_to_1008(image, device=device)
-            feats, pos = self.encode_image(x)
+
+    def _autocast(self, dtype: torch.dtype):
+        """Autocast under *dtype*; float32 means no mixed precision at all."""
+        # float32 → nullcontext (no mixed-precision); any other dtype → autocast.
+        if dtype == torch.float32:
+            return contextlib.nullcontext()
+        return torch.autocast(device_type=self.device.type, dtype=dtype)
+
+    def _encode(self, image, dtype: torch.dtype):
+        """Preprocess and run the vision encoder -> ``(features, pos)``."""
+        with self._autocast(dtype):
+            return self.encode_image(preprocess_to_1008(image, device=self.device))
+
+    def _detect_encoded(
+        self, feats, pos, image_hw, concept: ConceptPrompt,
+        confidence_threshold: float = 0.5, geometry=None,
+        dtype: torch.dtype = torch.bfloat16,
+    ) -> "Sam3DetectionResult":
+        """Ground ``concept`` in already-encoded features (spec §10, second half).
+
+        Split out of :meth:`predict` so an :class:`~sam.models.image_session.ImageSession`
+        can reuse one encode across prompts; the ops and their autocast region are
+        the ones :meth:`predict` has always run.
+        """
+        with self._autocast(dtype):
             text_emb, text_mask = self.encode_text(concept)
-            geo = _pack_geometry(geometry, image_hw, device)
+            geo = _pack_geometry(geometry, image_hw, self.device)
             return self.detect(
                 feats, pos, text_emb, text_mask, image_hw,
                 confidence_threshold=confidence_threshold, geo=geo,
             )
+
+    @torch.inference_mode()
+    def start_image_session(self, image, dtype: torch.dtype = torch.bfloat16):
+        """An :class:`~sam.models.image_session.ImageSession` over ``image``.
+
+        Encodes the image once; every ``session.process(concept, ...)`` then costs a
+        detect instead of a detect plus the vision encoder, which is roughly 70% of
+        :meth:`predict`. Use it whenever one image takes more than one prompt --
+        sweeping ``confidence_threshold``, trying several phrases, comparing
+        exemplars.
+
+        The video predictors spell the same idea ``start_session`` /
+        ``start_concept_session``; the per-call verb is ``process`` on both.
+
+        Args:
+            image: ``(H, W, 3)`` uint8 RGB array, as :meth:`predict` takes.
+            dtype: autocast dtype for the encode and every later detect.
+
+        Returns:
+            An independent session; hold several over one loaded model.
+        """
+        from sam.models.image_session import ImageSession
+
+        image_hw = (int(image.shape[0]), int(image.shape[1]))
+        feats, pos = self._encode(image, dtype)
+        return ImageSession(self, feats, pos, image_hw, dtype)
 
 
 def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
@@ -293,15 +343,33 @@ class Sam3MultiplexPredictor(Sam3Predictor):
         """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
 
         Args mirror :meth:`Sam3Predictor.predict`. Runs under bf16 autocast + inference_mode
-        (the only supported SAM 3 regime); the shared encoder runs ONCE.
+        (the only supported SAM 3 regime); the shared encoder runs ONCE. Prompting one
+        image repeatedly is cheaper through :meth:`Sam3Predictor.start_image_session`,
+        which this class inherits.
+        """
+        image_hw = (int(image.shape[0]), int(image.shape[1]))
+        feats, pos = self._encode(image, torch.bfloat16)
+        return self._detect_encoded(
+            feats, pos, image_hw, concept,
+            confidence_threshold=confidence_threshold, geometry=geometry,
+            dtype=torch.bfloat16,
+        )
+
+    def _detect_encoded(
+        self, feats, pos, image_hw, concept: ConceptPrompt,
+        confidence_threshold: float = 0.5, geometry=None,
+        dtype: torch.dtype = torch.bfloat16,
+    ) -> "Sam3DetectionResult":
+        """SAM 3.1 grounding + demo post-processing on already-encoded features.
+
+        The grounding runs under autocast and the post-processing outside it, which is
+        the split :meth:`predict` has always had -- keep it, the goldens are captured
+        against these numerics.
         """
         from sam.results import Sam3DetectionResult
 
         device = self.device
-        image_hw = (int(image.shape[0]), int(image.shape[1]))
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-            x = preprocess_to_1008(image, device=device)
-            feats, pos = self.encode_image(x)
+        with self._autocast(dtype):
             text_emb, text_mask = self.encode_text(concept)
             geo = _pack_geometry(geometry, image_hw, device)
             out = self.detector.forward_grounding(feats, pos, text_emb, text_mask, geo=geo)
