@@ -321,7 +321,7 @@ predictor = build_sam3("configs/sam3/sam3.yaml", "./checkpoints/sam3.pt", device
 
 image = np.array(Image.open("images/truck.jpg").convert("RGB"))  # (H, W, 3) uint8
 
-result = predictor.predict(image, ConceptPrompt(text="wheel"))
+result = predictor.process(image, concept="wheel")
 # result.masks_logits: (N, H, W)  — per-instance mask logits  (> 0 → foreground)
 # result.boxes:        (N, 4)     — xyxy pixel bounding boxes
 # result.scores:       (N,)       — per-instance confidence scores
@@ -332,21 +332,29 @@ binary_masks = result.masks_logits > 0.0
 
 Concept text, `confidence_threshold`, presence, and box / click exemplars are walked through in [`notebooks/sam3_image_predictor_example.ipynb`](notebooks/sam3_image_predictor_example.ipynb).
 
-Prompting one image more than once — sweeping the threshold, trying several phrases, comparing exemplars — is cheaper through a session. The vision encoder is ~70% of a `predict` call and does not depend on the prompt, so the session pays it once (measured: a five-threshold sweep drops from 1862 ms to 490 ms, bit-identical results):
+**Pointing at one object** is the same call without a concept — `build_sam3` loads the tracker (12M params), so SAM 2's contract lives on the same predictor:
 
 ```python
-session = predictor.start_image_session(image)   # encodes once
-
-for threshold in (0.3, 0.5, 0.7):
-    result = session.process(ConceptPrompt(text="wheel"), confidence_threshold=threshold)
+r = predictor.process(image, geometry=GeometryPrompt.click(1, (x, y)))
+r.instance_ids   # tensor([1]) — the id you passed
+r.presence       # None — no concept was asked for
 ```
 
-`process` is the same verb the video sessions use, and takes the same `geometry=` exemplars as `predict`. There is no concept/interactive split here: an image predictor only detects, and the concept is a per-call argument rather than session-scoped.
+Which path runs is decided by what you pass, never guessed: `concept=` detects, and `exemplar_box` / `exemplar_point` bias that search; `click` / `box` / `mask` select the object you marked. Asking for both in one call raises — detector ids (`0..N-1`) and your `obj_id`s cannot share one `instance_ids` array.
+
+Prompting one image repeatedly is cheaper if you encode it once. The vision encoder is ~70% of a `process` call and depends on nothing in the prompt (measured: a five-threshold sweep drops from 1862 ms to 490 ms, bit-identical results):
+
+```python
+enc = predictor.encode(image)                    # encodes once
+
+for threshold in (0.3, 0.5, 0.7):
+    result = predictor.process(enc, concept="wheel", confidence_threshold=threshold)
+```
 
 The concept can be a `ConceptPrompt`, a bare phrase, or `predictor.PLACEHOLDER` for this lineage's box-only caption — `"visual"` on base SAM 3, `"<text placeholder>"` on the 3.1 multiplex — which is what upstream encodes when geometry arrives with no text. Ask for it by name rather than typing the string: the wrong lineage's caption returns nothing.
 
 ```python
-result = predictor.predict(image, predictor.PLACEHOLDER,
+result = predictor.process(image, concept=predictor.PLACEHOLDER,
                            geometry=GeometryPrompt.exemplar_box((x0, y0, x1, y1)))
 ```
 
@@ -418,7 +426,7 @@ from sam.prompts import ConceptPrompt
 image_predictor = build_sam3_multiplex(
     "configs/sam3/sam3.1.yaml", "./checkpoints/sam3.1_multiplex.pt", device="cuda"
 )
-result = image_predictor.predict(image, ConceptPrompt(text="wheel"))
+result = image_predictor.process(image, concept="wheel")
 
 # Video: same session API as base SAM 3
 video_predictor = build_sam3_multiplex_video_predictor(
@@ -443,23 +451,23 @@ A `GeometryPrompt` is one of two things, and the constructor you pick says which
 | needs | nothing else | a concept: a phrase or `PLACEHOLDER` |
 | ids | the `obj_id` you passed | minted by detection |
 
-The `concept_*` constructors take **no** `obj_id`: they name nothing, so the ids they produce
+The `exemplar_*` constructors take **no** `obj_id`: they name nothing, so the ids they produce
 are the detector's to hand out. `label=0` makes either one a counter-example — "everything
 matching the concept EXCEPT this". Constructors take plain tuples, lists, or arrays in pixel
 coordinates; the generic `GeometryPrompt(...)` form stays available (with
 `route=PromptRoute.DETECTOR` for the detector slot, `is_normalized=True` for `[0, 1]`
 coordinates), though the constructors set the route for you.
 
-On an **image** only the `concept_*` family applies — there is no tracker to select with, so a
-`click` or `box` raises and names the alternative. A negative box drops the enclosed detection's
-score sharply (0.95 → 0.66 in the notebook's example, below a 0.7 threshold); a negative point
+On an **image** both families work through `process`, one call at a time: `exemplar_*` alongside
+a concept, `click` / `box` / `mask` without one. A negative exemplar box drops the enclosed
+detection's score sharply (0.95 → 0.66 in the notebook's example, below a 0.7 threshold); a negative point
 barely moves it, having no extent to say which instance you meant.
 
 ```python
 from sam.prompts import ConceptPrompt, GeometryPrompt
 
 box = GeometryPrompt.exemplar_box((300, 150, 470, 420))
-result = image_predictor.predict(image, ConceptPrompt("person"), geometry=box)
+result = image_predictor.process(image, concept="person", geometry=box)
 
 # "everything matching the concept EXCEPT this one"
 neg = GeometryPrompt.exemplar_box((300, 150, 470, 420), label=0)

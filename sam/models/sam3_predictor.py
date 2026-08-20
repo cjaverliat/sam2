@@ -4,7 +4,7 @@
 Provides:
   Sam3Predictor             — IMAGE concept predictor (Task 8). OWNS the shared PE vision
                               encoder + text tower + DETR detector and exposes
-                              ``predict(image, ConceptPrompt) -> Sam3DetectionResult``.
+                              ``process(image, concept=...) -> Sam3DetectionResult``.
   ConceptState              — the session's encoded concept, stored in Sam3VideoPredictorState.
   Sam3VideoPredictorState   — streaming-session state (bank + concept + frame counter).
   Sam3VideoPredictor        — streaming skeleton class (Task 6 guard); its ``encode_text``
@@ -18,6 +18,7 @@ Guard contract (spec §9):
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -43,6 +44,50 @@ if TYPE_CHECKING:
 # specific: the base path selects TEXT_ID_FOR_VISUAL, i.e. the literal "visual"
 # (sam3_video_inference.py:868-876), while the multiplex path has no such else-branch
 # (sam3_multiplex_tracking.py:1698-1705) and leaves text_ids at 0, i.e. slot 0.
+@dataclasses.dataclass
+class EncodedImage:
+    """One image encoded once: the detector's pyramid and the tracker's SAM 2 view.
+
+    Returned by :meth:`Sam3Predictor.encode` and accepted by
+    :meth:`Sam3Predictor.process` in place of the array, so repeated prompting of one
+    image pays for the vision encoder once.
+    """
+
+    det_feats: list
+    det_pos: list
+    sam2_feats: list
+    sam2_pos: list
+    image_hw: tuple
+    dtype: "torch.dtype"
+
+
+def _split_image_geometry(geometry):
+    """Split ``geometry`` into ``(exemplars, objects)`` by each prompt's own route.
+
+    Args:
+        geometry: one :class:`GeometryPrompt`, a list of them, or None.
+
+    Returns:
+        ``(exemplars, objects)``: a single merged DETECTOR-route prompt (or None) and
+        the list of TRACKER-route prompts.
+
+    Raises:
+        ValueError: if two exemplars are passed -- one prompt can carry several points
+            and boxes, so merge them there.
+    """
+    if geometry is None:
+        return None, []
+    prompts = [geometry] if isinstance(geometry, GeometryPrompt) else list(geometry)
+    exemplars = [p for p in prompts if p.to_detector]
+    objects = [p for p in prompts if not p.to_detector]
+    if len(exemplars) > 1:
+        raise ValueError(
+            "pass one exemplar prompt carrying every point/box you want to bias with, "
+            "not several GeometryPrompts"
+        )
+    return (exemplars[0] if exemplars else None), objects
+
+
 BOX_ONLY_CAPTION_BASE = "visual"
 BOX_ONLY_CAPTION_MUX = "<text placeholder>"
 
@@ -55,15 +100,21 @@ class Sam3Predictor(nn.Module):
     the detector. Built by :func:`sam.build_sam.build_sam3` (hydra-compose
     ``configs/sam3/sam3.yaml`` -> instantiate -> strict-load the ``detector.*`` subtree).
 
-    ``predict(image, concept)`` returns a :class:`~sam.results.Sam3DetectionResult` with the
-    per-instance masks / boxes / scores for ``concept`` in ``image``.
+    ``process(image, concept=...)`` returns a :class:`~sam.results.Sam3DetectionResult`
+    with the per-instance masks / boxes / scores for that concept, and
+    ``process(image, geometry=...)`` runs the owned tracker to return exactly the objects
+    you marked (SAM 2's contract). Predictors built without a tracker -- EfficientSAM3,
+    the multiplex -- answer the first only.
     """
 
-    def __init__(self, vision_encoder: nn.Module, text_encoder: nn.Module, detector: nn.Module):
+    def __init__(self, vision_encoder: nn.Module, text_encoder: nn.Module,
+                 detector: nn.Module, tracker: nn.Module | None = None):
         super().__init__()
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
         self.detector = detector
+        self.tracker = tracker
+        self.fill_hole_area = 16
 
     # Sentinel for predict/process: "detect under the box-only caption".
     PLACEHOLDER = object()
@@ -144,40 +195,107 @@ class Sam3Predictor(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    # Image concept prediction (spec §10): encode_image -> encode_text -> detect.
+    # Image prediction (spec §10): one verb, two paths.
     # ------------------------------------------------------------------
 
     @torch.inference_mode()
-    def predict(
-        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5,
-        dtype: torch.dtype = torch.bfloat16, geometry=None,
+    def process(
+        self, image, concept=None, geometry=None, confidence_threshold: float = 0.5,
+        dtype: torch.dtype = torch.bfloat16,
     ) -> "Sam3DetectionResult":
-        """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
+        """Segment ``image``, either by concept or by pointing at objects.
+
+        The two paths are the two halves of the model, and which one runs is decided by
+        what you pass -- never guessed:
+
+        * ``concept=`` runs detection: every instance the phrase matches comes back,
+          with ids minted by the detector. ``geometry=`` may carry
+          :meth:`~sam.prompts.GeometryPrompt.exemplar_box` /
+          :meth:`~sam.prompts.GeometryPrompt.exemplar_point` to bias that search.
+        * ``geometry=`` alone, holding ``click`` / ``box`` / ``mask`` prompts, runs the
+          tracker: exactly the objects you marked come back, under the ``obj_id`` you
+          chose. This is SAM 2's contract on SAM 3's weights.
 
         Args:
-            image: ``(H, W, 3)`` uint8 RGB array. The predictor owns its preprocessing
-                (GPU resize -> 1008 + normalise; CPU resize fails parity).
-            concept: the :class:`~sam.prompts.ConceptPrompt` (text).
-            confidence_threshold: presence-weighted score threshold (default 0.5).
-            dtype: autocast dtype (default ``torch.bfloat16``).  Pass
-                ``torch.float32`` to disable mixed-precision, e.g. when comparing
-                against a float32 golden (EfficientSAM3 parity).  The PE-ViTDet SAM 3
-                model requires ``bfloat16`` (its PE MLP path hardcodes bf16); the
-                EfficientSAM3 student works in either regime.
+            image: ``(H, W, 3)`` uint8 RGB array, or an :class:`EncodedImage` from
+                :meth:`encode` when you are prompting the same image repeatedly.
+            concept: a phrase, a :class:`~sam.prompts.ConceptPrompt`, or
+                :attr:`PLACEHOLDER` for this lineage's box-only caption.
+            geometry: one :class:`~sam.prompts.GeometryPrompt` or a list of them.
+            confidence_threshold: detection threshold (concept path only).
+            dtype: autocast dtype. ``torch.float32`` disables mixed precision (the
+                EfficientSAM3 student only; the PE-ViTDet SAM 3 model requires bf16).
 
-        Runs under autocast(*dtype*) + inference_mode.  When *dtype* is ``torch.float32``
-        the autocast context is a no-op (float32 is the native dtype of all ops).
+        Returns:
+            A :class:`~sam.results.Sam3DetectionResult` either way. On the object path
+            ``scores`` are the tracker's object-score probabilities, ``instance_ids``
+            are the ``obj_id`` values you passed, and ``presence`` is None -- there is no
+            concept to be present.
 
-        Encoding the image is most of this call and does not depend on the prompt, so
-        prompting one image more than once is cheaper through
-        :meth:`start_image_session`.
+        Raises:
+            ValueError: if neither ``concept`` nor tracker geometry is given, or if both
+                are (their ids would collide in one result -- make two calls), or if
+                exemplar geometry arrives without a concept.
+            NotImplementedError: for tracker prompts on a predictor built without a
+                tracker.
         """
-        image_hw = (int(image.shape[0]), int(image.shape[1]))
-        feats, pos = self._encode(image, dtype)
+        enc = image if isinstance(image, EncodedImage) else self.encode(image, dtype)
+        exemplars, objects = _split_image_geometry(geometry)
+
+        if concept is None and exemplars is not None:
+            raise ValueError(
+                "exemplar_box / exemplar_point bias a concept search, so they need a "
+                f"concept: pass a phrase or {type(self).__name__}.PLACEHOLDER. To select "
+                "the object you marked instead, use GeometryPrompt.box / .click"
+            )
+        if concept is None and not objects:
+            raise ValueError(
+                "process needs something to do: pass concept=<phrase> (or PLACEHOLDER) "
+                "to detect, and/or geometry=GeometryPrompt.click/box/mask to select "
+                "objects"
+            )
+        if concept is not None and objects:
+            raise ValueError(
+                "concept detection and object selection return different ids -- the "
+                "detector mints 0..N-1 while click/box/mask carry the obj_id you chose, "
+                "and one result cannot hold both. Call process twice"
+            )
+        if objects:
+            return self._select_objects(enc, objects)
         return self._detect_encoded(
-            feats, pos, image_hw, concept,
-            confidence_threshold=confidence_threshold, geometry=geometry, dtype=dtype,
+            enc.det_feats, enc.det_pos, enc.image_hw, concept,
+            confidence_threshold=confidence_threshold, geometry=exemplars, dtype=enc.dtype,
         )
+
+    @torch.inference_mode()
+    def encode(self, image, dtype: torch.dtype = torch.bfloat16) -> "EncodedImage":
+        """Encode ``image`` once, for repeated :meth:`process` calls.
+
+        The vision encoder is most of a ``process`` call and depends on nothing in the
+        prompt, so sweeping a threshold or comparing exemplars should pay for it once.
+        Hand the result back to :meth:`process` in place of the array.
+        """
+        with self._autocast(dtype):
+            x = preprocess_to_1008(image, device=self.device)
+            det_f, det_p, sam2_f, sam2_p = self._encode_views(x)
+        return EncodedImage(
+            det_feats=det_f, det_pos=det_p, sam2_feats=sam2_f, sam2_pos=sam2_p,
+            image_hw=(int(image.shape[0]), int(image.shape[1])), dtype=dtype,
+        )
+
+    def _encode_views(self, x: torch.Tensor):
+        """One trunk pass -> the detector pyramid AND the tracker's SAM 2 view.
+
+        The encoder is built with ``add_sam2_neck=True``, so both views come out of the
+        same forward -- which is what lets one predictor answer both paths without
+        running the heavy ViT twice.
+        """
+        sam3_f, sam3_p, sam2_f, sam2_p = self.vision_encoder.vision_backbone(x)
+        s = self.vision_encoder.scalp
+        if s > 0:
+            sam3_f, sam3_p = sam3_f[:-s], sam3_p[:-s]
+            sam2_f, sam2_p = sam2_f[:-s], sam2_p[:-s]
+        return sam3_f, sam3_p, sam2_f, sam2_p
 
     def _autocast(self, dtype: torch.dtype):
         """Autocast under *dtype*; float32 means no mixed precision at all."""
@@ -186,22 +304,11 @@ class Sam3Predictor(nn.Module):
             return contextlib.nullcontext()
         return torch.autocast(device_type=self.device.type, dtype=dtype)
 
-    def _encode(self, image, dtype: torch.dtype):
-        """Preprocess and run the vision encoder -> ``(features, pos)``."""
-        with self._autocast(dtype):
-            return self.encode_image(preprocess_to_1008(image, device=self.device))
-
     def _detect_encoded(
-        self, feats, pos, image_hw, concept: ConceptPrompt,
-        confidence_threshold: float = 0.5, geometry=None,
-        dtype: torch.dtype = torch.bfloat16,
+        self, feats, pos, image_hw, concept, confidence_threshold: float = 0.5,
+        geometry=None, dtype: torch.dtype = torch.bfloat16,
     ) -> "Sam3DetectionResult":
-        """Ground ``concept`` in already-encoded features (spec §10, second half).
-
-        Split out of :meth:`predict` so an :class:`~sam.models.image_session.ImageSession`
-        can reuse one encode across prompts; the ops and their autocast region are
-        the ones :meth:`predict` has always run.
-        """
+        """Ground ``concept`` in already-encoded features (spec §10, second half)."""
         with self._autocast(dtype):
             text_emb, text_mask = self.encode_text(concept)
             geo = _pack_geometry(geometry, image_hw, self.device)
@@ -210,31 +317,92 @@ class Sam3Predictor(nn.Module):
                 confidence_threshold=confidence_threshold, geo=geo,
             )
 
-    @torch.inference_mode()
-    def start_image_session(self, image, dtype: torch.dtype = torch.bfloat16):
-        """An :class:`~sam.models.image_session.ImageSession` over ``image``.
+    def _select_objects(self, enc: "EncodedImage", prompts) -> "Sam3DetectionResult":
+        """Run the tracker on one image: one mask per prompt, under the caller's ids.
 
-        Encodes the image once; every ``session.process(concept, ...)`` then costs a
-        detect instead of a detect plus the vision encoder, which is roughly 70% of
-        :meth:`predict`. Use it whenever one image takes more than one prompt --
-        sweeping ``confidence_threshold``, trying several phrases, comparing
-        exemplars.
-
-        The video predictors spell the same idea ``start_session`` /
-        ``start_concept_session``; the per-call verb is ``process`` on both.
-
-        Args:
-            image: ``(H, W, 3)`` uint8 RGB array, as :meth:`predict` takes.
-            dtype: autocast dtype for the encode and every later detect.
-
-        Returns:
-            An independent session; hold several over one loaded model.
+        A still image is a one-frame stream, so every prompt is an initial conditioning
+        frame and there is no memory to carry: the same ``track_step`` the video
+        predictor runs on frame 0, minus the bank.
         """
-        from sam.models.image_session import ImageSession
+        from sam.results import Sam3DetectionResult
 
-        image_hw = (int(image.shape[0]), int(image.shape[1]))
-        feats, pos = self._encode(image, dtype)
-        return ImageSession(self, feats, pos, image_hw, dtype)
+        if self.tracker is None:
+            raise NotImplementedError(
+                "this predictor was built without a tracker, so it can only detect "
+                "concepts; build_sam3 loads one, build_sam3_multiplex does not"
+            )
+        H, W = enc.image_hw
+        masks, scores, ids = [], [], []
+        with self._autocast(enc.dtype):
+            vis, vpos, feat_sizes = self._prepare_tracker_feats(enc.sam2_feats, enc.sam2_pos)
+            for prompt in prompts:
+                out = self._track_one(prompt, vis, vpos, feat_sizes, (H, W))
+                low = out["pred_masks"][0, 0].float()
+                low = fill_holes_in_mask_scores(low[None, None], max_area=self.fill_hole_area)
+                masks.append(
+                    F.interpolate(low, size=(H, W), mode="bilinear", align_corners=False)[0, 0]
+                )
+                scores.append(out["object_score_logits"].float().reshape(-1)[0].sigmoid())
+                ids.append(prompt.obj_id)
+
+        masks_logits = torch.stack(masks)
+        return Sam3DetectionResult(
+            masks_logits=masks_logits,
+            boxes=_masks_to_boxes(masks_logits > 0.0),
+            scores=torch.stack(scores),
+            presence=None,  # no concept was asked for, so nothing to be present
+            instance_ids=torch.as_tensor(ids, device=masks_logits.device),
+        )
+
+    def _track_one(self, prompt, vis, vpos, feat_sizes, image_hw):
+        """One prompt -> one ``track_step`` on a fresh conditioning frame."""
+        device = self.device
+        prompt = prompt.to(device)
+
+        point_inputs = None
+        points = prompt.tracker_points()
+        if points is not None:
+            raw_coords, labels = points
+            coords = _normalized_points(
+                prompt, image_hw, device, coords=raw_coords
+            ) * self.tracker.image_size
+            point_inputs = {"point_coords": coords[None], "point_labels": labels.to(device)[None]}
+
+        mask_inputs = None
+        if prompt.masks_logits is not None:
+            ims = self.tracker.input_mask_size
+            mm = F.interpolate(
+                prompt.masks_logits[None].float(), size=(ims, ims),
+                mode="bilinear", align_corners=False,
+            )
+            mask_inputs = (mm > 0.0).float() if prompt.masks_logits.dtype == torch.bool else mm
+
+        return self.tracker.track_step(
+            frame_idx=0,
+            is_init_cond_frame=True,
+            current_vision_feats=vis,
+            current_vision_pos_embeds=vpos,
+            feat_sizes=feat_sizes,
+            image=None,
+            point_inputs=point_inputs,
+            mask_inputs=mask_inputs,
+            output_dict={"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
+            num_frames=1,
+        )
+
+    def _prepare_tracker_feats(self, sam2_feats, sam2_pos):
+        """Project the two hi-res SAM 2 levels and flatten to ``(HW, B, C)``.
+
+        The same projection :class:`Sam3VideoPredictor` runs per frame; shared by every
+        prompt in one call, since the base tracker has no cross-object attention.
+        """
+        fpn = list(sam2_feats)
+        fpn[0] = self.tracker.sam_mask_decoder.conv_s0(fpn[0])
+        fpn[1] = self.tracker.sam_mask_decoder.conv_s1(fpn[1])
+        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
+        vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
+        vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
+        return vis, vpos, feat_sizes
 
 
 def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
@@ -370,7 +538,8 @@ class Sam3MultiplexPredictor(Sam3Predictor):
     (the text path feeds the detector exactly the text-id-0 slice == encoding the positive
     phrase alone, which equals ``image_sam31.npz``'s ``text_emb[:, 0]``).
 
-    ``predict`` overrides the base post-processing to the SAM 3.1 demo semantics:
+    ``_detect_encoded`` overrides the base post-processing to the SAM 3.1 demo semantics
+    (``process`` itself is inherited unchanged):
       * the score is the joint ``sigmoid(pred_logits)`` (presence is already folded into
         ``pred_logits`` by ``supervise_joint_box_scores``; NO extra presence multiply), and
       * the box is ``masks_to_boxes`` of the output mask (the multiplex demo derives boxes
@@ -381,26 +550,6 @@ class Sam3MultiplexPredictor(Sam3Predictor):
     """
 
     BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_MUX
-
-    @torch.inference_mode()
-    def predict(
-        self, image, concept: ConceptPrompt, confidence_threshold: float = 0.5,
-        geometry=None,
-    ) -> "Sam3DetectionResult":
-        """Detect every instance of ``concept`` in ``image`` -> ``Sam3DetectionResult``.
-
-        Args mirror :meth:`Sam3Predictor.predict`. Runs under bf16 autocast + inference_mode
-        (the only supported SAM 3 regime); the shared encoder runs ONCE. Prompting one
-        image repeatedly is cheaper through :meth:`Sam3Predictor.start_image_session`,
-        which this class inherits.
-        """
-        image_hw = (int(image.shape[0]), int(image.shape[1]))
-        feats, pos = self._encode(image, torch.bfloat16)
-        return self._detect_encoded(
-            feats, pos, image_hw, concept,
-            confidence_threshold=confidence_threshold, geometry=geometry,
-            dtype=torch.bfloat16,
-        )
 
     def _detect_encoded(
         self, feats, pos, image_hw, concept: ConceptPrompt,

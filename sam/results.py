@@ -118,7 +118,8 @@ class Sam3DetectionResult:
             (binarise at 0, i.e. ``sigmoid > 0.5``, to recover the boolean masks).
         boxes: ``(N, 4)`` boxes in ``xyxy`` format, in original-image pixels.
         scores: ``(N,)`` presence-weighted confidences (``sigmoid(class) * sigmoid(presence)``).
-        presence: scalar phrase-level presence probability (``sigmoid(presence_logit_dec)``).
+        presence: scalar phrase-level presence probability (``sigmoid(presence_logit_dec)``),
+            or None when no concept was asked for (the object-selection path).
         instance_ids: ``(N,)`` integer ids, one per kept detection.
     """
 
@@ -127,7 +128,7 @@ class Sam3DetectionResult:
         masks_logits: torch.Tensor,
         boxes: torch.Tensor,
         scores: torch.Tensor,
-        presence: float,
+        presence: float | None,
         instance_ids: torch.Tensor,
     ):
         assert (
@@ -149,7 +150,7 @@ class Sam3DetectionResult:
         self.masks_logits = masks_logits
         self.boxes = boxes
         self.scores = scores
-        self.presence = float(presence)
+        self.presence = None if presence is None else float(presence)
         self.instance_ids = instance_ids
 
     @property

@@ -891,7 +891,12 @@ def build_sam3(
     hydra_overrides_extra=[],
     **kwargs,
 ):
-    """Build a SAM 3 image concept predictor (``Sam3Predictor``) and load weights.
+    """Build a SAM 3 image predictor (``Sam3Predictor``) and load weights.
+
+    Loads the tracker too (309 keys, 12M params), so one predictor answers both paths:
+    ``process(image, concept=...)`` detects, ``process(image, geometry=click/box/mask)``
+    selects the object you marked. Dropping it would save 0.3% of the checkpoint and
+    cost the second half of the API.
 
     Mirrors :func:`build_sam2_predictor`: hydra-compose ``config_file`` (e.g.
     ``"configs/sam3/sam3.yaml"``) -> instantiate the owned encoder / text tower / detector
@@ -899,9 +904,20 @@ def build_sam3(
     local ``sam3.pt``). Returns the predictor on ``device``, in eval mode when
     ``mode == "eval"``.
     """
-    return _compose_instantiate_load(
-        config_file, ckpt_path, _load_sam3_image_checkpoint, device, mode, hydra_overrides_extra
+    from sam.models.sam3_predictor import Sam3Predictor
+
+    cfg = _compose(config_file, hydra_overrides_extra)
+    tracker = _build_sam3_tracker_module()
+    tracker.use_memory_selection = False  # one image has no memory to select from
+
+    model = Sam3Predictor(
+        vision_encoder=instantiate(cfg.model.vision_encoder, _recursive_=True),
+        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
+        detector=instantiate(cfg.model.detector, _recursive_=True),
+        tracker=tracker,
     )
+    _load_sam3_video_checkpoint(model, ckpt_path)  # detector + tracker, 1465 keys strict
+    return _finalize(model, device, mode)
 
 
 def build_sam3_hf(model_id, **kwargs):

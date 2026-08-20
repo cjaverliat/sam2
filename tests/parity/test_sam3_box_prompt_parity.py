@@ -99,7 +99,7 @@ def test_image_box_prompt_parity(stem, determinism_no_det_algos):
     # exemplar_box is the detector route: label 1 leaves boxes_labels None (the
     # all-positive default path), the negative stem carries its label explicitly
     box = GeometryPrompt.exemplar_box(scn["box_xyxy"], label=scn["box_label"])
-    det = pred.predict(frame, ConceptPrompt(scn["phrase"]),
+    det = pred.process(frame, concept=ConceptPrompt(scn["phrase"]),
                        confidence_threshold=scn["confidence_threshold"], geometry=box)
 
     assert det.num_detections == int(g["n"]), (

@@ -156,10 +156,10 @@ def test_efficientsam3_parity(variant: str, prompt: str, determinism, mask_iou) 
 
     threshold = float(summ["threshold"])   # 0.1 (matches the golden capture)
     # The upstream golden was captured in float32 (no autocast); pass dtype=float32
-    # so our predict() matches the golden's precision regime.  bfloat16 rounds
+    # so our process() matches the golden's precision regime.  bfloat16 rounds
     # borderline scores below the threshold, changing the instance count.
-    result = model.predict(
-        image_rgb, ConceptPrompt(text=prompt), confidence_threshold=threshold,
+    result = model.process(
+        image_rgb, concept=ConceptPrompt(text=prompt), confidence_threshold=threshold,
         dtype=torch.float32,
     )
 

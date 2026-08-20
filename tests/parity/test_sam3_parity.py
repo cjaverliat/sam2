@@ -243,9 +243,10 @@ def test_sam3_image_parity(image_fixture, determinism, mask_iou):
     image_rgb = image_fixture["image_input_rgb"]  # (384,512,3) uint8 -- the golden input
     thr = float(image_fixture["confidence_threshold"])
 
-    # predict() owns preprocessing (GPU resize), encode_image, encode_text, detect, and runs
+    # process() owns preprocessing (GPU resize), encode_image, encode_text, detect, and runs
     # under bf16 autocast + inference_mode internally (the only supported SAM 3 regime).
-    result = predictor.predict(image_rgb, ConceptPrompt("truck"), confidence_threshold=thr)
+    result = predictor.process(image_rgb, concept=ConceptPrompt("truck"),
+                               confidence_threshold=thr)
 
     g_boxes = image_fixture["boxes"].astype(np.float32)    # (N,4) xyxy px
     g_scores = image_fixture["scores"].astype(np.float32)  # (N,)
@@ -708,9 +709,10 @@ def test_sam3p1_image_parity(image_sam31_fixture, determinism, mask_iou):
     image_rgb = fx["image_input_rgb"]  # (384,512,3) uint8 -- the golden input
     thr = float(fx["confidence_threshold"])
 
-    # predict() owns preprocessing (GPU resize), encode_image, encode_text, grounding +
+    # process() owns preprocessing (GPU resize), encode_image, encode_text, grounding +
     # post-processing, and runs under bf16 autocast + inference_mode internally.
-    result = predictor.predict(image_rgb, ConceptPrompt("truck"), confidence_threshold=thr)
+    result = predictor.process(image_rgb, concept=ConceptPrompt("truck"),
+                               confidence_threshold=thr)
 
     g_boxes = fx["boxes"].astype(np.float32)    # (N,4) xyxy px
     g_scores = fx["scores"].astype(np.float32)  # (N,)
