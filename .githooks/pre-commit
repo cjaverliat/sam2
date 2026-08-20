@@ -1,0 +1,46 @@
+#!/bin/bash
+# Keep Jupyter output out of the history without touching the working copy.
+#
+# Notebook outputs are megabytes of base64 that re-diff on every run. This clears
+# them from the *staged* content only, so the notebook you have open keeps the
+# figures you just rendered.
+#
+# Enable it once per clone:  git config core.hooksPath .githooks
+set -uo pipefail
+
+py=$(command -v python3 || command -v python) || {
+    echo "pre-commit: no python on PATH to strip notebook output" >&2
+    exit 1
+}
+
+# What `jupyter nbconvert --clear-output` does, without needing jupyter installed:
+# outputs emptied, execution counts reset, every other key left where it was so
+# the diff stays limited to what actually changed.
+strip='
+import json, sys
+nb = json.load(sys.stdin)
+for cell in nb["cells"]:
+    if cell.get("cell_type") == "code":
+        cell["outputs"] = []
+        cell["execution_count"] = None
+json.dump(nb, sys.stdout, indent=1, ensure_ascii=False)
+sys.stdout.write("\n")
+'
+
+tmp=$(mktemp) || exit 1
+trap 'rm -f "$tmp"' EXIT
+
+while IFS= read -r -d '' f; do
+    [[ $f == *.ipynb ]] || continue
+    if ! git show ":$f" | "$py" -c "$strip" > "$tmp"; then
+        echo "pre-commit: could not clear the output of $f" >&2
+        exit 1
+    fi
+    blob=$(git hash-object -w --path "$f" "$tmp") || exit 1
+    git update-index --cacheinfo "100644,$blob,$f" || exit 1
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
+
+if git diff --cached --quiet; then
+    echo "pre-commit: nothing left staged once notebook output is stripped" >&2
+    exit 1
+fi

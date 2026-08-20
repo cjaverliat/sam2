@@ -97,6 +97,8 @@ pixi run python -c "import sam; print(sam.__version__)"
 
 Available environments include `default` (CUDA 12.8 torch), `notebooks`, `dev`, and the ONNX tiers described in [ONNX / TensorRT inference](#onnx--tensorrt-inference).
 
+If you plan to commit, point git at the repo's hooks once: `git config core.hooksPath .githooks`. The `pre-commit` hook clears cell output from the notebooks you stage — your working copy keeps the figures it rendered — so `.ipynb` diffs stay readable.
+
 > **Windows:** `nvcc` only supports the MSVC `cl.exe` host compiler, which conda/pixi cannot ship. Source the MSVC environment (`vcvars64.bat`) before any `pixi` command that builds the extension. See [`pyproject.toml`](pyproject.toml) for the exact path.
 
 ---
