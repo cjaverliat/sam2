@@ -93,7 +93,14 @@ def require_checkpoints(*specs: tuple[str, str]) -> None:
 
 
 def use_dark(enabled: bool = True) -> None:
-    """Switch the figures to a dark palette (for dark-themed editors)."""
+    """Switch the figures to a dark palette (for dark-themed editors).
+
+    Note for PyCharm: its dark theme inverts *every* output image, video frames
+    included, so no choice of palette here can keep the photo colours right. Turn
+    the filter off in ``Settings | Jupyter | Jupyter General`` ->
+    "Invert image outputs for dark themes" (or right-click one output ->
+    "Invert Image"), after which this switch is purely cosmetic.
+    """
     plt.style.use("dark_background" if enabled else "default")
 
 
@@ -202,7 +209,7 @@ def show_frames(frames, per_frame, title, idxs=None, label_prefix=None,
             extra(ax, i)
     plt.tight_layout()
     plt.show()
-    return fig
+    plt.close(fig)  # else the backend flushes it again at the end of the cell
 
 
 # ---------------------------------------------------------------------------
