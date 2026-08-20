@@ -343,6 +343,15 @@ for threshold in (0.3, 0.5, 0.7):
 
 `process` is the same verb the video sessions use, and takes the same `geometry=` exemplars as `predict`. There is no concept/interactive split here: an image predictor only detects, and the concept is a per-call argument rather than session-scoped.
 
+The concept can be a `ConceptPrompt`, a bare phrase, or `predictor.PLACEHOLDER` for this lineage's box-only caption — `"visual"` on base SAM 3, `"<text placeholder>"` on the 3.1 multiplex — which is what upstream encodes when geometry arrives with no text. Ask for it by name rather than typing the string: the wrong lineage's caption returns nothing.
+
+```python
+result = predictor.predict(image, predictor.PLACEHOLDER,
+                           geometry=GeometryPrompt.concept_box((x0, y0, x1, y1)))
+```
+
+The image predictor owns no tracker, so a `GeometryPrompt.box` / `.click` raises rather than being reinterpreted as an exemplar; it names `concept_box` / `concept_point` and the video predictor's `start_session()` as the two things you might have meant.
+
 
 ### Streaming video — track a concept across frames
 
@@ -421,19 +430,30 @@ for frame in frames:
     masks = {obj_id: (m.masks_logits > 0) for obj_id, m in masklets.items()}
 ```
 
-### Geometry prompts — clicks, boxes, masks
+### Geometry prompts — selecting an object vs steering a search
 
-A `GeometryPrompt` carries the prompt for one object id, built with a named constructor:
-`GeometryPrompt.click(obj_id, (x, y))`, `.box(obj_id, (x0, y0, x1, y1))`,
-`.mask(obj_id, mask)`. The one exception is `.concept_box(xyxy)`, which takes **no** `obj_id`:
-it biases detection instead of naming an object, and the ids it produces are the detector's to
-hand out. Constructors take plain tuples, lists, or arrays in pixel coordinates; the generic
-`GeometryPrompt(...)` form stays available (with `box_route=BoxRoute.DETECTOR` for the
-detector slot, `is_normalized=True` for `[0, 1]` coordinates).
+A `GeometryPrompt` is one of two things, and the constructor you pick says which:
 
-On an **image**, a box biases the detection of the text concept (upstream's
-`add_geometric_prompt`). `boxes_labels` gives each box a sign: `1` positive (the default when
-omitted), `0` negative — "not this one", which drops the enclosed detection.
+| | selects ONE object | steers the concept search |
+|---|---|---|
+| point | `GeometryPrompt.click(obj_id, (x, y))` | `GeometryPrompt.concept_point((x, y))` |
+| box | `GeometryPrompt.box(obj_id, (x0, y0, x1, y1))` | `GeometryPrompt.concept_box((x0, y0, x1, y1))` |
+| mask | `GeometryPrompt.mask(obj_id, mask)` | — no detector mask slot in either checkpoint |
+| goes to | the tracker's prompt encoder (SAM 2 semantics) | the detector's geometric slot (SAM 3 only) |
+| needs | nothing else | a concept: a phrase or `PLACEHOLDER` |
+| ids | the `obj_id` you passed | minted by detection |
+
+The `concept_*` constructors take **no** `obj_id`: they name nothing, so the ids they produce
+are the detector's to hand out. `label=0` makes either one a counter-example — "everything
+matching the concept EXCEPT this". Constructors take plain tuples, lists, or arrays in pixel
+coordinates; the generic `GeometryPrompt(...)` form stays available (with
+`route=PromptRoute.DETECTOR` for the detector slot, `is_normalized=True` for `[0, 1]`
+coordinates), though the constructors set the route for you.
+
+On an **image** only the `concept_*` family applies — there is no tracker to select with, so a
+`click` or `box` raises and names the alternative. A negative box drops the enclosed detection's
+score sharply (0.95 → 0.66 in the notebook's example, below a 0.7 threshold); a negative point
+barely moves it, having no extent to say which instance you meant.
 
 ```python
 from sam.prompts import ConceptPrompt, GeometryPrompt
@@ -454,11 +474,21 @@ upstream makes.
 `Sam2VideoPredictor` does. No detection runs, nothing else can appear, and the object tracks
 until the clip ends.
 
-**Detection-driven** is SAM 3 only and must be asked for: `GeometryPrompt.concept_box` sends
-the box to the detector's geometric slot, where it biases that frame's detection. Detection
-then runs on every frame, so every instance the concept matches is tracked, not only the boxed
-one — which is why this route needs the session's concept. Upstream adopts a placeholder
-caption implicitly the moment a box arrives without text; here it is an argument you can read.
+**Detection-driven** is SAM 3 only and must be asked for: `GeometryPrompt.concept_box` and
+`GeometryPrompt.concept_point` send their geometry to the detector's geometric slot, where it
+biases that frame's detection. Detection then runs on every frame, so every instance the
+concept matches is tracked, not only the one you marked — which is why this route needs the
+session's concept. Upstream adopts a placeholder caption implicitly the moment a box arrives
+without text; here it is an argument you can read.
+
+The route belongs to the prompt, and the constructor sets it: `click` / `box` / `mask` mark one
+object for the tracker, `concept_point` / `concept_box` describe what the search should look
+for. You never name `PromptRoute` yourself.
+
+> **`concept_point` on video is this fork's, not upstream's.** The detector's point slot is
+> trained and ships in both checkpoints, and the image path has always used it, but upstream's
+> video inference hardcodes `point_embeddings=None`, so there is no golden pinning it. Boxes
+> are the parity-tested detector route.
 
 ```python
 # interactive VOS — one object per prompt, no concept
@@ -475,6 +505,7 @@ for frame in frames[1:]:
 hint_session = video_predictor.start_concept_session(video_predictor.PLACEHOLDER)
 masklets = hint_session.process(frames[0], prompts=[
     GeometryPrompt.concept_box((300, 150, 470, 420)),      # label=0: "everything except this"
+    GeometryPrompt.concept_point((640, 300)),              # the point form, same contract
 ])
 ```
 
@@ -490,8 +521,9 @@ matching upstream's `add_tracker_new_points`: with no concept set nothing can ev
 them, so without the exemption the lifecycle would purge them after 8 unmatched frames.
 
 Mask prompts are base-lineage only, on the tracker's own `sam_prompt_encoder.mask_downscaling`
-weights. Pairing a mask with a `concept_box` raises `NotImplementedError`: that asks for the
-*detector's* mask slot, and `mask_encoder` has no weights in either checkpoint.
+weights, and there is no `concept_mask`: a mask on the detector route raises
+`NotImplementedError` when you build it, because `mask_encoder` has no weights in either
+checkpoint.
 
 ### Adding objects mid-stream
 

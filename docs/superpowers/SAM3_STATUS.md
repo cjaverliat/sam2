@@ -90,14 +90,23 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   the caller never asked for — on the bedroom clip, both children, then neither once the
   hotstart rule purged them at frame 8.
 
-  Now `GeometryPrompt` carries `box_route: BoxRoute` (`sam/prompts.py`), defaulting to
-  `TRACKER`: the box is encoded as its two corner points (labels 2/3) via
-  `GeometryPrompt.tracker_points()` and seeds ONE object through the tracker, which is
-  what `Sam2VideoPredictor` already does (`sam2_predictor.py:553-565`). `BoxRoute.DETECTOR`
-  selects upstream's route, and `_concept_for_detection` now RAISES if that box arrives
-  with no concept instead of adopting one; `set_placeholder_concept(state)` is the
-  explicit form of upstream's caption (same cached encode, so parity numerics are
-  bit-identical — the video-box goldens pass unchanged with the explicit calls added).
+  Now `GeometryPrompt` carries `route: PromptRoute` (`sam/prompts.py`, `BoxRoute` kept as
+  an alias), defaulting to `TRACKER`: the box is encoded as its two corner points
+  (labels 2/3) via `GeometryPrompt.tracker_points()` and seeds ONE object through the
+  tracker, which is what `Sam2VideoPredictor` already does (`sam2_predictor.py:553-565`).
+  `PromptRoute.DETECTOR` selects upstream's route, and `_concept_for_detection` now
+  RAISES if that geometry arrives with no concept instead of adopting one;
+  `set_placeholder_concept(state)` is the explicit form of upstream's caption (same
+  cached encode, so parity numerics are bit-identical — the video-box goldens pass
+  unchanged with the explicit calls added).
+
+  The route is now the whole prompt's, not just its boxes, and the named constructors set
+  it: `click` / `box` / `mask` are TRACKER, `concept_point` / `concept_box` are DETECTOR.
+  `concept_point` is new on both paths — trained weights (`geometry_encoder.points_*`
+  ship in both checkpoints) but no upstream video caller, so the video side of it carries
+  no golden. The image predictor rejects TRACKER-route geometry outright rather than
+  silently treating it as an exemplar, and `PLACEHOLDER` / `BOX_ONLY_CAPTION` now exist on
+  the image classes too ("visual" on base, "<text placeholder>" on multiplex).
   `boxes_labels` on a tracker-route box raises rather than being ignored.
   Tests: `tests/test_sam3_explicit_concept.py`.
 
