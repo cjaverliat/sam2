@@ -30,6 +30,11 @@ sys.stdout.write("\n")
 tmp=$(mktemp) || exit 1
 trap 'rm -f "$tmp"' EXIT
 
+# Was anything staged before we touched it? If not, this is a --amend of the message
+# or an empty commit, and either way the stripping below cannot be what emptied it.
+had_staged_changes=1
+git diff --cached --quiet && had_staged_changes=0
+
 while IFS= read -r -d '' f; do
     [[ $f == *.ipynb ]] || continue
     if ! git show ":$f" | "$py" -c "$strip" > "$tmp"; then
@@ -40,7 +45,9 @@ while IFS= read -r -d '' f; do
     git update-index --cacheinfo "100644,$blob,$f" || exit 1
 done < <(git diff --cached --name-only -z --diff-filter=ACM)
 
-if git diff --cached --quiet; then
+# Refuse only when WE emptied the index -- the outputs were the whole commit. An
+# already-empty index is git's business (it rejects empty commits and allows --amend).
+if [ "$had_staged_changes" -eq 1 ] && git diff --cached --quiet; then
     echo "pre-commit: nothing left staged once notebook output is stripped" >&2
     exit 1
 fi
