@@ -46,19 +46,33 @@ if TYPE_CHECKING:
 # (sam3_multiplex_tracking.py:1698-1705) and leaves text_ids at 0, i.e. slot 0.
 @dataclasses.dataclass
 class EncodedImage:
-    """One image encoded once: the detector's pyramid and the tracker's SAM 2 view.
+    """One image encoded once, as the pyramid views its heads consume.
 
     Returned by :meth:`Sam3Predictor.encode` and accepted by
     :meth:`Sam3Predictor.process` in place of the array, so repeated prompting of one
     image pays for the vision encoder once.
+
+    ``views`` is keyed by neck: ``"det"`` feeds the detector on every lineage, and the
+    tracker's views differ -- base SAM 3 has one (``"sam2"``), SAM 3.1's tri-neck has
+    ``"interactive"`` and ``"propagation"``.
     """
 
-    det_feats: list
-    det_pos: list
-    sam2_feats: list
-    sam2_pos: list
+    views: dict
     image_hw: tuple
     dtype: "torch.dtype"
+
+    def view(self, name: str):
+        """``(features, pos)`` for one neck.
+
+        Raises:
+            KeyError: naming the views this encode actually holds, since which exist
+                depends on the lineage that produced it.
+        """
+        if name not in self.views:
+            raise KeyError(
+                f"no {name!r} view on this encode; it holds {sorted(self.views)}"
+            )
+        return self.views[name]
 
 
 def _split_image_geometry(geometry):
@@ -262,8 +276,9 @@ class Sam3Predictor(nn.Module):
             )
         if objects:
             return self._select_objects(enc, objects)
+        det_feats, det_pos = enc.view("det")
         return self._detect_encoded(
-            enc.det_feats, enc.det_pos, enc.image_hw, concept,
+            det_feats, det_pos, enc.image_hw, concept,
             confidence_threshold=confidence_threshold, geometry=exemplars, dtype=enc.dtype,
         )
 
@@ -276,26 +291,25 @@ class Sam3Predictor(nn.Module):
         Hand the result back to :meth:`process` in place of the array.
         """
         with self._autocast(dtype):
-            x = preprocess_to_1008(image, device=self.device)
-            det_f, det_p, sam2_f, sam2_p = self._encode_views(x)
+            views = self._encode_views(preprocess_to_1008(image, device=self.device))
         return EncodedImage(
-            det_feats=det_f, det_pos=det_p, sam2_feats=sam2_f, sam2_pos=sam2_p,
+            views=views,
             image_hw=(int(image.shape[0]), int(image.shape[1])), dtype=dtype,
         )
 
-    def _encode_views(self, x: torch.Tensor):
-        """One trunk pass -> the detector pyramid AND the tracker's SAM 2 view.
+    def _encode_views(self, x: torch.Tensor) -> dict:
+        """One trunk pass -> ``{"det": ..., "sam2": ...}``.
 
         The encoder is built with ``add_sam2_neck=True``, so both views come out of the
         same forward -- which is what lets one predictor answer both paths without
         running the heavy ViT twice.
         """
-        sam3_f, sam3_p, sam2_f, sam2_p = self.vision_encoder.vision_backbone(x)
+        det_f, det_p, sam2_f, sam2_p = self.vision_encoder.vision_backbone(x)
         s = self.vision_encoder.scalp
         if s > 0:
-            sam3_f, sam3_p = sam3_f[:-s], sam3_p[:-s]
+            det_f, det_p = det_f[:-s], det_p[:-s]
             sam2_f, sam2_p = sam2_f[:-s], sam2_p[:-s]
-        return sam3_f, sam3_p, sam2_f, sam2_p
+        return {"det": (det_f, det_p), "sam2": (sam2_f, sam2_p)}
 
     def _autocast(self, dtype: torch.dtype):
         """Autocast under *dtype*; float32 means no mixed precision at all."""
@@ -324,36 +338,19 @@ class Sam3Predictor(nn.Module):
         frame and there is no memory to carry: the same ``track_step`` the video
         predictor runs on frame 0, minus the bank.
         """
-        from sam.results import Sam3DetectionResult
-
         if self.tracker is None:
             raise NotImplementedError(
                 "this predictor was built without a tracker, so it can only detect "
                 "concepts; build_sam3 and build_sam3_multiplex both load one, "
                 "EfficientSAM3 has none"
             )
-        H, W = enc.image_hw
-        masks, scores, ids = [], [], []
+        outs, ids = [], []
         with self._autocast(enc.dtype):
-            vis, vpos, feat_sizes = self._prepare_tracker_feats(enc.sam2_feats, enc.sam2_pos)
+            vis, vpos, feat_sizes = self._prepare_tracker_feats(*enc.view("sam2"))
             for prompt in prompts:
-                out = self._track_one(prompt, vis, vpos, feat_sizes, (H, W))
-                low = out["pred_masks"][0, 0].float()
-                low = fill_holes_in_mask_scores(low[None, None], max_area=self.fill_hole_area)
-                masks.append(
-                    F.interpolate(low, size=(H, W), mode="bilinear", align_corners=False)[0, 0]
-                )
-                scores.append(out["object_score_logits"].float().reshape(-1)[0].sigmoid())
+                outs.append(self._track_one(prompt, vis, vpos, feat_sizes, enc.image_hw))
                 ids.append(prompt.obj_id)
-
-        masks_logits = torch.stack(masks)
-        return Sam3DetectionResult(
-            masks_logits=masks_logits,
-            boxes=_masks_to_boxes(masks_logits > 0.0),
-            scores=torch.stack(scores),
-            presence=None,  # no concept was asked for, so nothing to be present
-            instance_ids=torch.as_tensor(ids, device=masks_logits.device),
-        )
+        return _result_from_tracker_outputs(outs, ids, enc.image_hw, self.fill_hole_area)
 
     def _track_one(self, prompt, vis, vpos, feat_sizes, image_hw):
         """One prompt -> one ``track_step`` on a fresh conditioning frame."""
@@ -445,6 +442,54 @@ def _mux_backbone_features(feats, pos, decoder) -> dict:
         "vision_pos_embeds": vpos,
         "feat_sizes": feat_sizes,
     }
+
+
+def _result_from_tracker_outputs(outs, obj_ids, image_hw, fill_hole_area):
+    """Per-object tracker outputs -> one :class:`~sam.results.Sam3DetectionResult`.
+
+    The object path's answer to the concept path's detections: masks come from the
+    low-res grid through the same hole-fill + resize the video predictor applies,
+    boxes are derived from those masks (the detector's box head never ran), scores are
+    the object-score probabilities, and ``presence`` is None because no concept was
+    asked for.
+    """
+    from sam.results import Sam3DetectionResult
+
+    height, width = image_hw
+    masks, scores = [], []
+    for out in outs:
+        low = fill_holes_in_mask_scores(
+            out["pred_masks"][0, 0].float()[None, None], max_area=fill_hole_area
+        )
+        masks.append(
+            F.interpolate(low, size=(height, width), mode="bilinear", align_corners=False)[0, 0]
+        )
+        scores.append(out["object_score_logits"].float().reshape(-1)[0].sigmoid())
+
+    masks_logits = torch.stack(masks)
+    return Sam3DetectionResult(
+        masks_logits=masks_logits,
+        boxes=_masks_to_boxes(masks_logits > 0.0),
+        scores=torch.stack(scores),
+        presence=None,  # no concept was asked for, so nothing to be present
+        instance_ids=torch.as_tensor(list(obj_ids), device=masks_logits.device),
+    )
+
+
+def _demux_mux_outputs(out, mux_state, obj_ids) -> dict:
+    """Slice a joint track_step output into per-object dicts. ``pred_masks`` /
+    ``object_score_logits`` are already demuxed; ``obj_ptr`` is muxed in ``out`` so it is
+    demuxed here. Indexed in the ``MultiplexState`` object order == ``obj_ids`` order."""
+    per_obj_ptr = mux_state.demux(out["obj_ptr"])  # (N, C)
+    per_obj = {}
+    for i, oid in enumerate(obj_ids):
+        per_obj[oid] = {
+            "pred_masks": out["pred_masks"][i : i + 1],
+            "pred_masks_high_res": out["pred_masks_high_res"][i : i + 1],
+            "object_score_logits": out["object_score_logits"][i : i + 1],
+            "obj_ptr": per_obj_ptr[i : i + 1],
+        }
+    return per_obj
 
 
 def _as_point_prompt(prompt: GeometryPrompt) -> GeometryPrompt:
@@ -591,29 +636,38 @@ class Sam3MultiplexPredictor(Sam3Predictor):
 
     BOX_ONLY_CAPTION = BOX_ONLY_CAPTION_MUX
 
-    def _encode_views(self, x: torch.Tensor):
-        """One trunk pass -> the DETECTION pyramid and the INTERACTIVE one (tri-neck).
+    def _encode_views(self, x: torch.Tensor) -> dict:
+        """One trunk pass -> the three SAM 3.1 necks.
 
-        SAM 3.1's encoder carries three necks; a still image needs two -- ``det`` for the
-        detector, ``interactive`` for the tracker's cond-frame head. The propagation neck
-        exists to carry objects across frames, which one image has none of.
+        ``det`` feeds the detector, and the tracker takes both of the others: the
+        interactive head reads ``interactive``, the joint decode reads ``propagation``.
         """
-        det_f, det_p, _, _, int_f, int_p = self.vision_encoder.vision_backbone.forward_all(x)
+        det_f, det_p, prop_f, prop_p, int_f, int_p = (
+            self.vision_encoder.vision_backbone.forward_all(x)
+        )
         s = self.vision_encoder.scalp
         if s > 0:
             det_f, det_p = det_f[:-s], det_p[:-s]
+            prop_f, prop_p = prop_f[:-s], prop_p[:-s]
             int_f, int_p = int_f[:-s], int_p[:-s]
-        return det_f, det_p, int_f, int_p
+        return {
+            "det": (det_f, det_p),
+            "propagation": (prop_f, prop_p),
+            "interactive": (int_f, int_p),
+        }
 
     def _select_objects(self, enc: "EncodedImage", prompts) -> "Sam3DetectionResult":
-        """Decode the marked objects through SAM 3.1's interactive head.
+        """Decode the marked objects the way the video predictor seeds its first frame.
 
-        The multiplex tracker packs objects into buckets to track them jointly, which a
-        still image does not need: the cond-frame head decodes every prompt in one
-        batched call and there is no state to keep afterwards.
+        The multiplex packs objects into K buckets so they decode in ONE joint pass --
+        that is the point of the lineage, and it applies just as much to n objects in
+        one image as to n objects in a clip. So this allocates a ``MultiplexState`` and
+        runs the same ``track_step`` :meth:`Sam3MultiplexVideoPredictor._seed_points_multiplex`
+        runs, then throws the state away: with one frame there is no propagation to
+        feed, but the decode itself must be the bucket-space one or the masks come out
+        different (measured: IoU 0.997 against the video path, logits off by up to 1.3,
+        for an interactive-head-only shortcut).
         """
-        from sam.results import Sam3DetectionResult
-
         if self.tracker is None:
             raise NotImplementedError(
                 "this predictor was built without a tracker, so it can only detect concepts"
@@ -622,22 +676,32 @@ class Sam3MultiplexPredictor(Sam3Predictor):
         points = [_as_point_prompt(p.to(self.device)) for p in prompts]
         with self._autocast(enc.dtype):
             bf_int = _mux_backbone_features(
-                enc.sam2_feats, enc.sam2_pos, self.tracker.interactive_sam_mask_decoder
+                *enc.view("interactive"), self.tracker.interactive_sam_mask_decoder
+            )
+            bf_prop = _mux_backbone_features(
+                *enc.view("propagation"), self.tracker.sam_mask_decoder
             )
             point_inputs, obj_ids = _build_mux_point_inputs(
                 points, (H, W), self.tracker.image_size, self.device
             )
-            out = self.tracker.sam_heads_from_points(point_inputs, bf_int)
+            mux_state = self.tracker.multiplex_controller.get_state(
+                len(obj_ids), self.device, torch.float32, random=False
+            )
+            out = self.tracker.track_step(
+                frame_idx=0,
+                is_init_cond_frame=True,
+                backbone_features_interactive=bf_int,
+                backbone_features_propagation=bf_prop,
+                point_inputs=point_inputs,
+                mask_inputs=None,
+                output_dict={"cond_frame_outputs": {}, "non_cond_frame_outputs": {}},
+                num_frames=1,
+                multiplex_state=mux_state,
+            )
 
-        masks_logits = F.interpolate(
-            out["high_res_masks"].float(), size=(H, W), mode="bilinear", align_corners=False,
-        )[:, 0]
-        return Sam3DetectionResult(
-            masks_logits=masks_logits,
-            boxes=_masks_to_boxes(masks_logits > 0.0),
-            scores=out["object_score_logits"].float().reshape(-1).sigmoid(),
-            presence=None,  # no concept was asked for, so nothing to be present
-            instance_ids=torch.as_tensor(obj_ids, device=masks_logits.device),
+        per_obj = _demux_mux_outputs(out, mux_state, obj_ids)
+        return _result_from_tracker_outputs(
+            [per_obj[oid] for oid in obj_ids], obj_ids, (H, W), self.fill_hole_area
         )
 
     def _detect_encoded(
@@ -1940,19 +2004,8 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         )
 
     def _demux_outputs(self, out, mux_state, obj_ids) -> dict:
-        """Slice the joint track_step output into per-object dicts. ``pred_masks`` /
-        ``object_score_logits`` are already demuxed; ``obj_ptr`` is muxed in ``out`` so it is
-        demuxed here. Indexed in the ``MultiplexState`` object order == ``obj_ids`` order."""
-        per_obj_ptr = mux_state.demux(out["obj_ptr"])  # (N, C)
-        per_obj = {}
-        for i, oid in enumerate(obj_ids):
-            per_obj[oid] = {
-                "pred_masks": out["pred_masks"][i : i + 1],
-                "pred_masks_high_res": out["pred_masks_high_res"][i : i + 1],
-                "object_score_logits": out["object_score_logits"][i : i + 1],
-                "obj_ptr": per_obj_ptr[i : i + 1],
-            }
-        return per_obj
+        """See :func:`_demux_mux_outputs` -- shared with the image predictor."""
+        return _demux_mux_outputs(out, mux_state, obj_ids)
 
     @staticmethod
     def _prune_mux_memory(state, frame_idx: int) -> None:

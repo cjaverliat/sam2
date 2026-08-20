@@ -131,6 +131,59 @@ def test_object_path_matches_video(predictor, image):
     assert iou > 0.99, f"image and video selection disagree (IoU {iou:.4f})"
 
 
+@pytest.fixture
+def video_regime(monkeypatch):
+    """Make the image predictor preprocess exactly like the video frame loader.
+
+    The two paths otherwise differ by their resize alone, which is worth ~0.3% of a
+    mask -- enough to hide whether the decode itself matches. Holding the regime fixed
+    turns the comparison into an equality check on the code path.
+    """
+    import sam.models.sam3_predictor as predictor_module
+    from sam.utils.sam3_transforms import preprocess_to_1008_video
+
+    monkeypatch.setattr(predictor_module, "preprocess_to_1008",
+                        lambda image, device: preprocess_to_1008_video(image, device=device))
+
+
+@needs_model
+def test_object_path_is_bit_exact_with_video(image, video_regime):
+    """Same preprocessing -> the image path IS the video path's frame 0, to the bit."""
+    from sam.build_sam import build_sam3, build_sam3_video_predictor
+
+    fresh = build_sam3(config_file="configs/sam3/sam3.yaml", ckpt_path=CKPT, device="cuda")
+    ours = fresh.process(image, geometry=GeometryPrompt.box(1, REAR_WHEEL)).masks_logits[0]
+
+    video = build_sam3_video_predictor(
+        config_file="configs/sam3/sam3.yaml", ckpt_path=CKPT, device="cuda")
+    out = video.start_session().process(image, prompts=[GeometryPrompt.box(1, REAR_WHEEL)])
+    theirs = out[1].best_mask_logits.reshape(ours.shape)
+
+    assert float((ours.float() - theirs.float()).abs().max()) == 0.0
+
+
+@needs_mux
+def test_multiplex_object_path_is_bit_exact_with_video(image, video_regime):
+    """The bucket decode is not optional.
+
+    Skipping the MultiplexState and calling the interactive head alone gives masks that
+    look right (IoU 0.997) but are not the same numbers -- logits drift by up to 1.3.
+    SAM 3.1 decodes objects in bucket space, so a still image has to as well.
+    """
+    from sam.build_sam import build_sam3_multiplex, build_sam3_multiplex_video_predictor
+
+    fresh = build_sam3_multiplex(
+        config_file="configs/sam3/sam3.1.yaml", ckpt_path=MUX_CKPT, device="cuda")
+    ours = fresh.process(image, geometry=GeometryPrompt.click(1, CLICK)).masks_logits[0]
+
+    video = build_sam3_multiplex_video_predictor(
+        config_file="configs/sam3/sam3.1.yaml", ckpt_path=MUX_CKPT, device="cuda")
+    out = video.start_session().process(image, prompts=[GeometryPrompt.click(1, CLICK)])
+    theirs = out[1].best_mask_logits.reshape(ours.shape)
+
+    assert float((ours.float() - theirs.float()).abs().max()) == 0.0
+
+
 # ---------------------------------------------------------------- encode reuse
 @needs_model
 def test_encode_is_reusable_and_exact(predictor, image, monkeypatch):
