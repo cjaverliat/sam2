@@ -514,7 +514,11 @@ def _as_point_prompt(prompt: GeometryPrompt) -> GeometryPrompt:
 
 
 def _build_mux_point_inputs(prompts, video_hw, image_size, device):
-    """Batch point-only ``GeometryPrompt``s into the tracker's ``point_inputs`` dict.
+    """Batch TRACKER-route ``GeometryPrompt``s into the tracker's ``point_inputs`` dict.
+
+    Clicks arrive as their own points; a box arrives as its two corners (labels 2 and
+    3), the way SAM 2 has always encoded one -- :func:`_as_point_prompt` does that
+    conversion, so a caller never has to care which of the two it holds.
 
     Coords are scaled from video pixels (or ``[0,1]`` when ``is_normalized``) to the
     ``image_size`` prompt grid. Ragged point counts are right-padded with coord
@@ -522,8 +526,7 @@ def _build_mux_point_inputs(prompts, video_hw, image_size, device):
     into one interactive ``track_step``.
 
     Args:
-        prompts: point-only prompts, one per object (each ``points_coords`` (P,2),
-            ``points_labels`` (P,), no boxes/masks).
+        prompts: one TRACKER-route prompt per object (clicks and/or a box).
         video_hw: ``(H, W)`` of the source video.
         image_size: the tracker's square input resolution.
         device: target device for the built tensors.
@@ -531,7 +534,11 @@ def _build_mux_point_inputs(prompts, video_hw, image_size, device):
     Returns:
         ``(point_inputs, obj_ids)`` where ``point_inputs`` has ``point_coords``
         ``(n, P, 2)`` float and ``point_labels`` ``(n, P)`` int32.
+
+    Raises:
+        NotImplementedError: for a mask prompt -- the multiplex has no mask path.
     """
+    prompts = [_as_point_prompt(p) for p in prompts]
     obj_ids, per_coords, per_labels = [], [], []
     for prompt in prompts:
         obj_ids.append(prompt.obj_id)
@@ -673,7 +680,7 @@ class Sam3MultiplexPredictor(Sam3Predictor):
                 "this predictor was built without a tracker, so it can only detect concepts"
             )
         H, W = enc.image_hw
-        points = [_as_point_prompt(p.to(self.device)) for p in prompts]
+        points = [p.to(self.device) for p in prompts]
         with self._autocast(enc.dtype):
             bf_int = _mux_backbone_features(
                 *enc.view("interactive"), self.tracker.interactive_sam_mask_decoder

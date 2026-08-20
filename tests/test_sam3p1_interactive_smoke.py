@@ -73,6 +73,43 @@ def test_video_box_prompt_spawns_then_suppresses_while_unmatched():
 
 
 @needs_gpu
+def test_seed_frame_box_spawns_and_tracks():
+    """A TRACKER-route box is the SAM 2 gesture, and the multiplex takes it too.
+
+    It used to raise AttributeError inside the point builder: a box carries no
+    ``points_coords``, and nothing converted it to the corner points the tracker
+    encodes it as.
+    """
+    pred = _build()
+    frames = _bedroom(3)
+    h, w, _ = frames[0].shape
+    st = _state((h, w))
+
+    out0 = pred.forward(st, 0, frames[0],
+                        prompts=[GeometryPrompt.box(1, (285.0, 0.0, 535.0, 430.0))])
+    assert set(out0) == {1}
+    assert (out0[1].masks_logits > 0).sum() > 0
+
+    assert set(pred.forward(st, 1, frames[1])) == {1}, "the boxed object keeps tracking"
+
+
+@needs_gpu
+def test_seed_frame_mixes_a_box_and_a_click():
+    """Different gestures, one frame, one id each."""
+    pred = _build()
+    frames = _bedroom(1)
+    h, w, _ = frames[0].shape
+    st = _state((h, w))
+
+    out = pred.forward(st, 0, frames[0], prompts=[
+        GeometryPrompt.box(1, (285.0, 0.0, 535.0, 430.0)),
+        _click(2, (385.0, 230.0)),
+    ])
+    assert set(out) == {1, 2}
+    assert all((r.masks_logits > 0).sum() > 0 for r in out.values())
+
+
+@needs_gpu
 def test_video_mask_prompt_still_raises():
     pred = _build()
     st = _state((540, 960))
