@@ -202,7 +202,7 @@ class SamTrackerBase(torch.nn.Module):
     def forward(self, *args, **kwargs):
         raise NotImplementedError(
             "Please use the corresponding methods in Sam2VideoPredictor for inference or Sam2Train for training/fine-tuning"
-            "See notebooks/video_predictor_example.ipynb for an inference example."
+            "See notebooks/sam2_video_predictor_example.ipynb for an inference example."
         )
 
     def _build_sam_heads(self):

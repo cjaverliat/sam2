@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 """Video segmentation with SAM 2 using the generic video predictor.
 
-Script equivalent of notebooks/video_predictor_example.ipynb. It:
+Script equivalent of notebooks/sam2_video_predictor_example.ipynb. It:
 - adds clicks on a frame to get and refine a mask,
 - propagates the prompts to get a masklet across the whole video.
 

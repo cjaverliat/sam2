@@ -131,7 +131,7 @@ SAM 2.1 checkpoints can also be fetched individually:
 
 ### Image prediction (PyTorch)
 
-Encode the image once, then prompt it (see [`notebooks/image_predictor_example.ipynb`](notebooks/image_predictor_example.ipynb)):
+Encode the image once, then prompt it (see [`notebooks/sam2_image_predictor_example.ipynb`](notebooks/sam2_image_predictor_example.ipynb)):
 
 ```python
 import numpy as np
@@ -169,7 +169,7 @@ masks = result.masks_logits[0] > model.mask_threshold
 
 ### Streaming video prediction (PyTorch)
 
-Build the predictor once, open a **session**, then feed it one frame at a time. The session owns the state and counts frames; memory is carried in `state.memory_bank` — no full-video buffer (see [`notebooks/video_predictor_example.ipynb`](notebooks/video_predictor_example.ipynb)):
+Build the predictor once, open a **session**, then feed it one frame at a time. The session owns the state and counts frames; memory is carried in `state.memory_bank` — no full-video buffer (see [`notebooks/sam2_video_predictor_example.ipynb`](notebooks/sam2_video_predictor_example.ipynb)):
 
 ```python
 import torch
@@ -296,7 +296,7 @@ predictor = build_sam2_video_predictor(
 )
 ```
 
-Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
+Available configs live in [`sam/configs/efficienttam/`](sam/configs/efficienttam) (`s` / `ti` sizes, `512x512`, and the `_1` / `_2` variants). The SAM 2 notebooks have EfficientTAM counterparts that differ only in those two lines: [`efficienttam_image_predictor_example.ipynb`](notebooks/efficienttam_image_predictor_example.ipynb), [`efficienttam_video_predictor_example.ipynb`](notebooks/efficienttam_video_predictor_example.ipynb), [`efficienttam_automatic_mask_generator_example.ipynb`](notebooks/efficienttam_automatic_mask_generator_example.ipynb). EfficientTAM models export to ONNX through the same `tools/export_onnx.py` tasks (`pixi run -e onnx-export export-onnx-efficienttam-ti`, etc.).
 
 ---
 
