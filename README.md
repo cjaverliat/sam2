@@ -330,6 +330,8 @@ result = predictor.predict(image, ConceptPrompt(text="wheel"))
 binary_masks = result.masks_logits > 0.0
 ```
 
+Concept text, `confidence_threshold`, presence, and box / click exemplars are walked through in [`notebooks/sam3_image_predictor_example.ipynb`](notebooks/sam3_image_predictor_example.ipynb).
+
 ### Streaming video — track a concept across frames
 
 A **session** owns one video: it holds the state and counts frames. There are two kinds, and
