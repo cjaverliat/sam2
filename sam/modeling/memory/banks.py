@@ -357,15 +357,18 @@ def _select_N_closest_conditional_memories(
     if first_idx_after < len(conditional_memories):
         selected_outputs.append(conditional_memories[first_idx_after])
 
-    n_remaining = N - len(selected_outputs)
+    # The bracketing frames are kept even when they alone exceed N, so this can go
+    # negative -- clamp it, or the slice below reads from the end and ADDS memories.
+    n_remaining = max(N - len(selected_outputs), 0)
 
     # Add other temporally closest conditioning frames until reaching a total of `N` conditioning frames.
-    remaining_indices = sorted(
-        (t for t in conditional_memories if t not in selected_outputs),
-        key=lambda x: abs(x.frame_idx - current_frame_idx),
+    # closest first, so the N kept are the N nearest in time to this frame
+    remaining = sorted(
+        (memory for memory in conditional_memories if memory not in selected_outputs),
+        key=lambda memory: abs(memory.frame_idx - current_frame_idx),
     )
-    selected_outputs.extend(conditional_memories[remaining_indices[:n_remaining]])
-    unselected_outputs = conditional_memories[remaining_indices[n_remaining:]]
+    selected_outputs.extend(remaining[:n_remaining])
+    unselected_outputs = remaining[n_remaining:]
 
     return selected_outputs, unselected_outputs
 

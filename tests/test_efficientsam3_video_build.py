@@ -7,7 +7,7 @@ tracker of EfficientSAM3.1). They pair a distilled ``EfficientSam3Trunk`` vision
 PE text tower (``Sam3TextEncoder``, ctx32) and carry a TRAINED geometry encoder.
 
 ``build_sam3_video_predictor(config_file="configs/efficientsam3/efficientsam3_<bb>_video.yaml",
-ckpt_path=...)`` reuses the existing base-lineage builder + ``_load_sam3_video_checkpoint`` (the
+ckpt_path=...)`` reuses the existing base-lineage builder + ``_load_sam3_full_checkpoint`` (the
 3-group remap is vision-trunk- and text-agnostic), strict-loading all 1698 keys
 (vision 697 = trunk 653 + convs 22 + sam2_convs 22, language 295, detector head 397, tracker 309).
 
@@ -63,7 +63,7 @@ def test_build_efficientsam3_video_strict_load(variant):
     from sam.models.sam3_predictor import Sam3VideoPredictor
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # A successful build IS the strict-load assertion: _load_sam3_video_checkpoint calls
+    # A successful build IS the strict-load assertion: _load_sam3_full_checkpoint calls
     # model.load_state_dict(..., strict=True) and raises on any key mismatch (1698 keys).
     model = build_sam3_video_predictor(config_file=config_file, ckpt_path=ckpt, device=device)
 

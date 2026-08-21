@@ -8,7 +8,6 @@ from sam.utils.transforms import Sam2Transforms
 from sam.modeling.utils import get_1d_sine_pe
 from sam.results import MaskletResult
 from sam.modeling.memory.bank import ObjectMemory
-import numpy as np
 from dataclasses import dataclass, field
 from sam.modeling.memory.banks import ObjectMemoryBank, Sam2ObjectMemoryBank
 from sam.models.video_session import VideoSession, validate_video_hw

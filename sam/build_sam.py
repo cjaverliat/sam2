@@ -852,35 +852,45 @@ HF_SAM3_MODEL_ID_TO_CONFIG = {
 }
 
 
-def _load_sam3_image_checkpoint(model, ckpt_path):
-    """Strict-load the ``detector.*`` subtree (1156 keys) of ``sam3.pt`` into a Sam3Predictor.
+def _assemble_sam3(predictor_cls, config_file, ckpt_path, device, mode, overrides):
+    """Compose, instantiate and strict-load a base SAM 3 predictor.
 
-    The predictor separates the upstream ``Sam3Image.backbone`` into the OWNED
-    ``vision_encoder`` + ``text_encoder`` (spec §5), so the checkpoint keys are remapped in
-    three groups (the upstream image loader only strips the flat ``detector.`` prefix because
-    its ``Sam3Image`` keeps the combined ``backbone`` submodule):
-
-      ``detector.backbone.vision_backbone.*``   -> ``vision_encoder.vision_backbone.*``  (464, incl. the 22 sam2_convs)
-      ``detector.backbone.language_backbone.*`` -> ``text_encoder.*``                    (295)
-      ``detector.*`` (minus ``detector.backbone.*``) -> ``detector.*``                    (397, the head)
-
-    ``tracker.*`` (309) is ignored — the image predictor has no tracker. The vision encoder
-    MUST be built with ``add_sam2_neck=True`` (set in configs/sam3/sam3.yaml) so the
-    ``sam2_convs`` load and the 1156-key load is STRICT (0 missing / 0 unexpected).
+    Image and video differ only in the class wrapped around the same encoder, text
+    tower, detector and tracker, all loaded from the same 1465-key checkpoint.
     """
-    vb = "detector.backbone.vision_backbone."
-    lb = "detector.backbone.language_backbone."
+    cfg = _compose(config_file, overrides)
+    tracker = _build_sam3_tracker_module()
+    # The bank performs temporal memory selection; the tracker conditions on exactly the
+    # frames the bank returns, so it must NOT additionally filter via its SAM2Long
+    # heuristic. A single image has no memory to select from either way.
+    tracker.use_memory_selection = False
 
-    def remap(k):
-        if k.startswith(vb):
-            return "vision_encoder.vision_backbone." + k[len(vb):]
-        if k.startswith(lb):
-            return "text_encoder." + k[len(lb):]
-        if k.startswith("detector.") and not k.startswith("detector.backbone."):
-            return k  # detector head keys (transformer/geometry/seg/scoring) map 1:1
-        return None  # tracker.* dropped -- the image predictor has no tracker
+    model = predictor_cls(
+        vision_encoder=instantiate(cfg.model.vision_encoder, _recursive_=True),
+        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
+        detector=instantiate(cfg.model.detector, _recursive_=True),
+        tracker=tracker,
+    )
+    _load_sam3_full_checkpoint(model, ckpt_path)
+    return _finalize(model, device, mode)
 
-    _remap_strict_load(model, ckpt_path, remap)
+
+def _assemble_sam3_multiplex(predictor_cls, config_file, ckpt_path, device, mode, overrides):
+    """Compose, instantiate and strict-load a SAM 3.1 multiplex predictor.
+
+    The 3.1 counterpart of :func:`_assemble_sam3`: the tri-neck encoder and the M1
+    tracker are built directly rather than from the config, and the checkpoint is the
+    1623-key ``sam3.1_multiplex.pt``.
+    """
+    cfg = _compose(config_file, overrides)
+    model = predictor_cls(
+        vision_encoder=_build_sam3_multiplex_vision_encoder_module(),
+        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
+        detector=instantiate(cfg.model.detector, _recursive_=True),
+        tracker=_build_sam3_multiplex_tracker_module(),
+    )
+    _load_sam3_multiplex_full_checkpoint(model, ckpt_path)
+    return _finalize(model, device, mode)
 
 
 def build_sam3(
@@ -898,26 +908,15 @@ def build_sam3(
     selects the object you marked. Dropping it would save 0.3% of the checkpoint and
     cost the second half of the API.
 
-    Mirrors :func:`build_sam2_predictor`: hydra-compose ``config_file`` (e.g.
-    ``"configs/sam3/sam3.yaml"``) -> instantiate the owned encoder / text tower / detector
-    via their ``_target_``s -> strict-load the ``detector.*`` subtree of ``ckpt_path`` (a
-    local ``sam3.pt``). Returns the predictor on ``device``, in eval mode when
-    ``mode == "eval"``.
+    Hydra-composes ``config_file`` (e.g. ``"configs/sam3/sam3.yaml"``), instantiates the
+    owned encoder / text tower / detector via their ``_target_``s, and strict-loads all
+    1465 keys of ``ckpt_path`` (a local ``sam3.pt``). Returns the predictor on
+    ``device``, in eval mode when ``mode == "eval"``.
     """
     from sam.models.sam3_predictor import Sam3Predictor
 
-    cfg = _compose(config_file, hydra_overrides_extra)
-    tracker = _build_sam3_tracker_module()
-    tracker.use_memory_selection = False  # one image has no memory to select from
-
-    model = Sam3Predictor(
-        vision_encoder=instantiate(cfg.model.vision_encoder, _recursive_=True),
-        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
-        detector=instantiate(cfg.model.detector, _recursive_=True),
-        tracker=tracker,
-    )
-    _load_sam3_video_checkpoint(model, ckpt_path)  # detector + tracker, 1465 keys strict
-    return _finalize(model, device, mode)
+    return _assemble_sam3(
+        Sam3Predictor, config_file, ckpt_path, device, mode, hydra_overrides_extra)
 
 
 def build_sam3_hf(model_id, **kwargs):
@@ -967,9 +966,8 @@ def _load_efficientsam3_image_checkpoint(model, ckpt_path):
     The checkpoint is ``{'model': state_dict, ...}`` and is **detector-root**: its keys begin
     ``backbone.`` / ``transformer.`` / ``dot_prod_scoring.`` / ``segmentation_head.`` (NO
     ``detector.`` prefix -- one level shallower than base ``sam3.pt``). ``Sam3Predictor`` OWNS
-    the vision encoder + text tower separately from the detector (spec §5), so -- exactly like
-    base :func:`_load_sam3_image_checkpoint`, but on the un-prefixed keys -- the load is remapped
-    in three groups:
+    the vision encoder + text tower separately from the detector (spec §5), so -- like the base
+    loader, but on the un-prefixed keys -- the load is remapped in three groups:
 
       ``backbone.vision_backbone.*``   -> ``vision_encoder.vision_backbone.*``  (675: RepViT trunk + single neck convs)
       ``backbone.language_backbone.*`` -> ``text_encoder.*``                    (111: MobileCLIP encoder + projector)
@@ -1037,8 +1035,8 @@ def build_efficientsam3_hf(model_id="repvit", **kwargs):
 # SAM3-LiteText is the base SAM 3 lineage VIDEO model: PE-ViT vision encoder
 # (unchanged, add_sam2_neck=True), TRAINED geometry encoder (kept), base Sam3Tracker,
 # and a MobileCLIP text encoder instead of SAM 3's PE text tower.  The EXISTING
-# build_sam3_video_predictor + _load_sam3_video_checkpoint already handle this path
-# because _load_sam3_video_checkpoint is text-encoder-agnostic: it remaps the 111
+# build_sam3_video_predictor + _load_sam3_full_checkpoint already handle this path
+# because _load_sam3_full_checkpoint is text-encoder-agnostic: it remaps the 111
 # language_backbone keys onto whichever text_encoder the config instantiates.
 # 1281 keys = 464 vision + 111 MobileCLIP language + 397 detector head (incl. geo 76)
 # + 309 tracker.  Checkpoint: Simon7108528/EfficientSAM3 (public, no token).
@@ -1057,7 +1055,7 @@ def build_efficientsam3_litetext_video_predictor_hf(model_id="litetext-s0-ctx16"
 
     Downloads the checkpoint from the PUBLIC repo ``Simon7108528/EfficientSAM3`` (no
     token required) and delegates to the existing :func:`build_sam3_video_predictor`
-    with the matching hydra config.  The ``_load_sam3_video_checkpoint`` loader
+    with the matching hydra config.  The ``_load_sam3_full_checkpoint`` loader
     performs the same 3-group remap as the base ``sam3.pt`` path, remapping the 111
     MobileCLIP ``language_backbone`` keys onto the ``MobileClipTextEncoder`` submodule
     (strict=True, 0 missing / 0 unexpected).
@@ -1089,7 +1087,7 @@ def build_efficientsam3_litetext_video_predictor_hf(model_id="litetext-s0-ctx16"
 # remap) + tracker.* (309) = 1465 keys.
 
 
-def _load_sam3_video_checkpoint(model, ckpt_path):
+def _load_sam3_full_checkpoint(model, ckpt_path):
     """Strict-load the FULL ``sam3.pt`` (1465 keys) into a ``Sam3VideoPredictor``.
 
     Combines the Task-8 image 3-group remap (``detector.backbone.vision_backbone.*`` ->
@@ -1133,20 +1131,8 @@ def build_sam3_video_predictor(
     """
     from sam.models.sam3_predictor import Sam3VideoPredictor
 
-    cfg = _compose(config_file, hydra_overrides_extra)
-    tracker = _build_sam3_tracker_module()
-    # The bank performs temporal memory selection; the tracker conditions on exactly the frames
-    # the bank returns (so it must NOT additionally filter via its SAM2Long heuristic).
-    tracker.use_memory_selection = False
-
-    model = Sam3VideoPredictor(
-        vision_encoder=instantiate(cfg.model.vision_encoder, _recursive_=True),
-        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
-        detector=instantiate(cfg.model.detector, _recursive_=True),
-        tracker=tracker,
-    )
-    _load_sam3_video_checkpoint(model, ckpt_path)
-    return _finalize(model, device, mode)
+    return _assemble_sam3(
+        Sam3VideoPredictor, config_file, ckpt_path, device, mode, hydra_overrides_extra)
 
 
 def build_sam3_video_predictor_hf(model_id, **kwargs):
@@ -1334,40 +1320,6 @@ def build_sam3_multiplex_tracker(ckpt_path=None, device="cuda"):
 # identical to base (same 397 keys); the +10 detector.* keys are the tri-neck's extra conv set.
 
 
-def _load_sam3_multiplex_image_checkpoint(model, ckpt_path):
-    """Strict-load the relevant ``detector.*`` subtree of ``sam3.1_multiplex.pt`` into a
-    ``Sam3MultiplexPredictor`` (1130 of the 1166 ``detector.*`` keys).
-
-    The predictor separates the upstream ``Sam3MultiplexDetector.backbone`` into the OWNED
-    ``vision_encoder`` + ``text_encoder``, so the checkpoint keys are remapped in three groups:
-
-      ``detector.backbone.vision_backbone.{trunk,convs}.*`` -> ``vision_encoder.vision_backbone.*``  (420 trunk + 18 detection `convs` = 438)
-      ``detector.backbone.language_backbone.*``             -> ``text_encoder.*``                     (295)
-      ``detector.*`` (minus ``detector.backbone.*``)        -> ``detector.*``                         (397, the DETR head)
-
-    The tri-neck's ``interactive_convs`` / ``propagation_convs`` (18 + 18 = 36 keys) are
-    TRACKER-only (M1) and are SKIPPED -- the image detector consumes only the detection neck.
-    ``tracker.*`` (457) is ignored (the image predictor has no tracker). The load is STRICT
-    over the predictor's 1130 params (0 missing / 0 unexpected).
-    """
-    vb = "detector.backbone.vision_backbone."
-    lb = "detector.backbone.language_backbone."
-
-    def remap(k):
-        if k.startswith(vb):
-            rel = k[len(vb):]
-            if rel.startswith("interactive_convs.") or rel.startswith("propagation_convs."):
-                return None  # tracker-only necks (M1); the image detector uses detection `convs`
-            return "vision_encoder.vision_backbone." + rel
-        if k.startswith(lb):
-            return "text_encoder." + k[len(lb):]
-        if k.startswith("detector.") and not k.startswith("detector.backbone."):
-            return k  # detector head keys (transformer/geometry/seg/scoring) map 1:1
-        return None
-
-    _remap_strict_load(model, ckpt_path, remap)
-
-
 def build_sam3_multiplex(
     config_file,
     ckpt_path=None,
@@ -1388,15 +1340,8 @@ def build_sam3_multiplex(
     """
     from sam.models.sam3_predictor import Sam3MultiplexPredictor
 
-    cfg = _compose(config_file, hydra_overrides_extra)
-    model = Sam3MultiplexPredictor(
-        vision_encoder=_build_sam3_multiplex_video_vision_encoder_module(),
-        text_encoder=instantiate(cfg.model.text_encoder, _recursive_=True),
-        detector=instantiate(cfg.model.detector, _recursive_=True),
-        tracker=_build_sam3_multiplex_tracker_module(),
-    )
-    _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
-    return _finalize(model, device, mode)
+    return _assemble_sam3_multiplex(
+        Sam3MultiplexPredictor, config_file, ckpt_path, device, mode, hydra_overrides_extra)
 
 
 # SPDX-License-Identifier: LicenseRef-SAM
@@ -1408,7 +1353,7 @@ def build_sam3_multiplex(
 # (1166: vision_backbone 474 + language 295 + DETR head 397) + tracker.model.* (457) = 1623 keys.
 
 
-def _build_sam3_multiplex_video_vision_encoder_module():
+def _build_sam3_multiplex_vision_encoder_module():
     """Construct the SAM 3.1 TRI-neck vision encoder (weights-only, no load, on CPU).
 
     Unlike the M1 ``build_sam3_multiplex_vision_encoder`` (a DUAL neck: interactive->convs,
@@ -1428,7 +1373,7 @@ def _build_sam3_multiplex_video_vision_encoder_module():
     return Sam3VisionEncoder(vision_backbone=neck, scalp=0)
 
 
-def _load_sam3_multiplex_video_checkpoint(model, ckpt_path):
+def _load_sam3_multiplex_full_checkpoint(model, ckpt_path):
     """Strict-load the FULL ``sam3.1_multiplex.pt`` (1623 keys) into a ``Sam3MultiplexVideoPredictor``.
 
       ``detector.backbone.vision_backbone.trunk.*``             -> ``vision_encoder.vision_backbone.trunk.*``           (420)
@@ -1481,20 +1426,9 @@ def build_sam3_multiplex_video_predictor(
     """
     from sam.models.sam3_predictor import Sam3MultiplexVideoPredictor
 
-    cfg = _compose(config_file, hydra_overrides_extra)
-    text_encoder = instantiate(cfg.model.text_encoder, _recursive_=True)
-    detector = instantiate(cfg.model.detector, _recursive_=True)
-    vision_encoder = _build_sam3_multiplex_video_vision_encoder_module()
-    tracker = _build_sam3_multiplex_tracker_module()
-
-    model = Sam3MultiplexVideoPredictor(
-        vision_encoder=vision_encoder,
-        text_encoder=text_encoder,
-        detector=detector,
-        tracker=tracker,
-    )
-    _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
-    return _finalize(model, device, mode)
+    return _assemble_sam3_multiplex(
+        Sam3MultiplexVideoPredictor, config_file, ckpt_path, device, mode,
+        hydra_overrides_extra)
 
 
 HF_SAM3P1_MODEL_ID_TO_CONFIG = {
@@ -1533,7 +1467,7 @@ def build_sam3_multiplex_video_predictor_hf(model_id, **kwargs):
 # --- SAM3.1-LiteText MULTIPLEX VIDEO predictor (E1) --------------------------
 # SAM3.1-LiteText is the SAM 3.1 MULTIPLEX video stack with only the text encoder
 # swapped from the PE text tower to MobileCLIP-S0 (ctx16).  The EXISTING
-# build_sam3_multiplex_video_predictor + _load_sam3_multiplex_video_checkpoint already
+# build_sam3_multiplex_video_predictor + _load_sam3_multiplex_full_checkpoint already
 # handle this path: the loader is text-encoder-agnostic (remaps language_backbone.*
 # onto whatever text_encoder the config instantiates — 111 keys for MobileCLIP).
 # 1439 keys = vision 474 + MobileCLIP 111 + detector head 397 + tracker 457.
@@ -1556,7 +1490,7 @@ def build_efficientsam3p1_litetext_video_predictor_hf(
     Downloads the checkpoint from the PUBLIC repo ``Simon7108528/EfficientSAM3`` (no
     token required) and delegates to the existing
     :func:`build_sam3_multiplex_video_predictor` with the matching hydra config.  The
-    ``_load_sam3_multiplex_video_checkpoint`` loader performs the 4-group strict remap:
+    ``_load_sam3_multiplex_full_checkpoint`` loader performs the 4-group strict remap:
     474 vision + 111 MobileCLIP language + 397 detector head + 457 multiplex tracker =
     **1439 keys strict (0 missing / 0 unexpected)**.
 
@@ -1601,7 +1535,7 @@ def _build_efficientsam3p1_video_vision_encoder_module(
 ):
     """Construct the EfficientSAM3.1 TRI-neck vision encoder (distilled RepViT trunk).
 
-    Identical to :func:`_build_sam3_multiplex_video_vision_encoder_module` except the
+    Identical to :func:`_build_sam3_multiplex_vision_encoder_module` except the
     PE-ViT trunk is replaced by :class:`EfficientSam3Trunk` (backbone_type/model_name).
     The distilled trunk exposes ``.channel_list=[1024]`` + ``forward(x)->[feat 1024@72]``,
     satisfying the ``Sam3DualViTDetNeck`` VisionTrunk contract.
@@ -1635,7 +1569,7 @@ def build_efficientsam3p1_video_predictor(
     encoder with the DISTILLED :class:`EfficientSam3Trunk` (RepViT-M1.1) instead of the
     PE-ViT trunk.  The text encoder (MobileCLIP-S0), DETR detector (trained geometry,
     ``supervise_joint_box_scores=True``), and multiplex tracker (457 keys) are unchanged.
-    The :func:`_load_sam3_multiplex_video_checkpoint` loader then strict-loads all 1672
+    The :func:`_load_sam3_multiplex_full_checkpoint` loader then strict-loads all 1672
     keys of the F1 checkpoint (0 missing / 0 unexpected):
 
       - vision_backbone 707 keys (RepViT trunk 653 + convs 18 + interactive_convs 18
@@ -1660,7 +1594,7 @@ def build_efficientsam3p1_video_predictor(
         detector=detector,
         tracker=tracker,
     )
-    _load_sam3_multiplex_video_checkpoint(model, ckpt_path)
+    _load_sam3_multiplex_full_checkpoint(model, ckpt_path)
     return _finalize(model, device, mode)
 
 
@@ -1677,7 +1611,7 @@ def build_efficientsam3p1_video_predictor_hf(model_id="repvit-m-s0-ctx16", **kwa
 
     Downloads the checkpoint from the PUBLIC repo ``Simon7108528/EfficientSAM3`` (no
     token required) and delegates to :func:`build_efficientsam3p1_video_predictor` with
-    the matching hydra config.  The :func:`_load_sam3_multiplex_video_checkpoint` loader
+    the matching hydra config.  The :func:`_load_sam3_multiplex_full_checkpoint` loader
     performs the 4-group strict remap: 707 vision (RepViT trunk 653 + necks 54) +
     111 MobileCLIP + 397 detector head + 457 multiplex tracker =
     **1672 keys strict (0 missing / 0 unexpected)**.

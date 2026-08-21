@@ -526,8 +526,6 @@ class Sam3MultiplexTracker(Sam3Tracker):
                 feats = multiplex_state.demux(feats).contiguous()
             if feats.shape[0] == 0:
                 continue
-            to_cat_prompt.append(feats.flatten(2).permute(2, 0, 1))
-
             maskmem_pos_list = prev.get("maskmem_pos_enc")
             if not maskmem_pos_list:
                 continue
@@ -555,6 +553,8 @@ class Sam3MultiplexTracker(Sam3Tracker):
                 to_cat_image_feat.append(image_feat)
                 to_cat_image_pos_embed.append(image_pos_embed)
 
+            # appended together: a block here needs its counterpart in the other list
+            to_cat_prompt.append(feats.flatten(2).permute(2, 0, 1))
             to_cat_prompt_pos_embed.append(maskmem_enc)
 
         # past object pointers

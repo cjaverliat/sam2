@@ -90,8 +90,8 @@ Ledger detail: `docs/superpowers/plans/2026-06-26-phase1-sam3-torch-inference.md
   the caller never asked for — on the bedroom clip, both children, then neither once the
   hotstart rule purged them at frame 8.
 
-  Now `GeometryPrompt` carries `route: PromptRoute` (`sam/prompts.py`, `BoxRoute` kept as
-  an alias), defaulting to `TRACKER`: the box is encoded as its two corner points
+  Now `GeometryPrompt` carries `route: PromptRoute` (`sam/prompts.py`, renamed
+  from `box_route: BoxRoute` now that points route too), defaulting to `TRACKER`: the box is encoded as its two corner points
   (labels 2/3) via `GeometryPrompt.tracker_points()` and seeds ONE object through the
   tracker, which is what `Sam2VideoPredictor` already does (`sam2_predictor.py:553-565`).
   `PromptRoute.DETECTOR` selects upstream's route, and `_concept_for_detection` now

@@ -1,24 +1,24 @@
 # SPDX-License-Identifier: LicenseRef-SAM
-"""SAM 3 image concept predictor + video predictor skeleton.
+"""The SAM 3 predictors: one image, one streaming video, each in two lineages.
 
-Provides:
-  Sam3Predictor             — IMAGE concept predictor (Task 8). OWNS the shared PE vision
-                              encoder + text tower + DETR detector and exposes
-                              ``process(image, concept=...) -> Sam3DetectionResult``.
-  ConceptState              — the session's encoded concept, stored in Sam3VideoPredictorState.
-  Sam3VideoPredictorState   — streaming-session state (bank + concept + frame counter).
-  Sam3VideoPredictor        — streaming skeleton class (Task 6 guard); its ``encode_text``
-                              is wired to the real text tower in the streaming task, and
-                              takes the full ``ConceptPrompt``.
+  Sam3Predictor              one image. ``process(image, concept=...)`` detects every
+                             instance of a phrase; ``process(image, geometry=...)``
+                             returns the objects you marked, through the owned tracker.
+  Sam3MultiplexPredictor     the SAM 3.1 image predictor: same API, joint bucket decode.
+  Sam3VideoPredictor         streaming video, one frame per ``forward``; per-object
+                             memory lives in an :class:`ObjectMemoryBank`.
+  Sam3MultiplexVideoPredictor  SAM 3.1 video: up to K objects tracked in one pass.
+  Sam3VideoPredictorState    a session's state (bank + concept + frame counter), with
+                             ConceptState holding the encoded concept.
 
-Guard contract (spec §9):
-  set_concept checks ``state.started`` THEN "already set" BEFORE calling encode_text,
-  so the two error-path tests never reach encoding and stay CPU-only / checkpoint-free.
+Detection is gated on a concept throughout: it runs only for a session that asked for
+one, by phrase or by the lineage's box-only ``PLACEHOLDER`` caption. Upstream instead
+adopts that caption the moment geometry arrives without text, which silently turns
+"track what I marked" into "search for this caption forever".
 """
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -41,11 +41,19 @@ if TYPE_CHECKING:
     from sam.results import Sam3DetectionResult
 
 
+# Upstream's output-mask cleanup threshold (``fill_holes_in_mask_scores``), in low-res
+# pixels: holes and sprinkles smaller than this are removed before the resize.
+FILL_HOLE_AREA = 16
+
 # The caption upstream encodes when a prompt carries geometry but no text. Lineage
 # specific: the base path selects TEXT_ID_FOR_VISUAL, i.e. the literal "visual"
 # (sam3_video_inference.py:868-876), while the multiplex path has no such else-branch
 # (sam3_multiplex_tracking.py:1698-1705) and leaves text_ids at 0, i.e. slot 0.
-@dataclasses.dataclass
+BOX_ONLY_CAPTION_BASE = "visual"
+BOX_ONLY_CAPTION_MUX = "<text placeholder>"
+
+
+@dataclass
 class EncodedImage:
     """One image encoded once, as the pyramid views its heads consume.
 
@@ -76,6 +84,35 @@ class EncodedImage:
         return self.views[name]
 
 
+def _check_one_path_asked_for(concept, exemplars, objects, predictor_name) -> None:
+    """Reject calls that name no path, or both at once.
+
+    ``process`` decides between detection and selection from its arguments, so the
+    arguments have to pick exactly one. Each message names what the caller probably
+    meant instead of restating the rule.
+
+    Raises:
+        ValueError: for no path, both paths, or exemplars with nothing to bias.
+    """
+    if concept is None and exemplars is not None:
+        raise ValueError(
+            "exemplar_box / exemplar_point bias a concept search, so they need a "
+            f"concept: pass a phrase or {predictor_name}.PLACEHOLDER. To select the "
+            "object you marked instead, use GeometryPrompt.box / .click"
+        )
+    if concept is None and not objects:
+        raise ValueError(
+            "process needs something to do: pass concept=<phrase> (or PLACEHOLDER) to "
+            "detect, and/or geometry=GeometryPrompt.click/box/mask to select objects"
+        )
+    if concept is not None and objects:
+        raise ValueError(
+            "concept detection and object selection return different ids -- the "
+            "detector mints 0..N-1 while click/box/mask carry the obj_id you chose, and "
+            "one result cannot hold both. Call process twice"
+        )
+
+
 def _split_image_geometry(geometry, image_hw):
     """Split ``geometry`` into ``(exemplars, objects)`` by each prompt's own route.
 
@@ -99,17 +136,15 @@ def _split_image_geometry(geometry, image_hw):
     return (exemplars[0] if exemplars else None), objects
 
 
-BOX_ONLY_CAPTION_BASE = "visual"
-BOX_ONLY_CAPTION_MUX = "<text placeholder>"
 
 
 class Sam3Predictor(nn.Module):
-    """SAM 3 image concept predictor (base / per-object, text-only path).
+    """SAM 3 image predictor: concept detection and object selection, one image.
 
-    Composes (OWNS) the shared PE vision encoder, the text tower, and the DETR detector
-    (spec §5/§7): the vision encoder runs ONCE per image and its features are injected into
-    the detector. Built by :func:`sam.build_sam.build_sam3` (hydra-compose
-    ``configs/sam3/sam3.yaml`` -> instantiate -> strict-load the ``detector.*`` subtree).
+    Composes (OWNS) the shared PE vision encoder, the text tower, the DETR detector and
+    the SAM 2-style tracker (spec §5/§7). The vision encoder runs ONCE per image and
+    feeds both heads. Built by :func:`sam.build_sam.build_sam3`, which strict-loads all
+    1465 keys of ``sam3.pt``.
 
     ``process(image, concept=...)`` returns a :class:`~sam.results.Sam3DetectionResult`
     with the per-instance masks / boxes / scores for that concept, and
@@ -125,7 +160,7 @@ class Sam3Predictor(nn.Module):
         self.text_encoder = text_encoder
         self.detector = detector
         self.tracker = tracker
-        self.fill_hole_area = 16
+        self.fill_hole_area = FILL_HOLE_AREA
 
     # Sentinel for predict/process: "detect under the box-only caption".
     PLACEHOLDER = object()
@@ -251,27 +286,9 @@ class Sam3Predictor(nn.Module):
                 tracker.
         """
         enc = image if isinstance(image, EncodedImage) else self.encode(image, dtype)
-        image_hw = enc.image_hw
-        exemplars, objects = _split_image_geometry(geometry, image_hw)
+        exemplars, objects = _split_image_geometry(geometry, enc.image_hw)
+        _check_one_path_asked_for(concept, exemplars, objects, type(self).__name__)
 
-        if concept is None and exemplars is not None:
-            raise ValueError(
-                "exemplar_box / exemplar_point bias a concept search, so they need a "
-                f"concept: pass a phrase or {type(self).__name__}.PLACEHOLDER. To select "
-                "the object you marked instead, use GeometryPrompt.box / .click"
-            )
-        if concept is None and not objects:
-            raise ValueError(
-                "process needs something to do: pass concept=<phrase> (or PLACEHOLDER) "
-                "to detect, and/or geometry=GeometryPrompt.click/box/mask to select "
-                "objects"
-            )
-        if concept is not None and objects:
-            raise ValueError(
-                "concept detection and object selection return different ids -- the "
-                "detector mints 0..N-1 while click/box/mask carry the obj_id you chose, "
-                "and one result cannot hold both. Call process twice"
-            )
         if objects:
             return self._select_objects(enc, objects)
         det_feats, det_pos = enc.view("det")
@@ -387,18 +404,8 @@ class Sam3Predictor(nn.Module):
         )
 
     def _prepare_tracker_feats(self, sam2_feats, sam2_pos):
-        """Project the two hi-res SAM 2 levels and flatten to ``(HW, B, C)``.
-
-        The same projection :class:`Sam3VideoPredictor` runs per frame; shared by every
-        prompt in one call, since the base tracker has no cross-object attention.
-        """
-        fpn = list(sam2_feats)
-        fpn[0] = self.tracker.sam_mask_decoder.conv_s0(fpn[0])
-        fpn[1] = self.tracker.sam_mask_decoder.conv_s1(fpn[1])
-        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
-        vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
-        vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
-        return vis, vpos, feat_sizes
+        """See :func:`_prepare_tracker_feats` -- shared with the other predictor."""
+        return _prepare_tracker_feats(sam2_feats, sam2_pos, self.tracker.sam_mask_decoder)
 
 
 def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
@@ -424,6 +431,21 @@ def _masks_to_boxes(masks: torch.Tensor) -> torch.Tensor:
     return boxes
 
 
+def _prepare_tracker_feats(sam2_feats, sam2_pos, decoder):
+    """Project the two hi-res SAM 2 levels and flatten to ``(HW, B, C)``.
+
+    Run ONCE per frame (batch=1): every object's ``track_step`` shares these features,
+    since the per-object tracker has no cross-object attention.
+    """
+    fpn = list(sam2_feats)
+    fpn[0] = decoder.conv_s0(fpn[0])
+    fpn[1] = decoder.conv_s1(fpn[1])
+    feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
+    vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
+    vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
+    return vis, vpos, feat_sizes
+
+
 def _mux_backbone_features(feats, pos, decoder) -> dict:
     """Project the two hi-res pyramid levels (``conv_s0``/``conv_s1`` of ``decoder``) and
     flatten to ``(HW, 1, C)`` -- the ``backbone_features_*`` dict the multiplex heads
@@ -442,6 +464,17 @@ def _mux_backbone_features(feats, pos, decoder) -> dict:
     }
 
 
+def _upsampled_mask_logits(low_mask, image_hw, fill_hole_area):
+    """A low-res tracker mask at source resolution, holes and sprinkles cleaned.
+
+    Upstream cleans the OUTPUT mask at the low-res grid before the resize
+    (``build_outputs`` / ``_propogate_tracker_one_frame_local_gpu``); the tracker's own
+    memory keeps the raw mask either way.
+    """
+    low = fill_holes_in_mask_scores(low_mask[None, None].float(), max_area=fill_hole_area)
+    return F.interpolate(low, size=image_hw, mode="bilinear", align_corners=False)
+
+
 def _result_from_tracker_outputs(outs, obj_ids, image_hw, fill_hole_area):
     """Per-object tracker outputs -> one :class:`~sam.results.Sam3DetectionResult`.
 
@@ -453,14 +486,10 @@ def _result_from_tracker_outputs(outs, obj_ids, image_hw, fill_hole_area):
     """
     from sam.results import Sam3DetectionResult
 
-    height, width = image_hw
     masks, scores = [], []
     for out in outs:
-        low = fill_holes_in_mask_scores(
-            out["pred_masks"][0, 0].float()[None, None], max_area=fill_hole_area
-        )
         masks.append(
-            F.interpolate(low, size=(height, width), mode="bilinear", align_corners=False)[0, 0]
+            _upsampled_mask_logits(out["pred_masks"][0, 0], image_hw, fill_hole_area)[0, 0]
         )
         scores.append(out["object_score_logits"].float().reshape(-1)[0].sigmoid())
 
@@ -877,7 +906,7 @@ class Sam3VideoPredictor(nn.Module):
         self.emit = emit
         # Output-mask hole-fill / sprinkle-removal area (upstream build_sam3_video_model uses 16);
         # applied to the low-res OUTPUT masks only (not to seeding / memory, matching upstream).
-        self.fill_hole_area = 16
+        self.fill_hole_area = FILL_HOLE_AREA
         # New-tracklet spawn threshold (upstream Sam3VideoInferenceWithInstanceInteractivity
         # new_det_thresh=0.7): on frames AFTER the initial detection frame, an unmatched detection
         # must clear this score to spawn a new tracklet. The initial (prompt) frame spawns the
@@ -1113,18 +1142,8 @@ class Sam3VideoPredictor(nn.Module):
             )
 
     def _prepare_tracker_feats(self, sam2_feats, sam2_pos):
-        """Project the two hi-res SAM 2 levels (conv_s0/conv_s1) and flatten to ``(HW, B, C)``.
-
-        Run ONCE per frame (batch=1); every object's ``track_step`` shares these features
-        (the base per-object tracker has no cross-object attention).
-        """
-        fpn = list(sam2_feats)
-        fpn[0] = self.tracker.sam_mask_decoder.conv_s0(fpn[0])
-        fpn[1] = self.tracker.sam_mask_decoder.conv_s1(fpn[1])
-        feat_sizes = [(f.shape[-2], f.shape[-1]) for f in fpn]
-        vis = [f.flatten(2).permute(2, 0, 1) for f in fpn]
-        vpos = [p.flatten(2).permute(2, 0, 1) for p in sam2_pos]
-        return vis, vpos, feat_sizes
+        """See :func:`_prepare_tracker_feats` -- shared with the other predictor."""
+        return _prepare_tracker_feats(sam2_feats, sam2_pos, self.tracker.sam_mask_decoder)
 
     # Sentinel for start_concept_session: "detect under the box-only caption".
     PLACEHOLDER = object()
@@ -1579,12 +1598,7 @@ class Sam3VideoPredictor(nn.Module):
         ``_propogate_tracker_one_frame_local_gpu`` apply ``fill_holes_in_mask_scores`` before the
         resize). This cleans the OUTPUT mask only; the tracker's internal memory is untouched.
         """
-        low = fill_holes_in_mask_scores(
-            low_mask[None, None].float(), max_area=self.fill_hole_area
-        )
-        masks_logits = F.interpolate(
-            low, size=(H, W), mode="bilinear", align_corners=False
-        )
+        masks_logits = _upsampled_mask_logits(low_mask, (H, W), self.fill_hole_area)
         if out is not None:
             ious = out["object_score_logits"]
             obj_ptrs = out["obj_ptr"]
