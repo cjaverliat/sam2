@@ -36,6 +36,127 @@ class PromptRoute(enum.Enum):
 BoxRoute = PromptRoute
 
 
+def merge_object_prompts(prompts, image_hw=None) -> list["GeometryPrompt"]:
+    """Combine prompts that describe the same object into one prompt each.
+
+    A frame's prompts are evidence, and evidence adds up: ``clicks(2, ...)`` alongside
+    ``boxes(2, ...)`` is one object described two ways, not two objects. Merging here
+    means the named constructors compose by listing, instead of every mixed prompt
+    dropping the caller back to the generic ``GeometryPrompt(...)`` form.
+
+    Points and boxes concatenate in call order. Order matters to nobody downstream --
+    the prompt encoder sums the embeddings -- but keeping it makes the merged prompt
+    read like the calls that built it.
+
+    Args:
+        prompts: this frame's prompts, in any order (None or empty is fine).
+        image_hw: ``(height, width)``, needed only when one object's prompts disagree
+            about ``is_normalized`` -- the pixel ones are divided through so the merge
+            has one space to work in. That is the same division the predictors apply
+            later, so it changes no numbers.
+
+    Returns:
+        One prompt per ``(obj_id, route)``, in first-seen order. Single prompts are
+        passed through untouched.
+
+    Raises:
+        ValueError: if one object is described in both routes (the tracker and the
+            detector answer different questions), if its prompts mix coordinate spaces
+            and no ``image_hw`` is given to reconcile them, or if it carries two masks --
+            a mask is an object's whole extent, so a second one contradicts the first
+            rather than adding to it.
+    """
+    if not prompts:
+        return []
+
+    groups: dict[tuple, list[GeometryPrompt]] = {}
+    for prompt in prompts:
+        groups.setdefault((prompt.obj_id, prompt.route), []).append(prompt)
+
+    routes_per_obj: dict[int, set] = {}
+    for obj_id, route in groups:
+        routes_per_obj.setdefault(obj_id, set()).add(route)
+    mixed = sorted(o for o, routes in routes_per_obj.items() if len(routes) > 1)
+    if mixed:
+        raise ValueError(
+            f"obj_id {mixed} is prompted on both routes in one frame: click/box/mask "
+            "select an object through the tracker while exemplar_* bias a concept "
+            "search, and one object cannot be both. Send them as separate calls"
+        )
+
+    return [
+        group[0] if len(group) == 1 else _merge_one_object(obj_id, route, group, image_hw)
+        for (obj_id, route), group in groups.items()
+    ]
+
+
+def _normalized_copy(prompt: "GeometryPrompt", image_hw) -> "GeometryPrompt":
+    """The prompt with pixel coordinates divided through by ``(W, H)``.
+
+    The same division the predictors do on the way to the model, applied early so a
+    merge has one coordinate space; doing it here changes no downstream numbers.
+    """
+    height, width = image_hw
+    scale_xy = torch.tensor([width, height], dtype=torch.float32)
+    scale_box = torch.tensor([width, height, width, height], dtype=torch.float32)
+    coords = prompt.points_coords
+    boxes = prompt.boxes
+    return GeometryPrompt(
+        obj_id=prompt.obj_id,
+        points_coords=None if coords is None else coords / scale_xy.to(coords.device),
+        points_labels=prompt.points_labels,
+        boxes=None if boxes is None else boxes / scale_box.to(boxes.device),
+        boxes_labels=prompt.boxes_labels,
+        masks_logits=prompt.masks_logits,
+        is_normalized=True,
+        route=prompt.route,
+    )
+
+
+def _merge_one_object(obj_id, route, group, image_hw=None) -> "GeometryPrompt":
+    """Concatenate one object's prompts into a single :class:`GeometryPrompt`."""
+    if len({p.is_normalized for p in group}) > 1:
+        if image_hw is None:
+            raise ValueError(
+                f"obj_id {obj_id} mixes normalized and pixel coordinates in one frame "
+                "and there is no image size here to reconcile them; build every prompt "
+                "for an object in the same space"
+            )
+        group = [p if p.is_normalized else _normalized_copy(p, image_hw) for p in group]
+
+    masks = [p.masks_logits for p in group if p.masks_logits is not None]
+    if len(masks) > 1:
+        raise ValueError(
+            f"obj_id {obj_id} got {len(masks)} masks in one frame: a mask is the "
+            "object's whole extent, so a second one contradicts the first. Send one "
+            "mask, optionally with clicks to refine it"
+        )
+
+    coords = [p.points_coords for p in group if p.points_coords is not None]
+    labels = [p.points_labels for p in group if p.points_labels is not None]
+    boxed = [p for p in group if p.boxes is not None]
+
+    boxes_labels = None
+    if boxed and any(p.boxes_labels is not None for p in boxed):
+        # one prompt signed its boxes -> the unsigned ones are positive, as ever
+        boxes_labels = torch.cat([
+            p.boxes_labels.to(torch.int32) if p.boxes_labels is not None
+            else torch.ones(p.boxes.shape[0], dtype=torch.int32, device=p.boxes.device)
+            for p in boxed
+        ])
+
+    return GeometryPrompt(
+        obj_id=obj_id,
+        points_coords=torch.cat(coords) if coords else None,
+        points_labels=torch.cat(labels) if labels else None,
+        boxes=torch.cat([p.boxes for p in boxed]) if boxed else None,
+        boxes_labels=boxes_labels,
+        masks_logits=masks[0] if masks else None,
+        is_normalized=group[0].is_normalized,
+        route=route,
+    )
+
+
 class GeometryPrompt:
     def __init__(
         self,

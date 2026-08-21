@@ -32,8 +32,8 @@ from sam.modeling.memory.bank import ObjectMemoryBank
 from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
 from sam.models.video_session import VideoSession, validate_video_hw
 from sam.modeling.tracking.sam3_tracker_utils import fill_holes_in_mask_scores
-from sam.prompts import ConceptPrompt, GeometryPrompt, PromptRoute
-from sam.models.sam2_predictor import _reject_duplicate_obj_ids
+from sam.prompts import (ConceptPrompt, GeometryPrompt, PromptRoute,
+                         merge_object_prompts)
 from sam.results import Emit, MaskletResult
 from sam.utils.sam3_transforms import preprocess_to_1008, preprocess_to_1008_video
 
@@ -76,30 +76,26 @@ class EncodedImage:
         return self.views[name]
 
 
-def _split_image_geometry(geometry):
+def _split_image_geometry(geometry, image_hw):
     """Split ``geometry`` into ``(exemplars, objects)`` by each prompt's own route.
+
+    Prompts describing the same thing are merged first, so several exemplars become one
+    biased search and several clicks on an object become one selection.
 
     Args:
         geometry: one :class:`GeometryPrompt`, a list of them, or None.
+        image_hw: ``(height, width)``, to reconcile coordinate spaces while merging.
 
     Returns:
-        ``(exemplars, objects)``: a single merged DETECTOR-route prompt (or None) and
-        the list of TRACKER-route prompts.
-
-    Raises:
-        ValueError: if two exemplars are passed -- one prompt can carry several points
-            and boxes, so merge them there.
+        ``(exemplars, objects)``: the merged DETECTOR-route prompt (or None) and one
+        merged TRACKER-route prompt per object.
     """
     if geometry is None:
         return None, []
     prompts = [geometry] if isinstance(geometry, GeometryPrompt) else list(geometry)
-    exemplars = [p for p in prompts if p.to_detector]
-    objects = [p for p in prompts if not p.to_detector]
-    if len(exemplars) > 1:
-        raise ValueError(
-            "pass one exemplar prompt carrying every point/box you want to bias with, "
-            "not several GeometryPrompts"
-        )
+    merged = merge_object_prompts(prompts, image_hw=image_hw)
+    exemplars = [p for p in merged if p.to_detector]
+    objects = [p for p in merged if not p.to_detector]
     return (exemplars[0] if exemplars else None), objects
 
 
@@ -255,7 +251,8 @@ class Sam3Predictor(nn.Module):
                 tracker.
         """
         enc = image if isinstance(image, EncodedImage) else self.encode(image, dtype)
-        exemplars, objects = _split_image_geometry(geometry)
+        image_hw = enc.image_hw
+        exemplars, objects = _split_image_geometry(geometry, image_hw)
 
         if concept is None and exemplars is not None:
             raise ValueError(
@@ -276,7 +273,6 @@ class Sam3Predictor(nn.Module):
                 "and one result cannot hold both. Call process twice"
             )
         if objects:
-            _reject_duplicate_obj_ids(objects)
             return self._select_objects(enc, objects)
         det_feats, det_pos = enc.view("det")
         return self._detect_encoded(
@@ -1024,9 +1020,8 @@ class Sam3VideoPredictor(nn.Module):
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)
 
-            _reject_duplicate_obj_ids(prompts)
             geo, tracker_prompts = self._split_and_pack_geometry(
-                prompts or [], (H, W), device
+                merge_object_prompts(prompts, image_hw=(H, W)), (H, W), device
             )
             concept = self._concept_for_detection(state, geo)
 
@@ -1734,9 +1729,8 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 int_f, int_p, self.tracker.interactive_sam_mask_decoder
             )
             num_frames = frame_idx + 1
-            _reject_duplicate_obj_ids(prompts)
             geo, point_prompts = self._split_and_pack_geometry(
-                prompts, (H, W), device
+                merge_object_prompts(prompts, image_hw=(H, W)), (H, W), device
             )
             concept = self._concept_for_detection(state, geo)
 

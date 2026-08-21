@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from sam.prompts import PromptRoute, GeometryPrompt
+from sam.prompts import GeometryPrompt, PromptRoute, merge_object_prompts
 
 
 def test_click_positive_by_default():
@@ -137,12 +137,90 @@ def test_box_corners_match_the_encoders_native_box_path():
     assert labels.tolist() == [2, 3]
 
 
-def test_duplicate_obj_ids_are_refused_with_the_fix_named():
-    from sam.models.sam2_predictor import _reject_duplicate_obj_ids
+# ---------------------------------------------------------------------------
+# Merging: prompts for one object are evidence, and evidence adds up.
+# ---------------------------------------------------------------------------
+def test_prompts_for_one_object_merge_by_type():
+    merged = merge_object_prompts([
+        GeometryPrompt.clicks(2, [(315, 310), (330, 200)], labels=[1, 0]),
+        GeometryPrompt.boxes(2, [(255, 95, 400, 470)]),
+        GeometryPrompt.click(1, (210, 310)),
+    ])
+    by_id = {p.obj_id: p for p in merged}
+    assert sorted(by_id) == [1, 2]
+    assert by_id[2].points_coords.shape == (2, 2)
+    assert by_id[2].points_labels.tolist() == [1, 0]
+    assert by_id[2].boxes.shape == (1, 4)
+    assert by_id[1].boxes is None
 
-    _reject_duplicate_obj_ids([GeometryPrompt.click(1, (1, 2)), GeometryPrompt.click(2, (3, 4))])
-    with pytest.raises(ValueError, match="GeometryPrompt.clicks"):
-        _reject_duplicate_obj_ids([
-            GeometryPrompt.click(1, (1, 2)),
-            GeometryPrompt.click(1, (3, 4)),
+
+def test_merging_matches_the_verbose_prompt():
+    """The point of merging: listing prompts == building one by hand."""
+    listed = merge_object_prompts([
+        GeometryPrompt.click(2, (315, 310)),
+        GeometryPrompt.boxes(2, [(255, 95, 400, 470)]),
+    ])[0]
+    verbose = GeometryPrompt(
+        obj_id=2,
+        points_coords=torch.tensor([[315.0, 310.0]]),
+        points_labels=torch.tensor([1], dtype=torch.int32),
+        boxes=torch.tensor([[255.0, 95.0, 400.0, 470.0]]),
+    )
+    assert torch.equal(listed.points_coords, verbose.points_coords)
+    assert torch.equal(listed.points_labels, verbose.points_labels)
+    assert torch.equal(listed.boxes, verbose.boxes)
+
+
+def test_exemplars_merge_into_one_search():
+    merged = merge_object_prompts([
+        GeometryPrompt.exemplar_box((1, 2, 3, 4)),
+        GeometryPrompt.exemplar_point((5, 6), label=0),
+    ])
+    assert len(merged) == 1, "exemplars describe one search, not one object each"
+    assert merged[0].route is PromptRoute.DETECTOR
+    assert merged[0].boxes.shape == (1, 4) and merged[0].points_coords.shape == (1, 2)
+
+
+def test_unsigned_boxes_stay_positive_when_another_prompt_signs_its_own():
+    merged = merge_object_prompts([
+        GeometryPrompt.exemplar_boxes([(1, 2, 3, 4)]),                 # unsigned
+        GeometryPrompt.exemplar_boxes([(5, 6, 7, 8)], labels=[0]),     # a counter-example
+    ])[0]
+    assert merged.boxes_labels.tolist() == [1, 0]
+
+
+def test_merge_reconciles_coordinate_spaces():
+    """Pixels are divided through -- the same division the predictor does later."""
+    pixels = GeometryPrompt.clicks(2, [(480, 270)])
+    normalized = GeometryPrompt(
+        obj_id=2,
+        points_coords=torch.tensor([[0.25, 0.5]]),
+        points_labels=torch.tensor([1], dtype=torch.int32),
+        is_normalized=True,
+    )
+    merged = merge_object_prompts([pixels, normalized], image_hw=(540, 960))[0]
+    assert merged.is_normalized
+    assert merged.points_coords.tolist() == [[0.5, 0.5], [0.25, 0.5]]
+
+    with pytest.raises(ValueError, match="no image size"):
+        merge_object_prompts([pixels, normalized])
+
+
+def test_merge_refuses_contradictions():
+    with pytest.raises(ValueError, match="two masks|2 masks"):
+        merge_object_prompts([
+            GeometryPrompt.mask(1, torch.zeros(4, 4, dtype=torch.bool)),
+            GeometryPrompt.mask(1, torch.ones(4, 4, dtype=torch.bool)),
         ])
+
+    both_routes = GeometryPrompt.exemplar_box((1, 2, 3, 4))
+    both_routes.obj_id = 1  # same id as a tracker prompt, which cannot be reconciled
+    with pytest.raises(ValueError, match="both routes"):
+        merge_object_prompts([GeometryPrompt.click(1, (1, 2)), both_routes])
+
+
+def test_merge_passes_single_prompts_through_untouched():
+    only = GeometryPrompt.click(1, (1, 2))
+    assert merge_object_prompts([only])[0] is only
+    assert merge_object_prompts([]) == []
+    assert merge_object_prompts(None) == []

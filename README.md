@@ -453,11 +453,21 @@ A `GeometryPrompt` is one of two things, and the constructor you pick says which
 | needs | nothing else | a concept: a phrase or `PLACEHOLDER` |
 | ids | the `obj_id` you passed | minted by detection |
 
-**One prompt per object per frame.** A `GeometryPrompt` *is* one object's geometry for that
-frame, so refining a selection means more geometry inside that prompt — `clicks(...)`,
-`boxes(...)`, or the verbose form carrying points and boxes together — not a second prompt
-under the same `obj_id`, which raises. Detector exemplars follow the same rule for the same
-reason: they describe one search, so several examples ride in one prompt.
+**Prompts for one object are merged.** A frame's prompts are evidence, and evidence adds up,
+so listing them is the same as building one prompt by hand:
+
+```python
+session.process(frame, prompts=[
+    GeometryPrompt.clicks(2, [(315, 310), (330, 200)], labels=[1, 0]),
+    GeometryPrompt.boxes(2, [(255, 95, 400, 470)]),      # same object, more evidence
+])
+```
+
+Points concatenate with points and boxes with boxes, per `(obj_id, route)`; exemplars merge
+the same way, since they describe one search rather than one object each. Mixed pixel and
+normalized coordinates are reconciled by dividing the pixel ones through — the division the
+predictor would do anyway. Two masks for one object raise (a mask is the whole extent, so a
+second contradicts the first), as does prompting one `obj_id` on both routes.
 
 A tracker box is encoded as its two corner points with labels 2 and 3. That is not a
 workaround for a missing box input: `PromptEncoder._embed_boxes` adds the very same learned

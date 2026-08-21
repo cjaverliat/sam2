@@ -214,11 +214,29 @@ def test_process_refuses_the_ambiguous_calls(predictor, image):
                           geometry=GeometryPrompt.click(1, CLICK))
     with pytest.raises(ValueError, match="need a concept"):
         predictor.process(image, geometry=GeometryPrompt.exemplar_box(REAR_WHEEL))
-    with pytest.raises(ValueError, match="one exemplar prompt"):
-        predictor.process(image, concept="wheel", geometry=[
-            GeometryPrompt.exemplar_box(REAR_WHEEL),
-            GeometryPrompt.exemplar_point(CLICK),
-        ])
+
+
+@needs_model
+def test_several_prompts_for_one_thing_are_merged(predictor, image):
+    """Listing prompts is the same as building one that carries all of it."""
+    listed = predictor.process(image, concept="wheel", geometry=[
+        GeometryPrompt.exemplar_box(REAR_WHEEL),
+        GeometryPrompt.exemplar_point(CLICK),
+    ])
+    combined = predictor.process(image, concept="wheel", geometry=GeometryPrompt(
+        obj_id=-1,
+        points_coords=torch.tensor([list(CLICK)]),
+        points_labels=torch.tensor([1], dtype=torch.int32),
+        boxes=torch.tensor([list(REAR_WHEEL)]),
+        route=__import__("sam.prompts", fromlist=["PromptRoute"]).PromptRoute.DETECTOR,
+    ))
+    assert_same(listed, combined)
+
+    two_clicks = predictor.process(image, geometry=[
+        GeometryPrompt.click(1, CLICK),
+        GeometryPrompt.click(1, (600.0, 700.0)),
+    ])
+    assert two_clicks.instance_ids.tolist() == [1], "one object, two points"
 
 
 @pytest.fixture(scope="module")
@@ -273,11 +291,18 @@ def test_geometry_split_is_by_route():
     """The split the whole design rests on, without needing a model."""
     from sam.models.sam3_predictor import _split_image_geometry
 
-    exemplar, objects = _split_image_geometry(GeometryPrompt.exemplar_box(REAR_WHEEL))
+    hw = (1200, 1800)
+    exemplar, objects = _split_image_geometry(GeometryPrompt.exemplar_box(REAR_WHEEL), hw)
     assert exemplar is not None and objects == []
 
     exemplar, objects = _split_image_geometry(
-        [GeometryPrompt.click(1, CLICK), GeometryPrompt.box(2, REAR_WHEEL)])
+        [GeometryPrompt.click(1, CLICK), GeometryPrompt.box(2, REAR_WHEEL)], hw)
     assert exemplar is None and len(objects) == 2
 
-    assert _split_image_geometry(None) == (None, [])
+    # ...and prompts for the SAME object arrive merged, one per object
+    exemplar, objects = _split_image_geometry(
+        [GeometryPrompt.click(1, CLICK), GeometryPrompt.boxes(1, [REAR_WHEEL])], hw)
+    assert len(objects) == 1 and objects[0].points_coords.shape == (1, 2)
+    assert objects[0].boxes.shape == (1, 4)
+
+    assert _split_image_geometry(None, hw) == (None, [])

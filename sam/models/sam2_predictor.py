@@ -12,7 +12,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from sam.modeling.memory.banks import ObjectMemoryBank, Sam2ObjectMemoryBank
 from sam.models.video_session import VideoSession, validate_video_hw
-from sam.prompts import GeometryPrompt
+from sam.prompts import GeometryPrompt, merge_object_prompts
 
 def _half_inference(method):
     """Run a Sam2Predictor compute method under the fastest half precision for this
@@ -696,33 +696,6 @@ class Sam2Predictor(SamTrackerBase):
         )
 
 
-def _reject_duplicate_obj_ids(prompts) -> None:
-    """One prompt per object per frame, or say how to combine them.
-
-    A :class:`~sam.prompts.GeometryPrompt` IS one object's evidence for this frame, so
-    two prompts under the same ``obj_id`` are two answers to the same question. Several
-    clicks, or a box refined by clicks, belong in ONE prompt.
-
-    Raises:
-        ValueError: naming the repeated ids and the constructor that combines them.
-    """
-    if not prompts:
-        return
-    seen, repeated = set(), []
-    for prompt in prompts:
-        if prompt.obj_id in seen and prompt.obj_id not in repeated:
-            repeated.append(prompt.obj_id)
-        seen.add(prompt.obj_id)
-    if repeated:
-        raise ValueError(
-            f"more than one prompt for obj_id {repeated}: a prompt carries ALL of one "
-            "object's geometry for a frame. Combine them -- "
-            "GeometryPrompt.clicks(obj_id, [(x1, y1), (x2, y2)], labels=[1, 0]) for "
-            "several points, or one GeometryPrompt(obj_id=..., points_coords=..., "
-            "points_labels=..., boxes=...) to refine a box with clicks"
-        )
-
-
 @dataclass
 class Sam2VideoPredictorState:
     video_hw: tuple[int, int]
@@ -808,7 +781,7 @@ class Sam2VideoPredictor(Sam2Predictor):
         create_memory: bool = True,
     ) -> dict[int, MaskletResult]:
 
-        _reject_duplicate_obj_ids(prompts)
+        prompts = merge_object_prompts(prompts, image_hw=state.video_hw)
 
         # Unique list of all objects to propagate the masks for (includes previous objects and new prompts).
         all_obj_ids = state.memory_bank.known_obj_ids | set([p.obj_id for p in prompts])
