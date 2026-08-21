@@ -1,5 +1,7 @@
 # SAM 3 integration — status & resume guide
 
+
+> **Open findings.** Seven reviewed defects that need a behaviour decision before they can be fixed are recorded in [`SAM3_OPEN_FINDINGS.md`](SAM3_OPEN_FINDINGS.md) — multiplex bucket teardown and slot reclamation, a NaN mask on a frame-0 refine, keep-alive decay on clicked objects, and three smaller ones. None are covered by the suite.
 **Branch:** `feat/sam3-integration`, pushed. Latest: the base interactive-click
 lifecycle fix and its 30-frame golden, after the notebook box-prompt/dark-figure pass.
 **Last session:** 2026-08-18. **Read this first to resume.**
