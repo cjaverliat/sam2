@@ -72,6 +72,7 @@ class GeometryPrompt:
         if boxes is not None and (boxes.ndim != 2 or boxes.shape[1] != 4):
             raise ValueError(f"Expected boxes to be of shape (N, 4), got {boxes.shape}")
 
+
         if boxes_labels is not None and boxes is None:
             raise ValueError("boxes must be provided if boxes_labels is provided")
 
@@ -116,12 +117,39 @@ class GeometryPrompt:
         )
 
     @classmethod
+    def clicks(cls, obj_id: int, xys, labels=None) -> GeometryPrompt:
+        """Several clicks on ONE object -- the SAM 2 refinement gesture.
+
+        One prompt carries all of an object's evidence for a frame, so refining a
+        selection means more points in THIS prompt, not a second prompt under the same
+        ``obj_id`` (which is rejected: two prompts would be two answers to "what is
+        object 3").
+
+        Args:
+            obj_id: the object every point refers to.
+            xys: ``[(x, y), ...]`` in pixels.
+            labels: one per point, 1 to include and 0 to exclude; all 1 by default.
+        """
+        coords = torch.as_tensor(xys, dtype=torch.float32).reshape(-1, 2)
+        if labels is None:
+            point_labels = torch.ones(coords.shape[0], dtype=torch.int32)
+        else:
+            point_labels = torch.as_tensor(labels, dtype=torch.int32).reshape(-1)
+        if point_labels.shape[0] != coords.shape[0]:
+            raise ValueError(
+                f"clicks got {coords.shape[0]} point(s) and {point_labels.shape[0]} "
+                "label(s); pass one label per point or none at all"
+            )
+        return cls(obj_id=obj_id, points_coords=coords, points_labels=point_labels)
+
+    @classmethod
     def box(cls, obj_id: int, xyxy) -> GeometryPrompt:
         """A box around ONE object (interactive VOS): seeds it from pixel ``xyxy``.
 
-        The SAM 2 gesture, encoded as the box's two corners. Detection does not run,
-        so only this object is tracked. To bias a concept search instead, use
-        :meth:`exemplar_box`.
+        The SAM 2 gesture, encoded as the box's two corners (labels 2 and 3, which is
+        exactly what the prompt encoder's native box path builds). Detection does not
+        run, so only this object is tracked. Several boxes for one object:
+        :meth:`boxes`. To bias a concept search instead: :meth:`exemplar_box`.
         """
         coords = torch.as_tensor(xyxy, dtype=torch.float32).reshape(-1)
         if coords.numel() != 4:
@@ -179,6 +207,77 @@ class GeometryPrompt:
             obj_id=-1,  # unused: detection mints the ids
             points_coords=coords.reshape(1, 2),
             points_labels=torch.tensor([label], dtype=torch.int32),
+            route=PromptRoute.DETECTOR,
+        )
+
+    @classmethod
+    def boxes(cls, obj_id: int, xyxys) -> GeometryPrompt:
+        """Several boxes bounding ONE object, each encoded as its two corners.
+
+        The tracker's prompt encoder takes any number of corner pairs for an object
+        (``sam2_predictor`` repeats labels 2/3 per box), so this is for an object one
+        rectangle describes badly. For several *objects*, use one prompt each; for
+        several examples of a concept, :meth:`exemplar_boxes`.
+
+        Args:
+            obj_id: the object every box refers to.
+            xyxys: ``[(x0, y0, x1, y1), ...]`` in pixels.
+        """
+        coords = torch.as_tensor(xyxys, dtype=torch.float32).reshape(-1, 4)
+        return cls(obj_id=obj_id, boxes=coords)
+
+    @classmethod
+    def exemplar_points(cls, xys, labels=None) -> GeometryPrompt:
+        """Several example points for one concept search.
+
+        The detector takes as many examples as you have; they all belong in one prompt
+        because they describe one search, not one object each.
+
+        Args:
+            xys: ``[(x, y), ...]`` in pixels.
+            labels: one per point, 1 for an example and 0 for a counter-example; all 1
+                by default.
+        """
+        coords = torch.as_tensor(xys, dtype=torch.float32).reshape(-1, 2)
+        point_labels = (
+            torch.ones(coords.shape[0], dtype=torch.int32) if labels is None
+            else torch.as_tensor(labels, dtype=torch.int32).reshape(-1)
+        )
+        if point_labels.shape[0] != coords.shape[0]:
+            raise ValueError(
+                f"exemplar_points got {coords.shape[0]} point(s) and "
+                f"{point_labels.shape[0]} label(s); pass one label per point or none"
+            )
+        return cls(
+            obj_id=-1,  # unused: detection mints the ids
+            points_coords=coords,
+            points_labels=point_labels,
+            route=PromptRoute.DETECTOR,
+        )
+
+    @classmethod
+    def exemplar_boxes(cls, xyxys, labels=None) -> GeometryPrompt:
+        """Several example boxes for one concept search.
+
+        Args:
+            xyxys: ``[(x0, y0, x1, y1), ...]`` in pixels.
+            labels: one per box, 1 for an example and 0 for a counter-example ("every
+                match EXCEPT this one"); all 1 by default.
+        """
+        boxes = torch.as_tensor(xyxys, dtype=torch.float32).reshape(-1, 4)
+        box_labels = (
+            None if labels is None
+            else torch.as_tensor(labels, dtype=torch.int32).reshape(-1)
+        )
+        if box_labels is not None and box_labels.shape[0] != boxes.shape[0]:
+            raise ValueError(
+                f"exemplar_boxes got {boxes.shape[0]} box(es) and "
+                f"{box_labels.shape[0]} label(s); pass one label per box or none"
+            )
+        return cls(
+            obj_id=-1,
+            boxes=boxes,
+            boxes_labels=box_labels,
             route=PromptRoute.DETECTOR,
         )
 

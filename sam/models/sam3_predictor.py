@@ -33,6 +33,7 @@ from sam.modeling.memory.forgetful import ForgetfulObjectMemoryBank
 from sam.models.video_session import VideoSession, validate_video_hw
 from sam.modeling.tracking.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam.prompts import ConceptPrompt, GeometryPrompt, PromptRoute
+from sam.models.sam2_predictor import _reject_duplicate_obj_ids
 from sam.results import Emit, MaskletResult
 from sam.utils.sam3_transforms import preprocess_to_1008, preprocess_to_1008_video
 
@@ -275,6 +276,7 @@ class Sam3Predictor(nn.Module):
                 "and one result cannot hold both. Call process twice"
             )
         if objects:
+            _reject_duplicate_obj_ids(objects)
             return self._select_objects(enc, objects)
         det_feats, det_pos = enc.view("det")
         return self._detect_encoded(
@@ -1022,6 +1024,7 @@ class Sam3VideoPredictor(nn.Module):
             vis, vpos, feat_sizes = self._prepare_tracker_feats(sam2_feats, sam2_pos)
             num_frames = frame_idx + 1  # frames seen so far (forward streaming)
 
+            _reject_duplicate_obj_ids(prompts)
             geo, tracker_prompts = self._split_and_pack_geometry(
                 prompts or [], (H, W), device
             )
@@ -1731,6 +1734,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
                 int_f, int_p, self.tracker.interactive_sam_mask_decoder
             )
             num_frames = frame_idx + 1
+            _reject_duplicate_obj_ids(prompts)
             geo, point_prompts = self._split_and_pack_geometry(
                 prompts, (H, W), device
             )

@@ -445,11 +445,24 @@ A `GeometryPrompt` is one of two things, and the constructor you pick says which
 | | selects ONE object | steers the concept search |
 |---|---|---|
 | point | `GeometryPrompt.click(obj_id, (x, y))` | `GeometryPrompt.exemplar_point((x, y))` |
+| several points | `GeometryPrompt.clicks(obj_id, [(x, y), ...], labels=[1, 0])` | `GeometryPrompt.exemplar_points([(x, y), ...], labels=...)` |
 | box | `GeometryPrompt.box(obj_id, (x0, y0, x1, y1))` | `GeometryPrompt.exemplar_box((x0, y0, x1, y1))` |
+| several boxes | `GeometryPrompt.boxes(obj_id, [(x0, y0, x1, y1), ...])` | `GeometryPrompt.exemplar_boxes([(x0, y0, x1, y1), ...], labels=...)` |
 | mask | `GeometryPrompt.mask(obj_id, mask)` | — no detector mask slot in either checkpoint |
 | goes to | the tracker's prompt encoder (SAM 2 semantics) | the detector's geometric slot (SAM 3 only) |
 | needs | nothing else | a concept: a phrase or `PLACEHOLDER` |
 | ids | the `obj_id` you passed | minted by detection |
+
+**One prompt per object per frame.** A `GeometryPrompt` *is* one object's geometry for that
+frame, so refining a selection means more geometry inside that prompt — `clicks(...)`,
+`boxes(...)`, or the verbose form carrying points and boxes together — not a second prompt
+under the same `obj_id`, which raises. Detector exemplars follow the same rule for the same
+reason: they describe one search, so several examples ride in one prompt.
+
+A tracker box is encoded as its two corner points with labels 2 and 3. That is not a
+workaround for a missing box input: `PromptEncoder._embed_boxes` adds the very same learned
+embeddings to those corners, so the two spellings produce identical box tokens (verified), and
+the corner form is what upstream's video path uses.
 
 The `exemplar_*` constructors take **no** `obj_id`: they name nothing, so the ids they produce
 are the detector's to hand out. `label=0` makes either one a counter-example — "everything
