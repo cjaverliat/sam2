@@ -519,6 +519,52 @@ def _demux_mux_outputs(out, mux_state, obj_ids) -> dict:
     return per_obj
 
 
+def _slice_mux_frame_buckets(out: dict, buckets_to_keep: list, num_buckets: int) -> None:
+    """Keep only the surviving buckets in a stored frame's BUCKET-space tensors.
+
+    ``maskmem_features`` / ``maskmem_pos_enc`` / ``obj_ptr`` are batched by bucket, so a
+    bucket deleted from the live ``MultiplexState`` has to go from every retained frame
+    too -- otherwise the next ``demux`` sees one bucket too many. Mutates ``out``.
+    """
+    index = torch.as_tensor(buckets_to_keep, dtype=torch.long)
+    for key in ("maskmem_features", "obj_ptr"):
+        tensor = out.get(key)
+        if tensor is None:
+            continue
+        assert tensor.shape[0] == num_buckets, (
+            f"stored {key!r} has {tensor.shape[0]} buckets, state had {num_buckets}"
+        )
+        out[key] = tensor[index.to(tensor.device)]
+    pos_enc = out.get("maskmem_pos_enc")
+    if pos_enc:
+        out["maskmem_pos_enc"] = [
+            p if p is None else p[index.to(p.device)] for p in pos_enc
+        ]
+
+
+def _drop_mux_frame_object(out: dict, obj_id: int) -> None:
+    """Drop one object's DATA-space row from a stored frame output. Mutates ``out``.
+
+    A no-op for a frame stored before this object existed. ``conditioning_objects`` is a
+    set of data-space indices, so it is re-indexed onto the compacted rows.
+    """
+    frame_ids = out["obj_ids"]
+    if obj_id not in frame_ids:
+        return
+    keep = [i for i, oid in enumerate(frame_ids) if oid != obj_id]
+    for key in ("pred_masks", "pred_masks_high_res", "object_score_logits"):
+        tensor = out.get(key)
+        if tensor is not None:
+            out[key] = tensor[keep]
+    conditioning = out.get("conditioning_objects")
+    if conditioning:
+        old_to_new = {old: new for new, old in enumerate(keep)}
+        out["conditioning_objects"] = {
+            old_to_new[i] for i in conditioning if i in old_to_new
+        }
+    out["obj_ids"] = [frame_ids[i] for i in keep]
+
+
 def _as_point_prompt(prompt: GeometryPrompt) -> GeometryPrompt:
     """The prompt's tracker geometry as a point-only prompt (a box -> its corners).
 
@@ -807,6 +853,9 @@ class Sam3VideoPredictorState:
     # ``output_dict`` (the M1-proven format) rather than the per-object bank. The bank +
     # tracklet_mgr + allocator still drive the per-object LIFECYCLE (``known_obj_ids`` ->
     # active set, spawn/confirm/kill); the loop's OUTPUT masks are demuxed per-object.
+    # Every stored frame output carries an ``obj_ids`` list naming the objects ITS
+    # data-space rows stand for -- a frame stored before an object arrived has fewer
+    # rows, so removal cannot re-slice a past frame by the live order alone.
     mux_output_dict: dict = field(
         default_factory=lambda: {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
     )
@@ -1075,7 +1124,7 @@ class Sam3VideoPredictor(nn.Module):
             new_objects: list[tuple[int, int]] = []  # (obj_id, det_idx)
             if det is not None:
                 new_objects = self._associate_and_update(
-                    state, det, active_ids, trk_low_masks, trk_results
+                    state, frame_idx, det, active_ids, trk_low_masks, trk_results
                 )
             else:
                 self._advance_lifecycle(state, set(), set(), frame_idx)
@@ -1332,8 +1381,15 @@ class Sam3VideoPredictor(nn.Module):
             image_hw=(m, m), confidence_threshold=0.5, geo=geo,
         )
 
-    def _associate_and_update(self, state, det, active_ids, trk_low_masks, trk_results):
+    def _associate_and_update(
+        self, state, frame_idx, det, active_ids, trk_low_masks, trk_results
+    ):
         """Match detections to tracks, spawn new tracklets, advance lifecycle, kill dead ones.
+
+        ``frame_idx`` is the one ``forward`` was given, NOT
+        ``num_frames_processed - 1``: :meth:`VideoSession.process` documents a
+        ``frame_idx`` override ("e.g. to re-run a frame"), which desynchronises the
+        counter from the index the bank keys, ``num_frames`` and the hotstart gate use.
 
         Returns ``[(obj_id, det_idx), ...]`` for the newly-spawned detections.
         """
@@ -1367,8 +1423,6 @@ class Sam3VideoPredictor(nn.Module):
             if float(trk_results[o]["object_score_logits"].reshape(-1)[0]) <= 0.0:
                 matched_track_ids.discard(o)
 
-        frame_idx = state.num_frames_processed - 1
-
         # spawn new tracklets (allocator-issued ids) for the new detections
         new_objects: list[tuple[int, int]] = []
         for det_idx in new_dets:
@@ -1394,10 +1448,10 @@ class Sam3VideoPredictor(nn.Module):
         box-seeded (concept-less) session, so its object was never suppressed or
         killed.
 
-        Only *managed* tracklets step. Click-seeded objects are deliberately left
-        unmanaged: upstream routes a click-only session through SAM 2 partial
-        propagation, which never runs detection/hotstart for those objects, so they
-        neither decay nor die.
+        Only *managed* tracklets step, and a click-seeded one is managed but inert:
+        ``TrackletManager.step`` skips it entirely, because upstream routes a
+        click-only session through SAM 2 partial propagation, which never runs
+        detection/hotstart for those objects -- they neither decay nor die.
         """
         state.tracklet_mgr.step(matched_track_ids, new_ids, frame_idx)
 
@@ -1769,7 +1823,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             new_objects: list[tuple[int, int]] = []
             if det is not None:
                 new_objects = self._associate_and_update(
-                    state, det, active_ids, trk_low_masks, trk_results
+                    state, frame_idx, det, active_ids, trk_low_masks, trk_results
                 )
             else:
                 self._advance_lifecycle(state, set(), set(), frame_idx)
@@ -1848,10 +1902,56 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         excludes it) and drops it from the obj-id map. The threaded bucket-space
         memory keeps the (now-removed) slot; ``demux`` skips it, so per-object views
         stay aligned to ``mux_obj_ids``.
+
+        When the LAST object leaves, the state is torn down rather than kept: an
+        objectless multiplex state is not a resting state this lineage supports, and
+        upstream says the same -- it nulls the state whenever removal empties it
+        (``video_tracking_multiplex_demo.py:458-464``) and rebuilds from the controller
+        on the next object. The threaded bucket-space memory goes with it: it is keyed
+        to the old bucket grid, which the next seed will not reproduce.
         """
         idx = state.mux_obj_ids.index(obj_id)
-        state.mux_state.remove_objects([idx])
+        num_buckets_before = state.mux_state.num_buckets
+        buckets_to_keep = state.mux_state.remove_objects([idx])
         state.mux_obj_ids = [o for o in state.mux_obj_ids if o != obj_id]
+        if state.mux_state.is_empty:
+            state.mux_state = None
+            state.mux_obj_ids = []
+            state.mux_output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
+            return
+        self._reslice_mux_memory(state, obj_id, buckets_to_keep, num_buckets_before)
+
+    @staticmethod
+    def _reslice_mux_memory(state, obj_id, buckets_to_keep, num_buckets_before) -> None:
+        """Re-cut every stored frame output to the shape removal just left behind.
+
+        ``remove_objects`` compacts the data-space object indices and can delete a whole
+        bucket, so both halves of a threaded frame output go stale at once:
+
+        - **data space** (``pred_masks``, ``pred_masks_high_res``,
+          ``object_score_logits``, and the ``conditioning_objects`` index set) is sliced
+          positionally by ``mux_obj_ids`` order -- ``_demux_mux_outputs`` pairs row *i*
+          with object *i* -- so a leftover row shifts every mask onto the wrong object.
+          Reachable with a SINGLE bucket: a hotstart kill and a new detection on the
+          same frame make ``_grow_mux_state`` append to a row set the removal already
+          invalidated.
+        - **bucket space** (``maskmem_features``, ``maskmem_pos_enc``, ``obj_ptr``) is
+          indexed by bucket, so a deleted bucket leaves every stored memory one row too
+          long for the next ``demux``. Upstream slices exactly these three by the
+          ``buckets_to_keep`` that ``remove_objects`` returns
+          (``video_tracking_multiplex_demo.py:3092-3100``).
+
+        Which objects a frame's rows stand for is the frame's own business: one stored
+        before this object arrived has fewer rows, in a different order. So each output
+        carries the ``obj_ids`` its rows were built from (upstream's per-frame
+        ``local_obj_id_to_idx``), and this slices by that rather than by the live order.
+        """
+        lost_a_bucket = len(buckets_to_keep) < num_buckets_before
+        for store in state.mux_output_dict.values():
+            for out in store.values():
+                if lost_a_bucket:
+                    _slice_mux_frame_buckets(out, buckets_to_keep, num_buckets_before)
+                _drop_mux_frame_object(out, obj_id)
 
     # ------------------------------------------------------------------
     # Multiplex helpers (mux/demux internal; bank sees per-object)
@@ -1881,6 +1981,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             num_frames=num_frames,
             multiplex_state=state.mux_state,
         )
+        out["obj_ids"] = list(state.mux_obj_ids)
         state.mux_output_dict["non_cond_frame_outputs"][frame_idx] = out
         self._prune_mux_memory(state, frame_idx)
         return self._demux_outputs(out, state.mux_state, state.mux_obj_ids)
@@ -1954,6 +2055,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         )
         state.mux_state = mux_state
         state.mux_obj_ids = list(new_ids)
+        out["obj_ids"] = list(new_ids)
         state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
         for obj_id in new_ids:
             state.bank.known_obj_ids.add(obj_id)
@@ -2005,10 +2107,21 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
         it). Returns per-object masklets for ``new_ids``.
         """
         height, width = state.video_hw
+        # Look the frame up in BOTH stores rather than inferring "this was a cond frame"
+        # from a missing propagation entry and then indexing the cond dict on faith --
+        # upstream does the same two-key lookup and raises when neither holds it
+        # (``_run_single_frame_inference``). Propagation is tried first because it is
+        # the store this call's own decode went to; a re-run frame can leave a stale
+        # cond entry behind from an earlier grow at the same index.
         prev = state.mux_output_dict["non_cond_frame_outputs"].get(frame_idx)
         was_cond = prev is None
         if was_cond:  # seed-frame co-seed: grow the cond-frame output in place
-            prev = state.mux_output_dict["cond_frame_outputs"][frame_idx]
+            prev = state.mux_output_dict["cond_frame_outputs"].get(frame_idx)
+        if prev is None:
+            raise RuntimeError(
+                f"no multiplex output stored for frame {frame_idx}: growing the state "
+                "needs this frame's joint decode to append to"
+            )
         out, _ = self.tracker.add_new_masks_to_existing_state(
             prev, new_masks, bf_int, bf_prop, state.mux_state, is_mask_from_pts
         )
@@ -2016,6 +2129,7 @@ class Sam3MultiplexVideoPredictor(Sam3VideoPredictor):
             state.mux_output_dict["non_cond_frame_outputs"].pop(frame_idx, None)
             state.mux_output_dict["cond_frame_outputs"][frame_idx] = out
         state.mux_obj_ids = state.mux_obj_ids + list(new_ids)
+        out["obj_ids"] = list(state.mux_obj_ids)
         for obj_id in new_ids:
             state.bank.known_obj_ids.add(obj_id)
         return self._masklets_from_demux(

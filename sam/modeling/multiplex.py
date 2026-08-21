@@ -90,6 +90,11 @@ class MultiplexState:
         self._precompute_transition_matrices(self.device, self.dtype)
 
     @property
+    def is_empty(self) -> bool:
+        """True once the last object left: the state is spent, not reusable."""
+        return self.assignments is None
+
+    @property
     def available_slots(self) -> int:
         return (
             self.num_buckets * self.allowed_bucket_capacity
@@ -113,7 +118,17 @@ class MultiplexState:
         self, object_indices: list, *, object_ids: Optional[list] = None,
         allow_new_buckets: bool = False, prefer_new_buckets: bool = False,
     ):
-        """Add new objects by filling empty slots and creating new buckets if necessary."""
+        """Add new objects by filling empty slots and creating new buckets if necessary.
+
+        Raises:
+            ValueError: if the state is empty -- rebuild it from the controller instead
+                (upstream ``_merge_singleton_interaction_result`` does exactly that).
+        """
+        if self.is_empty:
+            raise ValueError(
+                "cannot add objects to an emptied multiplex state; build a fresh one "
+                "with MultiplexController.get_state"
+            )
         if len(object_indices) == 0:
             return
         object_indices = object_indices.copy()
@@ -165,6 +180,25 @@ class MultiplexState:
         self._initialize_assignments(self.assignments, object_ids=self.object_ids)
         assert self.total_valid_entries == original_num_entries + num_new_objects
 
+    def _mark_empty(self) -> None:
+        """Tear the state down to "no objects left" WITHOUT leaving stale answers.
+
+        ``assignments = None`` is the sentinel upstream tests for before rebuilding a
+        state (``video_tracking_multiplex_demo.py:461``), but the derived bookkeeping
+        has to go with it: a state that still reports its pre-removal ``num_buckets``
+        and hands back its pre-removal ``mux`` / ``demux`` matrices answers questions
+        about objects it no longer has. Zeroed, every query is either honest (0 slots,
+        no valid indices) or fails loudly (``mux`` / ``demux`` shape assertions).
+        """
+        self.assignments = None
+        self.num_buckets = 0
+        self.total_valid_entries = 0
+        self.total_non_padding_entries = 0
+        if self.object_ids is not None:
+            self.object_ids = []
+        self.mux_matrix = torch.zeros(0, 0, device=self.device, dtype=self.dtype)
+        self.demux_matrix = torch.zeros(0, 0, device=self.device, dtype=self.dtype)
+
     def remove_objects(self, object_indices: list, strict: bool = True):
         """Remove objects (mark as removed); drop a bucket if all its slots are removed/padding."""
         object_indices = object_indices.copy()
@@ -186,9 +220,7 @@ class MultiplexState:
             del self.assignments[bucket_idx]
 
         if len(buckets_to_keep) == 0:
-            self.assignments = None
-            if self.object_ids is not None:
-                self.object_ids = []
+            self._mark_empty()
             return buckets_to_keep
 
         all_positive_ids = set()
@@ -202,6 +234,15 @@ class MultiplexState:
             for i, obj_id in enumerate(bucket):
                 if obj_id >= 0:
                     bucket[i] = id_mapping[obj_id]
+                elif obj_id == _REMOVED_NUM:
+                    # Free the slot for reuse. Spatial memory is encoded PER BUCKET (one
+                    # tensor for all K slots) and past object pointers are attended by the
+                    # whole bucket, so a survivor of this bucket already carries whatever
+                    # the removed object left behind -- refilling the slot adds nothing to
+                    # it. Leaving the slot marked removed instead only shrinks the free
+                    # pool, permanently: `add_objects` refills padding alone, so a long
+                    # clip holding two objects at a time still ran out after 16 removals.
+                    bucket[i] = _PADDING_NUM
 
         if self.object_ids is not None:
             new_object_ids = [None] * len(sorted_ids)
@@ -263,6 +304,8 @@ class MultiplexState:
 
     def get_all_valid_object_idx(self) -> set:
         """The set of valid internal object indices (not the arbitrary input object IDs)."""
+        if self.is_empty:
+            return set()
         return {
             obj_idx for bucket in self.assignments for obj_idx in bucket if obj_idx >= 0
         }

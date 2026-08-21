@@ -1,7 +1,7 @@
 # SAM 3 integration — status & resume guide
 
 
-> **Open findings.** Seven reviewed defects that need a behaviour decision before they can be fixed are recorded in [`SAM3_OPEN_FINDINGS.md`](SAM3_OPEN_FINDINGS.md) — multiplex bucket teardown and slot reclamation, a NaN mask on a frame-0 refine, keep-alive decay on clicked objects, and three smaller ones. None are covered by the suite.
+> **Findings (2026-08-21).** The seven reviewed defects recorded in [`SAM3_OPEN_FINDINGS.md`](SAM3_OPEN_FINDINGS.md) — multiplex bucket teardown and slot reclamation, a NaN mask on a frame-0 refine, keep-alive decay on clicked objects, and four others — are all **fixed**, each decision settled against `../sam3_reference` and each covered by a CPU regression test (suite 190 passed / 24 skipped / 1 xfailed). An eighth defect found while fixing them is fixed too: `_shrink_mux_state` discarded `buckets_to_keep` AND the data-space compaction, so a removal desynchronised every retained frame in `mux_output_dict` — reachable at one bucket via a same-frame kill + grow. Stored frame outputs now carry the `obj_ids` their rows stand for (upstream's per-frame `local_obj_id_to_idx`), and removal re-slices both spaces. Nothing open.
 **Branch:** `feat/sam3-integration`, pushed. Latest: the base interactive-click
 lifecycle fix and its 30-frame golden, after the notebook box-prompt/dark-figure pass.
 **Last session:** 2026-08-18. **Read this first to resume.**

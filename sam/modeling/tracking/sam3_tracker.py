@@ -129,7 +129,14 @@ class Sam3Tracker(torch.nn.Module):
         if dummy:
             return torch.zeros(len(rel_pos_list), self.mem_dim, device=device)
 
-        t_diff_max = max_abs_pos - 1 if max_abs_pos is not None else 1
+        # Upstream normalizes by ``max_abs_pos - 1`` where ``max_abs_pos`` is
+        # ``min(num_frames, max_obj_ptrs_in_encoder)`` and ``num_frames`` is the whole
+        # clip length, so the divisor is never 0. We stream, so ``num_frames`` is
+        # ``frame_idx + 1`` and a non-init-cond step on frame 0 (a second click on an
+        # object seeded there) makes it 1. Clamping is a no-op everywhere else: with a
+        # single frame every relative position is 0, so the quotient is 0 either way --
+        # except that 0/0 is NaN, which propagates silently into an all-NaN mask.
+        t_diff_max = max(max_abs_pos - 1, 1) if max_abs_pos is not None else 1
         pos_enc = (
             torch.tensor(rel_pos_list).to(device=device, non_blocking=True) / t_diff_max
         )

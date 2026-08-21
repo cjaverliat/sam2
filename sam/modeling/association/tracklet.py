@@ -14,6 +14,10 @@ Mirrors upstream ``sam3/model/sam3_multiplex_base.py::_process_hotstart_gpu``
 - **Confirmation** (``consecutive_det_count`` -> CONFIRMED) is an orthogonal display
   gate with no kill (upstream ``masklet_confirmation``).
 
+A user-clicked (``interactive``) tracklet sits outside ALL THREE: upstream registers
+only detector-spawned ids in the hotstart bookkeeping, so a click neither decays nor
+dies -- see :meth:`TrackletManager.force_confirm`.
+
 The predictor reads three id-sets each frame: ``removed_ids`` (purge bank + free mux
 slot), ``alive_ids`` (propagate -- includes suppressed, so memory is rewritten), and
 ``visible_ids`` (emit in results).
@@ -168,6 +172,13 @@ class TrackletManager:
         therefore confirmed at once and never removed for going unmatched -- which
         matters most in a click-only session, where detection never runs and so
         nothing can ever match it.
+
+        The same registration gate covers ``trk_keep_alive``: upstream only ever
+        initialises it for ``new_det_obj_ids`` (``sam3_multiplex_base.py:2344`` and the
+        GPU-metadata concat at :1320), so a clicked object is outside the suppression
+        hysteresis too. Pinning ``keep_alive`` at its maximum reproduces that here --
+        the default ``init_keep_alive`` is 0, i.e. already at the visibility boundary,
+        so a click would otherwise be hidden by the first unmatched frame.
         """
         info = self._tracks[obj_id]
         info.interactive = True
@@ -176,6 +187,7 @@ class TrackletManager:
             info.consecutive_det_count, self.confirmation_thresh
         )
         info.unmatched_count = 0
+        info.keep_alive = self.max_keep_alive
 
     def step(
         self,
@@ -194,6 +206,10 @@ class TrackletManager:
         all_matched = matched_track_ids | new_det_ids
         for obj_id, info in self._tracks.items():
             if info.removed:
+                continue
+            if info.interactive:
+                # Upstream registers a clicked object in NONE of the hotstart
+                # bookkeeping (see :meth:`force_confirm`): it neither decays nor dies.
                 continue
             matched = obj_id in all_matched
             if matched:

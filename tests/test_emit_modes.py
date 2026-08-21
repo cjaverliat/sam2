@@ -103,3 +103,27 @@ def test_select_emitted_hides_a_pending_object_under_confirmed():
     _spawn_and_detect(m, 1, n_frames=1)
     assert select_emitted({1: _result()}, m, Emit.CONFIRMED) == {}
     assert set(select_emitted({1: _result()}, m, Emit.VISIBLE)) == {1}
+
+
+def test_clicked_object_stays_visible_through_a_click_only_session():
+    """A click-seeded object neither decays nor dies (upstream never registers it)."""
+    m = _mgr()
+    m.spawn(1, frame_idx=0, interactive=True)
+    for f in range(1, 60):                   # no detection ever matches it
+        m.step(set(), set(), frame_idx=f)
+    assert m.emitted_ids(Emit.VISIBLE) == {1}
+    assert m.emitted_ids(Emit.CONFIRMED) == {1}
+    assert m.removed_ids() == set()
+
+
+def test_clicking_an_existing_object_pins_it_visible():
+    m = _mgr()
+    _spawn_and_detect(m, 1, n_frames=20)     # established, then leaves the scene
+    for f in range(20, 40):
+        m.step(set(), set(), frame_idx=f)
+    assert m.emitted_ids(Emit.VISIBLE) == set()
+    m.force_confirm(1)                       # user clicks it again
+    assert m.emitted_ids(Emit.VISIBLE) == {1}
+    for f in range(40, 60):
+        m.step(set(), set(), frame_idx=f)
+    assert m.emitted_ids(Emit.VISIBLE) == {1}

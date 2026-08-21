@@ -784,13 +784,17 @@ class Sam2VideoPredictor(Sam2Predictor):
 
         # Unique list of all objects to propagate the masks for (includes previous objects and new prompts).
         all_obj_ids = state.memory_bank.known_obj_ids | set([p.obj_id for p in prompts])
-        n_objs = len(all_obj_ids)
 
         prompts_dicts: dict[int, GeometryPrompt] = {
             prompt.obj_id: prompt for prompt in prompts
         }
 
         results: list[MaskletResult] = []
+        # The ids that actually produced a result, in result order. An object with
+        # neither a prompt nor a memory is skipped below, so this is NOT `all_obj_ids`:
+        # everything downstream (the batch size, the memory write, the returned dict)
+        # must be keyed off what was decoded, or masks land on the wrong object.
+        decoded_obj_ids: list[int] = []
 
         for obj_id in all_obj_ids:
             prompt = prompts_dicts.get(obj_id, None)
@@ -885,16 +889,19 @@ class Sam2VideoPredictor(Sam2Predictor):
                 )
 
             results.append(result)
+            decoded_obj_ids.append(obj_id)
 
         # Edge case if we forward a frame without any prompts or memories.
         if len(results) == 0:
             return {}
 
+        n_objs = len(decoded_obj_ids)
+
         batched_results = MaskletResult.cat(results)
 
         if create_memory:
             is_prompt = torch.tensor(
-                [obj_id in prompts_dicts for obj_id in all_obj_ids],
+                [obj_id in prompts_dicts for obj_id in decoded_obj_ids],
                 dtype=torch.bool,
                 device=batched_results.device,
             )
@@ -908,7 +915,7 @@ class Sam2VideoPredictor(Sam2Predictor):
 
             state.memory_bank.try_add_memories(
                 frame_idx=frame_idx,
-                obj_ids=all_obj_ids,
+                obj_ids=decoded_obj_ids,
                 memory_embeddings=memory_embeddings,
                 memory_pos_embeddings=memory_pos_embeddings,
                 results=batched_results,
@@ -916,11 +923,13 @@ class Sam2VideoPredictor(Sam2Predictor):
             )
 
             state.memory_bank.prune_memories(
-                obj_ids=all_obj_ids,
+                obj_ids=decoded_obj_ids,
                 current_frame_idx=frame_idx,
             )
 
-        return {obj_id: result for obj_id, result in zip(all_obj_ids, batched_results)}
+        return {
+            obj_id: result for obj_id, result in zip(decoded_obj_ids, batched_results)
+        }
 
 class Sam2VideoPredictorVOS(Sam2VideoPredictor):
     """Optimized for the VOS setting"""
