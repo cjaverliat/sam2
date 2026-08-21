@@ -14,12 +14,15 @@ py=$(command -v python3 || command -v python) || {
 }
 
 # What `jupyter nbconvert --clear-output` does, without needing jupyter installed:
-# outputs emptied, execution counts reset, every other key left where it was so
-# the diff stays limited to what actually changed.
+# outputs emptied, execution counts reset, plus the per-cell ExecuteTime stamps the
+# IDE writes on every run -- those are the other half of a re-run's noise, and
+# nbconvert leaves them behind. Every remaining key stays where it was so the diff
+# is limited to what actually changed.
 strip='
 import json, sys
 nb = json.load(sys.stdin)
 for cell in nb["cells"]:
+    cell.get("metadata", {}).pop("ExecuteTime", None)
     if cell.get("cell_type") == "code":
         cell["outputs"] = []
         cell["execution_count"] = None

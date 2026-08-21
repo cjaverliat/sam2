@@ -1,0 +1,15 @@
+# Notebook output never reaches the index: git pipes every .ipynb through
+# nbstripout's clean filter BEFORE it compares, so a re-run that only changed
+# cell results shows up as no diff at all. The working copy is untouched -- the
+# notebook you have open keeps the figures you just rendered.
+#
+# The filter definition is per-clone local config, so enable it once per clone:
+#     pixi global install nbstripout
+#     nbstripout --install --attributes .gitattributes
+#
+# `.githooks/pre-commit` strips the same things at commit time and stays as the
+# fallback for a clone where the above was never run (enable that one with
+# `git config core.hooksPath .githooks`).
+*.ipynb filter=nbstripout
+*.zpln filter=nbstripout
+*.ipynb diff=ipynb
